@@ -69,16 +69,20 @@ const managerStartHelperEnv = "WR_STARTTEST_HELPER"
 // process the start tests run.
 const managerStartHelperName = "TestManagerStartHelperProcess"
 
-// managerStartTestDBs are the databases a manager must refuse to start on: an
-// unversioned one with a jobslive bucket, which must be compacted first, and
-// one stamped newer than this wr supports. want is what the refusal says.
+// managerStartTestDBs are the bbolt databases a manager must refuse to start
+// on, as its conversion to the log store refuses them (spec E1): one whose
+// schema stamp is malformed, and one stamped newer than this wr supports. want
+// is what the refusal says. An unversioned database holding a jobslive bucket,
+// which the bbolt store refuses until compacted, is not among them: the
+// conversion accepts schema 0, dropping the std of complete jobs itself.
 var managerStartTestDBs = []struct {
-	name    string
-	version uint64
-	want    string
+	name  string
+	stamp []byte
+	want  string
 }{
-	{name: "an unversioned database with a jobslive bucket", version: 0, want: "wr manager compact"},
-	{name: "a database stamped 3", version: 3, want: "schema version 3"},
+	{name: "a database with a malformed schema stamp", stamp: []byte{0, 0, 0, 3},
+		want: "malformed database schema version"},
+	{name: "a database stamped 3", stamp: binary.BigEndian.AppendUint64(nil, 3), want: "schema version 3"},
 }
 
 // TestManagerDBUpgradeStatusLogMessage covers every state the startup sidecar
@@ -390,9 +394,9 @@ type managerStartTestEnv struct {
 }
 
 // newManagerStartTestEnv makes a managerStartTestEnv whose database is
-// writeManagerStartTestDB(version), and arranges for any manager daemon it
+// writeManagerStartTestDB(stamp), and arranges for any manager daemon it
 // leaves running to be killed when the test ends.
-func newManagerStartTestEnv(t *testing.T, version uint64) *managerStartTestEnv {
+func newManagerStartTestEnv(t *testing.T, stamp []byte) *managerStartTestEnv {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -418,7 +422,7 @@ func newManagerStartTestEnv(t *testing.T, version uint64) *managerStartTestEnv {
 	e.env = append(e.env, "HOME="+home, managerStartHelperEnv+"=1", "WR_MANAGERDIR="+filepath.Join(dir, "wr"),
 		"WR_MANAGERPORT="+port, "WR_MANAGERWEB="+webPort)
 
-	writeManagerStartTestDB(e.dbFile, version)
+	writeManagerStartTestDB(e.dbFile, stamp)
 
 	t.Cleanup(e.killDaemon)
 
@@ -485,7 +489,7 @@ func (e *managerStartTestEnv) badLogLines() []string {
 func TestManagerStartRefusesUnsupportedDB(t *testing.T) {
 	for _, db := range managerStartTestDBs {
 		Convey("wr manager start --foreground on "+db.name+" shows the refusal", t, func() {
-			e := newManagerStartTestEnv(t, db.version)
+			e := newManagerStartTestEnv(t, db.stamp)
 
 			code, _, stderr := e.run(managerWord, startWord, "--foreground", deploymentFlag, internal.Production)
 
@@ -499,7 +503,7 @@ func TestManagerStartRefusesUnsupportedDB(t *testing.T) {
 func TestManagerStartDaemonShowsRefusal(t *testing.T) {
 	for _, db := range managerStartTestDBs {
 		Convey("wr manager start daemonised on "+db.name+" shows the refusal", t, func() {
-			e := newManagerStartTestEnv(t, db.version)
+			e := newManagerStartTestEnv(t, db.stamp)
 
 			code, stdout, stderr := e.run(managerWord, startWord, deploymentFlag, internal.Production)
 			output := stdout + stderr
@@ -1420,7 +1424,7 @@ func TestManagerCompactRefusesNewerDB(t *testing.T) {
 		}
 		caFile = filepath.Join(dir, "ca.pem")
 
-		writeManagerStartTestDB(config.ManagerDBFile, 3)
+		writeManagerStartTestDB(config.ManagerDBFile, binary.BigEndian.AppendUint64(nil, 3))
 
 		before := fileSHA256(config.ManagerDBFile)
 
@@ -1438,27 +1442,21 @@ func TestManagerCompactRefusesNewerDB(t *testing.T) {
 	})
 }
 
-// writeManagerStartTestDB creates a bolt database at path: stamped with
-// version, or for version 0 unstamped and holding an empty jobslive bucket.
-func writeManagerStartTestDB(path string, version uint64) {
+// writeManagerStartTestDB creates a bolt database at path whose schema version
+// stamp is stamp.
+func writeManagerStartTestDB(path string, stamp []byte) {
 	So(os.MkdirAll(filepath.Dir(path), 0o700), ShouldBeNil)
 
 	bdb, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
 	So(err, ShouldBeNil)
 
 	err = bdb.Update(func(tx *bolt.Tx) error {
-		if version == 0 {
-			_, errc := tx.CreateBucket([]byte("jobslive"))
-
-			return errc
-		}
-
 		b, errc := tx.CreateBucket([]byte("meta"))
 		if errc != nil {
 			return errc
 		}
 
-		return b.Put([]byte("schemaVersion"), binary.BigEndian.AppendUint64(nil, version))
+		return b.Put([]byte("schemaVersion"), stamp)
 	})
 	So(err, ShouldBeNil)
 	So(bdb.Close(), ShouldBeNil)

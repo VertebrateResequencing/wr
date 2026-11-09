@@ -519,6 +519,14 @@ const touchAfterRunEnded = ErrBadJob + "; its runner already reported how its ru
 //nolint:gochecknoglobals // deliberate test seam, mirroring archiveCommittedHook
 var scheduleRetryEndingHook func()
 
+// jobChangeAheadHook, when non-nil, is called with a job's key by the server's
+// prepareJobChange once the store has prepared the job's change ahead of it,
+// before the change is made. It is nil in production and exists so tests can
+// change the job in between, whatever the store.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver.
+var jobChangeAheadHook func(key string)
+
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
 	errSubscriptionClosed       subscriptionRequestError = "subscription closed"
@@ -3303,7 +3311,7 @@ func (s *Server) suspendJob(ctx context.Context, key string) (bool, bool) {
 		return false, false
 	}
 
-	ahead := s.db.prepareJobChange(ctx, job, suspendChange)
+	ahead := s.prepareJobChange(ctx, job, suspendChange)
 
 	err = s.q.SuspendWith(ctx, key, func(data any) {
 		s.markItemJobChanged(ctx, job, data, ahead, suspendChange)
@@ -3344,7 +3352,7 @@ func (s *Server) resumeJob(ctx context.Context, key string) bool {
 		return false
 	}
 
-	ahead := s.db.prepareJobChange(ctx, job, s.resumeChange(likelyTo))
+	ahead := s.prepareJobChange(ctx, job, s.resumeChange(likelyTo))
 
 	resuming := func(_ any, to queue.ItemState) {
 		if to != likelyTo {
@@ -4601,6 +4609,17 @@ func jobHasDependents(q *queue.Queue, job *Job, jobKey string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// prepareJobChange is s.db's, followed by jobChangeAheadHook.
+func (s *Server) prepareJobChange(ctx context.Context, job *Job, change func(*Job)) *jobChangeAhead {
+	ahead := s.db.prepareJobChange(ctx, job, change)
+
+	if jobChangeAheadHook != nil {
+		jobChangeAheadHook(job.Key())
+	}
+
+	return ahead
 }
 
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
@@ -7897,7 +7916,7 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 
 		// prepared before the kick, so the encode is not done under the queue's
 		// lock.
-		ahead := s.db.prepareJobChange(ctx, job, kickChange)
+		ahead := s.prepareJobChange(ctx, job, kickChange)
 
 		kickedJob := job
 

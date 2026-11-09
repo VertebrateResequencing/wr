@@ -39,6 +39,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 const (
@@ -68,6 +69,15 @@ func startDurabilityConfig(t *testing.T) (internal.Config, ServerConfig, string,
 	serverConfig.TokenFile = filepath.Join(dir, "token")
 
 	return config, serverConfig, addr, standardReqs, clientConnectTime
+}
+
+// replaceDBWithImage replaces the stopped manager's database at dbFile with
+// image, a copy of the database BackupDB wrote, as a crash would leave it:
+// for the log store, image is a self-contained backup, which the next start
+// restores into a store directory at dbFile (spec E2).
+func replaceDBWithImage(dbFile string, image []byte) {
+	So(os.RemoveAll(dbFile), ShouldBeNil)
+	So(os.WriteFile(dbFile, image, 0o600), ShouldBeNil)
 }
 
 // startDurabilityCmd is a command that records one line per run in marker and

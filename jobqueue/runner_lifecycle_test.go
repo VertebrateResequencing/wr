@@ -370,6 +370,10 @@ func TestJobqueueRunnerResourceLearning(t *testing.T) {
 					RecMBRound,
 				)
 
+				// the store learns from the archive once folded (customdb spec
+				// D1), which a flush does.
+				So(fixture.server.inspector().flush(), ShouldBeNil)
+
 				jobs = append(jobs,
 					fallocateJob("fallocate -l 200M foo && echo 2", zeroReq, 0, "learns"),
 					fallocateJob("fallocate -l 200M foo && echo 3", zeroReq, 2, "learnsDiskNotMem"),

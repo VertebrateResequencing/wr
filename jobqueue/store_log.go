@@ -1354,6 +1354,12 @@ type logStore struct {
 	reqStats                *reqStatCache
 	recSecRound, recMBRound int
 
+	// archivedDecodes counts the complete jobs decoded in full from history
+	// (see historyRead.job). Like the bbolt store's, it is inert observability
+	// that only tests read, to prove a control or status path decodes no
+	// history.
+	archivedDecodes atomic.Uint64
+
 	// ckptMu makes checkpoints one at a time, and guards ckptFrom, the newest
 	// checkpoint's walFrom (0 if there is none), and delFrom and delFolded,
 	// the walFrom and the folded position it was merged at of the newest
@@ -1690,7 +1696,7 @@ func (s *logStore) checkIfLive(key string) (bool, error) {
 func (s *logStore) checkIfComplete(key string) (bool, error) {
 	k, err := parseLogKey(key)
 	if err != nil {
-		return false, nil
+		return false, nil // a malformed key names no job
 	}
 
 	s.mu.RLock()

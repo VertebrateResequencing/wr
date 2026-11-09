@@ -32,6 +32,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 )
@@ -39,11 +40,10 @@ import (
 // storeKind picks the store implementation openStore opens.
 type storeKind uint8
 
-// storeKindBolt comes first, so is the default, until item 1f.11 makes the log
-// store the default by putting storeKindLog first, as the spec has it.
+// storeKindLog comes first, so is the default.
 const (
-	storeKindBolt storeKind = iota // bbolt; removed with it
-	storeKindLog                   // the log store
+	storeKindLog  storeKind = iota // the log store
+	storeKindBolt                  // bbolt; removed with it
 )
 
 // pendingCommit is one write's durability: WaitWithin reports done false while
@@ -168,8 +168,21 @@ func openStore(ctx context.Context, cfg storeConfig) (store, string, error) {
 	return recording, msg, nil
 }
 
-// openStoreKind opens the store of cfg.kind, unwrapped.
-func openStoreKind(ctx context.Context, cfg storeConfig) (store, string, error) {
+// openStoreKind opens the store of cfg.kind, unwrapped. The manager is
+// unreachable for the whole of this and the recovery phases that follow it, so
+// each phase reports its own elapsed time at warn, where the default log level
+// shows it and an operator sizing the startup window can see where the time
+// went (dep-granularity spec E9); this is the first.
+func openStoreKind(ctx context.Context, cfg storeConfig) (s store, msg string, err error) {
+	started := time.Now()
+
+	defer func() {
+		if err == nil {
+			clog.Warn(ctx, "recovering: opened database", "db", cfg.dbFile,
+				"elapsed", time.Since(started).Round(time.Millisecond))
+		}
+	}()
+
 	lock, err := lockStore(ctx, cfg.dbFile)
 	if err != nil {
 		return nil, "", err
@@ -180,12 +193,7 @@ func openStoreKind(ctx context.Context, cfg storeConfig) (store, string, error) 
 	}
 
 	if cfg.kind == storeKindLog {
-		s, msg, errl := openLogStoreInOrder(ctx, cfg, lock)
-		if errl != nil {
-			return nil, msg, errl
-		}
-
-		return s, msg, nil
+		return openLogStoreInOrder(ctx, cfg, lock)
 	}
 
 	bdb, msg, err := initDB(ctx, cfg.dbFile, cfg.dbBkFile, cfg.deployment, cfg.forceBackups)

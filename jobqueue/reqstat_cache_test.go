@@ -29,7 +29,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"sync"
 	"testing"
@@ -127,6 +126,9 @@ func (l *reqStatLoads) setFailing(reqGroup string, failing bool) {
 
 // TestReqStatCache covers spec B1: learned requirements are cached per
 // ReqGroup and invalidated only when a committed stat write creates a new key.
+// On the log store a report's stats are written when the folder folds it, so
+// learned values lag the folder (customdb spec D1): leaves that check a report
+// invalidates flush the store, which folds, first.
 func TestReqStatCache(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -137,7 +139,7 @@ func TestReqStatCache(t *testing.T) {
 	Convey("Given a server with no learned stats", t, func() {
 		loads := countReqStatLoads()
 		rt := newReqStatTest(ctx, t)
-		server, db, jq := rt.server, rt.server.boltDB(), rt.jq
+		server, db, jq := rt.server, reqStatStoreOf(rt.server), rt.jq
 
 		Convey("a ReqGroup with no stats is not cached until loaded, then loads as zero", func() {
 			rec, current := db.cachedReqGroupRecs(reqStatTestGroup)
@@ -196,7 +198,7 @@ func TestReqStatCache(t *testing.T) {
 
 			stamp := db.reqStatChanges()
 
-			db.reqStats.invalidate(reqStatTestGroup)
+			db.reqStatCache().invalidate(reqStatTestGroup)
 			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
 			So(db.reqStatChanges(), ShouldEqual, stamp)
 
@@ -205,7 +207,7 @@ func TestReqStatCache(t *testing.T) {
 			So(db.reqStatChanges(), ShouldBeGreaterThan, stamp)
 		})
 
-		Convey("archiving a job with a new peak RAM makes its ReqGroup not current by the time the archive returns", func() {
+		Convey("archiving a job with a new peak RAM makes its ReqGroup not current once the store has flushed", func() {
 			seedReqGroupStats(server, FailReasonDisk, reqStatTestGroup, 0)
 			seedReqGroupStats(server, FailReasonTime, reqStatTestGroup, reqStatTestRuntimes()...)
 
@@ -217,13 +219,14 @@ func TestReqStatCache(t *testing.T) {
 			So(current, ShouldBeTrue)
 
 			So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, PeakRAM: 700, EndTime: time.Now()}), ShouldBeNil)
+			So(server.inspector().flush(), ShouldBeNil)
 
 			_, current = db.cachedReqGroupRecs(reqStatTestGroup)
 			So(current, ShouldBeFalse)
 			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 700)
 		})
 
-		Convey("releasing a job for RAM makes its ReqGroup not current by the time the release returns", func() {
+		Convey("releasing a job for RAM makes its ReqGroup not current once the store has flushed", func() {
 			job := rt.reserveJob(1)
 
 			db.refreshReqGroupRecs(reqStatTestGroup)
@@ -233,6 +236,7 @@ func TestReqStatCache(t *testing.T) {
 
 			So(jq.Release(job, &JobEndState{Exited: true, Exitcode: 1, PeakRAM: 900, EndTime: time.Now()},
 				FailReasonRAM), ShouldBeNil)
+			So(server.inspector().flush(), ShouldBeNil)
 
 			_, current = db.cachedReqGroupRecs(reqStatTestGroup)
 			So(current, ShouldBeFalse)
@@ -251,28 +255,18 @@ func TestReqStatCache(t *testing.T) {
 
 			rec := db.refreshReqGroupRecs(reqStatTestGroup)
 
-			recm, err := db.recommendedReqGroupMemory(reqStatTestGroup)
-			So(err, ShouldBeNil)
-			So(rec.RAM, ShouldEqual, recm)
+			// 2500MB of disk is 3GB rounded up; reqstat_cache_bolt_test.go
+			// checks these against the bbolt store's uncached recommendations.
 			So(rec.RAM, ShouldEqual, 1500)
-
-			recd, err := db.recommendedReqGroupDisk(reqStatTestGroup)
-			So(err, ShouldBeNil)
-			So(recd, ShouldEqual, 2500)
-			So(rec.Disk, ShouldEqual, int(math.Ceil(float64(recd)/float64(mbPerGB))))
 			So(rec.Disk, ShouldEqual, 3)
 			So(rec.DiskSet, ShouldBeTrue)
-
-			recs, err := db.recommendedReqGroupTime(reqStatTestGroup)
-			So(err, ShouldBeNil)
-			So(rec.Time, ShouldEqual, time.Duration(recs)*time.Second)
 			So(rec.Time, ShouldEqual, 90*time.Second)
 		})
 
 		Convey("a failed load keeps the previous value, not current, until a load succeeds", func() {
 			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 			db.refreshReqGroupRecs(reqStatTestGroup)
-			db.reqStats.invalidate(reqStatTestGroup)
+			db.reqStatCache().invalidate(reqStatTestGroup)
 
 			loads.setFailing(reqStatTestGroup, true)
 			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
@@ -318,16 +312,7 @@ func TestReqStatCache(t *testing.T) {
 			seedReqGroupStats(server, FailReasonRAM, reqStatTestPrefixedGroup, 5000)
 
 			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
-
-			recm, err := db.recommendedReqGroupMemory(reqStatTestGroup)
-			So(err, ShouldBeNil)
-			So(recm, ShouldEqual, 300)
-
 			So(db.refreshReqGroupRecs(reqStatTestPrefixedGroup).RAM, ShouldEqual, 5000)
-
-			recm, err = db.recommendedReqGroupMemory(reqStatTestPrefixedGroup)
-			So(err, ShouldBeNil)
-			So(recm, ShouldEqual, 5000)
 		})
 
 		Convey("a new stat key of a ReqGroup whose name another prefixes leaves the other current", func() {
@@ -344,7 +329,7 @@ func TestReqStatCache(t *testing.T) {
 		})
 
 		Convey("an invalidation during a load leaves the loaded value not current", func() {
-			loads.setOnLoad(func(reqGroup string) { db.reqStats.invalidate(reqGroup) })
+			loads.setOnLoad(func(reqGroup string) { db.reqStatCache().invalidate(reqGroup) })
 
 			db.refreshReqGroupRecs(reqStatTestGroup)
 
@@ -421,6 +406,7 @@ func TestReqStatCache(t *testing.T) {
 					So(current, ShouldBeTrue)
 
 					So(tc.report(job), ShouldBeNil)
+					So(server.inspector().flush(), ShouldBeNil)
 
 					_, current = db.cachedReqGroupRecs(reqStatTestGroup)
 					So(current, ShouldBeFalse)
@@ -471,6 +457,17 @@ func newReqStatTest(ctx context.Context, t *testing.T, configure ...func(*Server
 	})
 
 	return &reqStatTest{server: server, serverConfig: serverConfig, jq: jq, standardReqs: standardReqs}
+}
+
+// reqStatStoreOf returns s's store as a reqStatTestStore. Every store kind is
+// one in tests.
+func reqStatStoreOf(s *Server) reqStatTestStore {
+	st, ok := s.db.(reqStatTestStore)
+	if !ok {
+		panic(fmt.Sprintf("store %T has no reqStatCache", s.db))
+	}
+
+	return st
 }
 
 // seedReqGroupStats records each of vals as reqGroup's learned stat of the kind
@@ -536,7 +533,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 	Convey("Given a server with a 2s refresh interval and a ReqGroup just loaded at RAM 300", t, func() {
 		loads := countReqStatLoads()
 		rt := newReqStatTest(ctx, t, func(c *ServerConfig) { c.Timings.ReqStatRefreshInterval = 2 * time.Second })
-		server, db := rt.server, rt.server.boltDB()
+		server, db := rt.server, reqStatStoreOf(rt.server)
 
 		seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 		So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
@@ -565,7 +562,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 	Convey("Given a server built by jobqueueTestInit, whose refresh interval is -1", t, func() {
 		loads := countReqStatLoads()
 		rt := newReqStatTest(ctx, t)
-		server, db := rt.server, rt.server.boltDB()
+		server, db := rt.server, reqStatStoreOf(rt.server)
 
 		Convey("every refresh after a new stat key loads", func() {
 			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
@@ -594,7 +591,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 			release()
 			So(returned, ShouldBeTrue)
 
-			db.reqStats.wg.Wait()
+			db.reqStatCache().wg.Wait()
 
 			So(loads.count(reqStatTestGroup), ShouldEqual, 1)
 
@@ -608,7 +605,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 
 			db.refreshReqGroupRecsLater(reqStatTestGroup)
 
-			So(waitsWithin(db.reqStats.wg.Wait, reqStatTestPromptly), ShouldBeTrue)
+			So(waitsWithin(db.reqStatCache().wg.Wait, reqStatTestPromptly), ShouldBeTrue)
 			So(loads.count(reqStatTestGroup), ShouldEqual, 0)
 		})
 
@@ -645,11 +642,11 @@ func TestReqStatRefreshLimit(t *testing.T) {
 			_, current := db.cachedReqGroupRecs(reqStatTestGroup)
 			So(current, ShouldBeTrue)
 
-			db.reqStats.invalidate(reqStatTestGroup)
+			db.reqStatCache().invalidate(reqStatTestGroup)
 			loads.reset()
 
 			db.refreshReqGroupRecsLater(reqStatTestGroup)
-			db.reqStats.wg.Wait()
+			db.reqStatCache().wg.Wait()
 
 			So(loads.count(reqStatTestGroup), ShouldEqual, 0)
 		})
@@ -684,7 +681,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 			So(waitsWithin(func() { db.refreshReqGroupRecs(reqStatTestOtherGroup) }, reqStatTestPromptly), ShouldBeTrue)
 
 			release()
-			db.reqStats.wg.Wait()
+			db.reqStatCache().wg.Wait()
 
 			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 400)
 		})
@@ -694,7 +691,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 // seedAndRefreshReqStatRAMs seeds RAM 400, 500, 600 and 700 for
 // reqStatTestGroup 40ms apart, calling refreshReqGroupRecs after each and
 // passing its result to check.
-func seedAndRefreshReqStatRAMs(db *db, server *Server, check func(rec *jqs.Requirements)) {
+func seedAndRefreshReqStatRAMs(db reqStatTestStore, server *Server, check func(rec *jqs.Requirements)) {
 	for i, ram := range []int{400, 500, 600, 700} {
 		if i > 0 {
 			time.Sleep(40 * time.Millisecond)
@@ -866,6 +863,13 @@ func TestReqStatCacheRAC(t *testing.T) {
 			So(len(rams), ShouldEqual, 1)
 		})
 	})
+}
+
+// reqStatTestStore is a store whose learned requirement cache a test can
+// reach.
+type reqStatTestStore interface {
+	store
+	reqStatCache() *reqStatCache
 }
 
 // reqStatTest is a durability-config server on its own database, with a

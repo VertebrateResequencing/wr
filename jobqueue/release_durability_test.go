@@ -86,6 +86,7 @@ func releaseDurabilityCrashAndRecover(ctx context.Context, t *testing.T,
 	t.Helper()
 
 	_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+	withBoltStore(&serverConfig)
 	serverConfig.Timings.ItemTTR = time.Minute
 	serverConfig.Timings.ReleaseDelayMin = time.Millisecond
 

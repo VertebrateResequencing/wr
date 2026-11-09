@@ -2206,10 +2206,16 @@ new store.
    `.corrupt` back to `dbFile` and fsync the parent, as a restore
    interrupted between its two renames left it, and it can be the only
    copy of the data (a self-contained file restored by step 5). If
-   `dbFile` exists and is not a directory while `.corrupt` exists,
-   something other than a restore made `dbFile` (a bbolt-kind or older wr
-   open after the crash), so either can be the only copy, and the open
-   returns an error naming both and removes nothing. Otherwise
+   `dbFile` and `.corrupt` are both absent and `dbFile + ".sync"` exists,
+   rename it to `dbFile` the same way: it is the remote database a cloud
+   teardown killed between its two renames left (E7), and `BackupDB`
+   only ever renames a whole backup to that name; the open logs a
+   warning that it recovered the database from that `.sync` file, so a
+   stale one used in place of `dbBkFile` can be seen. If `dbFile` exists and
+   is not a directory while `.corrupt` exists, something other than a
+   restore made `dbFile` (a bbolt-kind or older wr open after the crash),
+   so either can be the only copy, and the open returns an error naming
+   both and removes nothing. Otherwise
    `os.RemoveAll` any leftover `dbFile + ".restoring"`, and
    `dbFile + ".corrupt"` when `dbFile` is a directory, as restore step 3
    always leaves it.
@@ -2354,6 +2360,7 @@ Every `os.Remove(dbFile)`, `os.Remove(dbBkFile)` and
 prefix delete through `backupTarget`. The dev wipe keeps today's intent,
 starting from an empty DB, so it removes everything the DB owns: `dbFile`,
 `dbBkFile`, and any `dbFile + ".converting"`, `".restoring"`, `".corrupt"`,
+`".sync"` (which E2 step 2 would otherwise put back as `dbFile`),
 `dbFile + ".bolt-pre-*"` and `dbBkFile + ".bolt-pre-*"` (S3: objects with
 that prefix). The `.upgrade` sidecar is left, as today, and so is the
 `.lock` file the wiping manager holds.
@@ -2554,7 +2561,9 @@ As a cloud user, I want deploy and teardown to keep carrying my database.
   `ManagerDBFile + ".old"`, renames an existing store directory to it, and
   renames the `.sync` file to `ManagerDBFile`, renaming the directory back
   if that fails. A failed `BackupDB` leaves `ManagerDBFile` as it was, even
-  with `--force`, which carries on to destroy the remote. The S3 branch
+  with `--force`, which carries on to destroy the remote. A teardown killed
+  between the two renames leaves no `ManagerDBFile`, so the next local
+  start opens the `.sync` file as it (E2 order, step 2). The S3 branch
   also `os.RemoveAll`s `ManagerDBFile + ".old"` before its rename: today's
   `os.Rename` fails on a stale non-empty `.old` directory or a `.old` file
   when the source is a directory, and only warns, so a local start would

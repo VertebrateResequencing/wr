@@ -61,12 +61,17 @@ const releaseResendRetries = 3
 // startedJobForResend adds a job with the given retries, reserves it and reports
 // it started with this test process's pid, returning the manager, a client of it
 // and the reserved job.
-func startedJobForResend(ctx context.Context, t *testing.T, retries uint8) (*Server, *Client, *Job) {
+func startedJobForResend(ctx context.Context, t *testing.T, retries uint8,
+	configure ...func(*ServerConfig)) (*Server, *Client, *Job) {
 	t.Helper()
 
 	_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
 	serverConfig.Timings.ItemTTR = time.Minute
 	serverConfig.Timings.ReleaseDelayMin = time.Millisecond
+
+	for _, c := range configure {
+		c(&serverConfig)
+	}
 
 	server, _, token, err := serve(ctx, serverConfig)
 	So(err, ShouldBeNil)

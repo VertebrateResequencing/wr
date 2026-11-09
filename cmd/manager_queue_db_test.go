@@ -30,9 +30,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/binary"
 	"encoding/json"
-	"hash/crc32"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,7 +44,6 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -60,57 +57,20 @@ const (
 	mqdbWaitTimeout    = 20 * time.Second
 	mqdbFakeExeMode    = 0o700
 	mqdbShell          = "bash"
-
-	// mqdbCRCBytes is the length of the CRC of the live record that starts a
-	// job run-state record.
-	mqdbCRCBytes = 4
 )
 
-// readStoredRunStates decodes every job run-state record in the (closed)
-// manager database whose CRC matches its job's live record, through that live
-// record as recovery overlays it: the live record decoded, then the run state
-// decoded over it, which sets every run-state field since none is omitted when
-// empty. raw is the run-state record.
-func readStoredRunStates(dbFile string) []mqdbStoredJob {
-	db, err := bolt.Open(dbFile, 0o600, &bolt.Options{ReadOnly: true, Timeout: 5 * time.Second})
-	So(err, ShouldBeNil)
+// handedOut returns the jobs in stored whose run state is reserved or
+// running.
+func handedOut(stored []mqdbStoredJob) []mqdbStoredJob {
+	var out []mqdbStoredJob
 
-	defer db.Close()
+	for _, s := range stored {
+		if s.job.State == jobqueue.JobStateReserved || s.job.State == jobqueue.JobStateRunning {
+			out = append(out, s)
+		}
+	}
 
-	var stored []mqdbStoredJob
-
-	castagnoli := crc32.MakeTable(crc32.Castagnoli)
-
-	err = db.View(func(tx *bolt.Tx) error {
-		runStates, live := tx.Bucket([]byte("jobRunState")), tx.Bucket([]byte("jobslive"))
-		So(runStates, ShouldNotBeNil)
-
-		return runStates.ForEach(func(key, record []byte) error {
-			liveRecord := live.Get(key)
-
-			matches := liveRecord != nil && len(record) >= mqdbCRCBytes &&
-				binary.BigEndian.Uint32(record) == crc32.Checksum(liveRecord, castagnoli)
-			if !matches {
-				return nil
-			}
-
-			job := &jobqueue.Job{}
-			if errd := codec.NewDecoderBytes(liveRecord, new(codec.BincHandle)).Decode(job); errd != nil {
-				return errd
-			}
-
-			if errd := codec.NewDecoderBytes(record[mqdbCRCBytes:], new(codec.BincHandle)).Decode(job); errd != nil {
-				return errd
-			}
-
-			stored = append(stored, mqdbStoredJob{raw: string(record), job: job})
-
-			return nil
-		})
-	})
-	So(err, ShouldBeNil)
-
-	return stored
+	return out
 }
 
 // TestManagerQueueDefaultsAreNotStored checks that the manager's --queue and
@@ -118,7 +78,7 @@ func readStoredRunStates(dbFile string) []mqdbStoredJob {
 // are never stored in a job: jobs added via the wr add parsing path, the Go
 // client and the REST API have no scheduler_queue or scheduler_queues_avoid in
 // their stored Requirements.Other, live, archived or in a reserved job's
-// run-state record, yet bsub is given the default queue.
+// latest run state, yet bsub is given the default queue.
 func TestManagerQueueDefaultsAreNotStored(t *testing.T) {
 	ctx := context.Background()
 
@@ -201,7 +161,7 @@ func TestManagerQueueDefaultsAreNotStored(t *testing.T) {
 
 		liveCmds := addBatch("live")
 
-		// a job that stays live with its run-state record, which also holds its
+		// a job that stays live with its run state, which also holds its
 		// requirements.
 		So(reserveViaRunnerGroups(jq, bsubCallsDir, 1, func(*jobqueue.Job) {}), ShouldEqual, 1)
 
@@ -226,17 +186,14 @@ func TestManagerQueueDefaultsAreNotStored(t *testing.T) {
 			}
 		})
 
-		Convey("no stored job, live, archived or in a run-state record, has a scheduler queue setting", func() {
-			live := readStoredJobs(serverConfig.DBFile, "jobslive")
-			complete := readStoredJobs(serverConfig.DBFile, "jobscomplete")
+		Convey("no stored job, live with its run state or archived, has a scheduler queue setting", func() {
+			live, complete := readStoredJobs(serverConfig.DBFile)
 
 			So(storedCmds(live), ShouldResemble, sortedCopy(liveCmds))
 			So(storedCmds(complete), ShouldResemble, sortedCopy(archivedCmds))
+			So(handedOut(live), ShouldHaveLength, 1)
 
-			runStates := readStoredRunStates(serverConfig.DBFile)
-			So(runStates, ShouldNotBeEmpty)
-
-			for _, stored := range slices.Concat(live, complete, runStates) {
+			for _, stored := range slices.Concat(live, complete) {
 				So(strings.Contains(stored.raw, mqdbKeyQueue), ShouldBeFalse)
 				So(strings.Contains(stored.raw, mqdbQueueMarker), ShouldBeFalse)
 
@@ -428,34 +385,30 @@ type mqdbStoredJob struct {
 	job *jobqueue.Job
 }
 
-// readStoredJobs decodes every job in the given bucket of the (closed) manager
-// database.
-func readStoredJobs(dbFile, bucket string) []mqdbStoredJob {
-	db, err := bolt.Open(dbFile, 0o600, &bolt.Options{ReadOnly: true, Timeout: 5 * time.Second})
-	So(err, ShouldBeNil)
+// readStoredJobs reads every job in the stopped manager's store at dbDir:
+// its live jobs, each with its latest durable run state, and its complete
+// jobs. raw is the job encoded as the store's records encode it, so a setting
+// anywhere in the job is in raw.
+func readStoredJobs(dbDir string) (live, complete []mqdbStoredJob) {
+	err := jobqueue.ReadStore(dbDir, func(isLive bool, job *jobqueue.Job) error {
+		var raw []byte
+		if erre := codec.NewEncoderBytes(&raw, new(codec.BincHandle)).Encode(job); erre != nil {
+			return erre
+		}
 
-	defer db.Close()
+		stored := mqdbStoredJob{raw: string(raw), job: job}
 
-	var stored []mqdbStoredJob
+		if isLive {
+			live = append(live, stored)
+		} else {
+			complete = append(complete, stored)
+		}
 
-	err = db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		So(b, ShouldNotBeNil)
-
-		return b.ForEach(func(_, v []byte) error {
-			job := &jobqueue.Job{}
-			if errd := codec.NewDecoderBytes(v, new(codec.BincHandle)).Decode(job); errd != nil {
-				return errd
-			}
-
-			stored = append(stored, mqdbStoredJob{raw: string(v), job: job})
-
-			return nil
-		})
+		return nil
 	})
 	So(err, ShouldBeNil)
 
-	return stored
+	return live, complete
 }
 
 func storedCmds(stored []mqdbStoredJob) []string {

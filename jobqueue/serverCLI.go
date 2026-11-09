@@ -1261,7 +1261,7 @@ func (s *Server) abandonReservation(ctx context.Context, sjob *Job, key string, 
 
 	// prepared for its write slot only: the change clears more than State, so it
 	// is encoded once made.
-	ahead := s.db.prepareJobChange(ctx, sjob, func(job *Job) { job.State = JobStateReady })
+	ahead := s.prepareJobChange(ctx, sjob, func(job *Job) { job.State = JobStateReady })
 	ahead.outdate()
 
 	if errr := s.releaseAbandonedItem(ctx, sjob, key, ahead, prev); errr != nil {

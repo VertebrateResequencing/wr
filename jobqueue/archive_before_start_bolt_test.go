@@ -53,6 +53,7 @@ func TestLateStartDuringArchive(t *testing.T) {
 
 	Convey("Given a runner's archive of a started job waiting on a stalled commit", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		withBoltStore(&serverConfig)
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)

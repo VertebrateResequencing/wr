@@ -61,6 +61,7 @@ func TestWarningStormIsAggregated(t *testing.T) {
 		defer func() { warnAggregateInterval = restoreInterval }()
 
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		withBoltStore(&serverConfig)
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)

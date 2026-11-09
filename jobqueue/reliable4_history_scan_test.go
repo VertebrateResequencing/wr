@@ -41,9 +41,10 @@ package jobqueue
 //     empty", so any caller that simply did not set a state - the REST job
 //     modification target among them - paid for the whole history.
 //
-// The cost driver is decodeArchivedJob, counted per-server by db.archivedDecodes
-// (INERT observability), so these tests assert on decode counts rather than on
-// wall-clock, which is not trustworthy on a shared farm node. The companion
+// The cost driver is the full decode of an archived job, counted per-server by
+// the store (archivedDecodeCount; INERT observability), so these tests assert
+// on decode counts rather than on wall-clock, which is not trustworthy on a
+// shared farm node. The companion
 // assertions guard the opposite direction: `wr status` and the REST status
 // endpoint must still return archived jobs.
 
@@ -123,7 +124,7 @@ func TestReliable4ControlPathsSkipArchivedHistory(t *testing.T) {
 		addHistoryScanLiveJobs(jq, reqs, historyScanRepGroup)
 
 		decodes := func() uint64 {
-			return server.boltDB().archivedDecodes.Load()
+			return server.archivedDecodeCount()
 		}
 
 		Convey("the live-only request shape suspend/resume send costs no archived decode", func() {
@@ -376,7 +377,7 @@ func measureHistoryScanRequest(ctx context.Context, t *testing.T, archived int) 
 
 	addHistoryScanLiveJobs(jq, reqs, historyScanRepGroup)
 
-	before := server.boltDB().archivedDecodes.Load()
+	before := server.archivedDecodeCount()
 	best := time.Duration(0)
 
 	for run := range historyScanTimingRuns {
@@ -392,7 +393,7 @@ func measureHistoryScanRequest(ctx context.Context, t *testing.T, archived int) 
 		}
 	}
 
-	return server.boltDB().archivedDecodes.Load() - before, best
+	return server.archivedDecodeCount() - before, best
 }
 
 // seedArchivedRepGroupHistory creates config's DB holding count archived jobs

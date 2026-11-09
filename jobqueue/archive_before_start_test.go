@@ -221,7 +221,7 @@ func TestArchiveBeforeRetriedStart(t *testing.T) {
 		So(waitForRuns(marker, 1, archiveBeforeStartWait), ShouldBeTrue)
 
 		server.Stop(ctx, true)
-		So(os.WriteFile(serverConfig.DBFile, crashImage.Bytes(), 0o600), ShouldBeNil)
+		replaceDBWithImage(serverConfig.DBFile, crashImage.Bytes())
 
 		serverConfig.dontWipeDevDB = true
 

@@ -799,7 +799,7 @@ func (p *queueLockProbe) loadsAfter(step func()) bool {
 		return false
 	}
 
-	p.server.boltDB().reqStats.invalidate(p.group)
+	reqStatStoreOf(p.server).reqStatCache().invalidate(p.group)
 	before := p.loads.count(p.group)
 
 	step()
@@ -1332,6 +1332,10 @@ func (n *noHoldTest) failRun(job *Job, failReason string, peakRAM int) *Job {
 	So(n.runner.Release(reserved, &JobEndState{
 		Exited: true, Exitcode: 1, PeakRAM: peakRAM, EndTime: time.Now(),
 	}, failReason), ShouldBeNil)
+
+	// the log store learns from a release once its folder folds it (customdb
+	// spec D1), which a flush does.
+	So(n.server.inspector().flush(), ShouldBeNil)
 
 	return reserved
 }

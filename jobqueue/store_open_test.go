@@ -46,6 +46,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/minio/minio-go/v7"
 	. "github.com/smartystreets/goconvey/convey"
@@ -68,6 +69,10 @@ const (
 	// storeOpenUnwritableDirMode leaves a directory readable but lets nothing
 	// be created in it.
 	storeOpenUnwritableDirMode os.FileMode = 0o500
+
+	// storePutBackLongName is longer than any file name a file system takes,
+	// so looking for it fails with ENAMETOOLONG, not ENOENT.
+	storePutBackLongName = 300
 )
 
 // errStoreNotLog is returned by openLogStoreLocked if it opens another kind of
@@ -116,6 +121,31 @@ var restoreCrashPoints = []struct { //nolint:gochecknoglobals // a test table
 	{"after recovering .restoring", restoreAtRecovered, 1, false},
 	{"after the rename to .corrupt", restoreAtSetAside, 1, true},
 	{"after the rename to the db file", restoreAtReplaced, 1, true},
+}
+
+// TestStorePutBack proves putBack treats only a db file that does not exist as
+// absent, returning any other error from looking for it.
+func TestStorePutBack(t *testing.T) {
+	Convey("Given a db file path whose name is too long to look up, and nothing set aside", t, func() {
+		dir := t.TempDir()
+		dbFile := filepath.Join(dir, strings.Repeat("d", storePutBackLongName))
+		setAside := filepath.Join(dir, "queue.db"+storeCorruptSuffix)
+
+		Convey("putBack returns the error from looking for the db file", func() {
+			_, err := putBack(setAside, dbFile)
+			So(err, ShouldWrap, syscall.ENAMETOOLONG)
+		})
+	})
+
+	Convey("Given a db file that does not exist, and nothing set aside", t, func() {
+		dir := t.TempDir()
+
+		Convey("putBack puts nothing back and returns no error", func() {
+			moved, err := putBack(filepath.Join(dir, "queue.db.corrupt"), filepath.Join(dir, "queue.db"))
+			So(err, ShouldBeNil)
+			So(moved, ShouldBeFalse)
+		})
+	})
 }
 
 // logOpenResult is what a bounded openLogStoreLocked call came back with.
@@ -172,6 +202,11 @@ func TestStoreOpenLock(t *testing.T) {
 
 		cfg, dir := logStoreOpenConfig(t)
 		closedLogStoreWithBackup(ctx, cfg)
+
+		// the holder's folder would fold what its open recovered into
+		// history.bolt while a second open is tried, so changing a file that
+		// the second open did not touch.
+		pauseLogFolder()
 
 		holder, err := openLogStoreLocked(ctx, cfg)
 		So(err, ShouldBeNil)
@@ -250,6 +285,12 @@ func TestStoreOpenLock(t *testing.T) {
 			withStoreLockOpenTimeout()
 
 			dir, cfg := storeLockSeeded(ctx, t, kind)
+
+			// a log holder's folder would fold what its open recovered into
+			// history.bolt while the second open is tried, so changing a file
+			// that the second open did not touch.
+			pauseLogFolder()
+
 			holder := openStoreIn(ctx, kind, dir)
 
 			Reset(func() { So(holder.close(ctx), ShouldBeNil) })
@@ -704,6 +745,63 @@ func TestStoreOpenRestore(t *testing.T) {
 				soNoRestoreLeftovers(f.cfg.dbFile)
 			})
 		}
+
+		Convey("with no db file, the store set aside at .old and the self-contained backup at .sync, as a "+
+			"teardown killed between its renames leaves them, an open restores the .sync file", func() {
+			old := f.cfg.dbFile + ".old"
+			So(os.Rename(f.cfg.dbFile, old), ShouldBeNil)
+			oldIdentity := storeDirIdentity(t, old)
+
+			synced := f.cfg.dbFile + SyncedDBSuffix
+			So(os.Rename(f.backupTar, synced), ShouldBeNil)
+			f.cfg.dbBkFile = filepath.Join(f.dir, "absent")
+
+			logs := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			result := openRestoring(ctx, f.cfg)
+			soRestored(result, f.backup)
+			So(result.msg, ShouldEqual, "restored db directory "+f.cfg.dbFile+" from self-contained backup file")
+			So(synced, shouldNotExist)
+			So(logs.String(), ShouldContainSubstring, `msg="recovering: recovered the database from an `+
+				`interrupted teardown's .sync file" db=`+f.cfg.dbFile+" sync="+synced)
+			So(storeDirIdentity(t, old), ShouldResemble, oldIdentity)
+			soNoRestoreLeftovers(f.cfg.dbFile)
+		})
+
+		Convey("with no db file, the self-contained backup at .corrupt, as an interrupted restore leaves it, "+
+			"and another file at .sync, an open restores the .corrupt one, leaving the .sync file", func() {
+			So(os.RemoveAll(f.cfg.dbFile), ShouldBeNil)
+			So(os.Rename(f.backupTar, f.cfg.dbFile+storeCorruptSuffix), ShouldBeNil)
+			f.cfg.dbBkFile = filepath.Join(f.dir, "absent")
+
+			synced := f.cfg.dbFile + SyncedDBSuffix
+			So(os.WriteFile(synced, []byte("another remote database"), dbFilePermission), ShouldBeNil)
+			syncSum := sha256Of(synced)
+
+			logs := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			result := openRestoring(ctx, f.cfg)
+			soRestored(result, f.backup)
+			So(sha256Of(synced), ShouldEqual, syncSum)
+			So(logs.String(), ShouldNotContainSubstring, ".sync file")
+			soNoRestoreLeftovers(f.cfg.dbFile)
+		})
+
+		Convey("with a db file and a .sync file beside it, as a teardown whose set-aside failed leaves them, an "+
+			"open opens the db file, leaving the .sync file", func() {
+			synced := f.cfg.dbFile + SyncedDBSuffix
+			So(os.Rename(f.backupTar, synced), ShouldBeNil)
+			syncSum := sha256Of(synced)
+
+			result := openRestoring(ctx, f.cfg)
+			So(result.err, ShouldBeNil)
+			So(result.msg, ShouldBeBlank)
+			So(sha256Of(synced), ShouldEqual, syncSum)
+		})
 
 		Convey("with the self-contained backup set aside as .corrupt by an interrupted restore, and a db file "+
 			"created since by a bbolt-kind open, an open fails naming both, removing neither", func() {

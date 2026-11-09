@@ -88,6 +88,7 @@ func measureCompletedHistoryStartup(ctx context.Context, t *testing.T, config Se
 ) (time.Duration, *Server) {
 	t.Helper()
 
+	withBoltStore(&config)
 	config.dontWipeDevDB = true
 	prepareCompletedHistory(ctx, t, config, count)
 

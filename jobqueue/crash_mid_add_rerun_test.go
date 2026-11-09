@@ -34,7 +34,6 @@ package jobqueue
 import (
 	"bytes"
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -158,7 +157,7 @@ func cmrAddFinishingAndCrash(ctx context.Context, d *dgrServer, jq *Client, seco
 func cmrCrashTo(ctx context.Context, d *dgrServer, crashImage *bytes.Buffer) {
 	d.server.Stop(ctx, true)
 
-	So(os.WriteFile(d.serverConfig.DBFile, crashImage.Bytes(), 0o600), ShouldBeNil)
+	replaceDBWithImage(d.serverConfig.DBFile, crashImage.Bytes())
 
 	d.serverConfig.dontWipeDevDB = true
 

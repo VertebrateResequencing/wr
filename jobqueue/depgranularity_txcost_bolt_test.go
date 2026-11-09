@@ -61,7 +61,7 @@ func TestDepGranularityAddTransactionCost(t *testing.T) {
 // waiters on it, then returns how many bolt read transactions dgaTxAdds further
 // one-member adds cost.
 func dgaAddMemberTxCost(ctx context.Context, members int) int {
-	d := dgrStartServer(ctx)
+	d := dgrStartServer(ctx, withBoltStore)
 
 	defer d.stop(ctx)
 

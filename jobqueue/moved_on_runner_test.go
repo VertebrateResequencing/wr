@@ -150,13 +150,15 @@ type movedOnFixture struct {
 	user         *Client
 	cmdPid       int
 	cmdExited    chan struct{}
+	failSyncs    *atomic.Bool
 }
 
 // newMovedOnFixture starts a manager with the given runner command (none for a
 // manager whose clients are Go API users), and a runner client. With a runner
 // command the runner reserves as a wr runner does, by scheduler group and
 // saying it is a runner.
-func newMovedOnFixture(ctx context.Context, t *testing.T, runnerCmd string) *movedOnFixture {
+func newMovedOnFixture(ctx context.Context, t *testing.T, runnerCmd string,
+	configure ...func(*ServerConfig)) *movedOnFixture {
 	t.Helper()
 
 	_, serverConfig, addr, standardReqs, connectTime := startDurabilityConfig(t)
@@ -166,8 +168,13 @@ func newMovedOnFixture(ctx context.Context, t *testing.T, runnerCmd string) *mov
 	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
 	serverConfig.RunnerCmd = runnerCmd
 
+	for _, c := range configure {
+		c(&serverConfig)
+	}
+
 	f := &movedOnFixture{
 		t: t, serverConfig: serverConfig, addr: addr, connectTime: connectTime, reqs: standardReqs,
+		failSyncs: failArmedWALSyncs(),
 	}
 
 	if runnerCmd != "" {
@@ -368,7 +375,7 @@ func (f *movedOnFixture) crashOnto(ctx context.Context, image *bytes.Buffer) {
 
 	f.stop(ctx)
 
-	So(os.WriteFile(f.serverConfig.DBFile, image.Bytes(), 0o600), ShouldBeNil)
+	replaceDBWithImage(f.serverConfig.DBFile, image.Bytes())
 	f.serverConfig.dontWipeDevDB = true
 
 	f.serve(ctx)
@@ -380,13 +387,13 @@ func (f *movedOnFixture) crashOnto(ctx context.Context, image *bytes.Buffer) {
 // failArchive has the manager accept the runner's successful archive of job but
 // fail to write it, leaving the job exited in the run sub-queue.
 func (f *movedOnFixture) failArchive(ctx context.Context, job *Job, end *JobEndState) {
-	archiveTxObserver = func(_ int, _ []byte) { panic("archive retry write failure test") }
+	f.failSyncs.Store(true)
 
 	_, srerr, _ := f.server.handleArchive(ctx, &clientRequest{
 		Method: archiveBeforeStartMethod, Keys: []string{job.Key()}, ClientID: f.runner.clientid, JobEndState: end,
 	})
 
-	archiveTxObserver = nil
+	f.failSyncs.Store(false)
 
 	So(srerr, ShouldEqual, ErrDBError)
 
@@ -626,7 +633,8 @@ func TestMovedOnRunnerAfterRestartSecondReserved(t *testing.T) {
 
 // withLiveRecord returns base with key's live job replaced by the one in from,
 // as recovery would read each: from's job, with its run state, is stored over
-// base's as the job's full live record, through a store of the given kind.
+// base's as the job's full live record, through a store of the given kind,
+// whose backup is returned.
 func withLiveRecord(ctx context.Context, t *testing.T, kind storeKind, base, from *bytes.Buffer,
 	key string) *bytes.Buffer {
 	t.Helper()
@@ -649,12 +657,12 @@ func withLiveRecord(ctx context.Context, t *testing.T, kind storeKind, base, fro
 
 	s := openStoreIn(ctx, kind, baseDir)
 	So(s.updateJobAfterChangeDurable(job), ShouldBeNil)
+
+	composed := &bytes.Buffer{}
+	So(s.backup(composed), ShouldBeNil)
 	So(s.close(ctx), ShouldBeNil)
 
-	composed, err := os.ReadFile(basePath)
-	So(err, ShouldBeNil)
-
-	return bytes.NewBuffer(composed)
+	return composed
 }
 
 // TestMovedOnRunnerLateReport proves that a report the runner makes of the

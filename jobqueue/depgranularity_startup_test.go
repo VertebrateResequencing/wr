@@ -753,12 +753,14 @@ func TestDepGranularityStopDuringWindow(t *testing.T) {
 		So(stopped, ShouldBeTrue)
 		So(elapsed, ShouldBeLessThan, dgsStopBound)
 
-		result, returned := dgbInitDB(ctx, serverConfig.DBFile, serverConfig.DBFileBackup)
+		result := openStoreBounded(ctx, storeConfig{
+			dbFile: serverConfig.DBFile, dbBkFile: serverConfig.DBFileBackup, deployment: internal.Development,
+		})
 
-		defer dgbClose(ctx, result)
+		defer closeOpenResult(ctx, result)
 
-		So(returned, ShouldBeTrue)
 		So(result.err, ShouldBeNil)
+		So(result.s, ShouldNotBeNil)
 	})
 }
 
@@ -808,12 +810,14 @@ func TestDepGranularitySigtermDuringWindow(t *testing.T) {
 
 		<-released
 
-		result, returned := dgbInitDB(ctx, serverConfig.DBFile, serverConfig.DBFileBackup)
+		result := openStoreBounded(ctx, storeConfig{
+			dbFile: serverConfig.DBFile, dbBkFile: serverConfig.DBFileBackup, deployment: internal.Development,
+		})
 
-		defer dgbClose(ctx, result)
+		defer closeOpenResult(ctx, result)
 
-		So(returned, ShouldBeTrue)
 		So(result.err, ShouldBeNil)
+		So(result.s, ShouldNotBeNil)
 	})
 }
 
@@ -976,7 +980,9 @@ func TestDepGranularityStartupPhasesAreLogged(t *testing.T) {
 func dgsSeedIncompleteJobs(ctx context.Context, t *testing.T, config ServerConfig, count int) {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false)
+	s, _, err := openStore(ctx, storeConfig{
+		dbFile: config.DBFile, dbBkFile: config.DBFileBackup, deployment: internal.Development, kind: config.storeKind,
+	})
 	So(err, ShouldBeNil)
 
 	jobs := make([]*Job, count)
@@ -984,12 +990,11 @@ func dgsSeedIncompleteJobs(ctx context.Context, t *testing.T, config ServerConfi
 		jobs[i] = testDBJob("echo dgs "+strconv.Itoa(i), dgsRepGroup)
 	}
 
-	jobsToQueue, jobsToUpdate, alreadyAdded, err := testDB.storeNewJobs(ctx, jobs, false)
+	stored, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
 	So(err, ShouldBeNil)
-	So(jobsToQueue, ShouldHaveLength, count)
-	So(jobsToUpdate, ShouldHaveLength, 0)
-	So(alreadyAdded, ShouldResemble, DuplicateBreakdown{})
-	So(testDB.close(ctx), ShouldBeNil)
+	So(stored.jobsToQueue, ShouldHaveLength, count)
+	So(stored.alreadyAdded, ShouldResemble, DuplicateBreakdown{})
+	So(s.close(ctx), ShouldBeNil)
 }
 
 // dgsPhaseLogged reports whether the captured log carries the named phase line at

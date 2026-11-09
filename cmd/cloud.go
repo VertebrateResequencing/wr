@@ -45,6 +45,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
@@ -58,6 +59,10 @@ import (
 // in particular not in the home dir since we may want to run commands on
 // spawned servers that are running different OS images with different user.
 const cloudBinDir = "/tmp"
+
+// exportFileInfix follows a db file's name, and precedes a random part, in the
+// name of the file uploadLocalDB exports a store directory to.
+const exportFileInfix = ".export-"
 
 // wrConfigFileName is the name of our main config file, which we need when we
 // create on our created cloud server.
@@ -1256,7 +1261,8 @@ func chmod600OrWarn(server *cloud.Server, remotePath string) {
 // bbolt file unchanged, which the remote manager converts on its first start,
 // and a store directory as the self-contained file exportStore makes of it,
 // which the remote manager restores on its first start. That file is made
-// beside dbFile and removed once uploaded.
+// beside dbFile and removed once uploaded; those a killed deploy left there are
+// removed first (see removeStaleExports).
 func uploadLocalDB(ctx context.Context, server *cloud.Server, dbFile, remote string) error {
 	info, err := os.Stat(dbFile)
 	if err != nil {
@@ -1267,18 +1273,118 @@ func uploadLocalDB(ctx context.Context, server *cloud.Server, dbFile, remote str
 		return uploadDBFile(ctx, server, dbFile, remote)
 	}
 
-	f, err := os.CreateTemp(filepath.Dir(dbFile), filepath.Base(dbFile)+".export-*")
+	removeStaleExports(ctx, dbFile)
+
+	f, err := createExportFile(dbFile)
 	if err != nil {
 		return err
 	}
 
+	// f stays open, so locked, until it has been uploaded and removed. Its
+	// Close error is ignored: the Sync below has already reported any write
+	// error, and f is only read after that.
+	defer f.Close()
 	defer os.Remove(f.Name())
 
-	if err = errors.Join(exportStore(dbFile, f), f.Close()); err != nil {
+	// A file system such as NFS may report a write error only on Sync or
+	// Close, so f is synced here, before it is uploaded, as it is not closed
+	// until afterwards.
+	if err = exportStore(dbFile, f); err == nil {
+		err = f.Sync()
+	}
+
+	if err != nil {
 		return fmt.Errorf("failed to export the local database %s: %w", dbFile, err)
 	}
 
 	return uploadDBFile(ctx, server, f.Name(), remote)
+}
+
+// removeStaleExports removes each export file beside dbFile (see
+// createExportFile) that no deploy holds, as a deploy killed while uploading
+// leaves it. One a running deploy is making is locked, so is left. It warns of
+// any it cannot remove, as they waste space but stop nothing.
+func removeStaleExports(ctx context.Context, dbFile string) {
+	dir, prefix := filepath.Dir(dbFile), filepath.Base(dbFile)+exportFileInfix
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		clog.Warn(ctx, "could not look for old export files", "db", dbFile, "err", err)
+
+		return
+	}
+
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) || !entry.Type().IsRegular() {
+			continue
+		}
+
+		if errr := removeUnlocked(filepath.Join(dir, entry.Name())); errr != nil {
+			clog.Warn(ctx, "could not remove old export file", "err", errr)
+		}
+	}
+}
+
+// removeUnlocked removes the file at path if no one holds a flock on it.
+func removeUnlocked(path string) error {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return os.Remove(path)
+}
+
+// createExportFile creates the file uploadLocalDB exports the store directory
+// at dbFile to, beside it, holding an exclusive flock on it until it is closed,
+// even by the process ending, so that removeStaleExports leaves it alone. A
+// file removed between being created and locked is made again.
+func createExportFile(dbFile string) (*os.File, error) {
+	for {
+		f, err := os.CreateTemp(filepath.Dir(dbFile), filepath.Base(dbFile)+exportFileInfix+"*")
+		if err != nil {
+			return nil, err
+		}
+
+		if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			return nil, errors.Join(err, f.Close(), os.Remove(f.Name()))
+		}
+
+		if stillNamed(f) {
+			return f, nil
+		}
+
+		if err = f.Close(); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// stillNamed reports whether f's name still names f.
+func stillNamed(f *os.File) bool {
+	open, err := f.Stat()
+	if err != nil {
+		return false
+	}
+
+	named, err := os.Stat(f.Name())
+
+	return err == nil && os.SameFile(open, named)
 }
 
 // bootstrapMountRemote fuse-mounts any configured remote filesystem on the
@@ -1538,12 +1644,10 @@ func moveLocalDBAsideForS3() string {
 // then is a store directory at dbFile set aside (see freeLocalDBForBackup) and
 // the file renamed into place, putting the directory back if that fails. A
 // kill between those two renames leaves no dbFile, but loses nothing: the
-// store directory is at dbFile + ".old" and the remote's at dbFile + ".sync".
-// Nothing recovers them yet, though: the next local start makes an empty store
-// or restores the older backup, and a later deploy and teardown replaces both
-// (see the 1f.11 incidental in .docs/customdb/phases/incidentals.md).
+// store directory is at dbFile + ".old" and the remote's at dbFile + ".sync",
+// which the next local manager start opens as dbFile (spec E2 order, step 2).
 func syncLocalDB(dbFile string, backup func(path string) error) error {
-	synced := dbFile + ".sync"
+	synced := dbFile + jobqueue.SyncedDBSuffix
 
 	if err := backup(synced); err != nil {
 		return err

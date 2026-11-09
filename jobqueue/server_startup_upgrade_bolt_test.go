@@ -58,6 +58,7 @@ func TestServeReportsPostUpgradeStartupUntilTokenReady(t *testing.T) {
 	Convey("Serve keeps a live startup-progress sidecar after a DB upgrade until the token is ready", t, func() {
 		ctx := context.Background()
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		withBoltStore(&serverConfig)
 		serverConfig.dontWipeDevDB = true
 
 		prepareDBNeedingStartupUpgrade(ctx, t, serverConfig)

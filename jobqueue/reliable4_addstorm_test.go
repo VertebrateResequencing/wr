@@ -250,6 +250,7 @@ func TestReliable4AddStorm(t *testing.T) {
 
 	ctx := context.Background()
 	config, serverConfig, addr, reqs, _ := jobqueueTestInit(false)
+	withBoltStore(&serverConfig)
 
 	work := asConfigureDB(t, &serverConfig, dbFile, backups)
 

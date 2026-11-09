@@ -74,7 +74,11 @@ import (
 
 const (
 	localSchedulerName = "local"
-	maxSpawnTime       = 240 * time.Second
+	// fastTestBackupEvery is configureFastTestBackups' backup interval: well
+	// inside the 5s a test waits for a write to reach the backup, and long
+	// enough that a server just started has made none.
+	fastTestBackupEvery = 500 * time.Millisecond
+	maxSpawnTime        = 240 * time.Second
 	// runnerStartWait bounds how long tests wait for a server-spawned runner
 	// subprocess to actually start its job (produce a start marker, reach
 	// JobStateRunning, etc). The server spawns runners with a short reserve
@@ -492,12 +496,53 @@ func waitForFileToDisappear(path string, maxWait time.Duration) error {
 	return fmt.Errorf("%w: expected %s to disappear", errFileStillExists, path)
 }
 
-func configureFastTestBackups(db *db) {
-	db.backupMu.Lock()
-	defer db.backupMu.Unlock()
+// downloadStoreBackup downloads the log store backup at dbBkFile, such as an
+// S3 url, a development manager made, into a new store directory at local,
+// replacing anything there.
+func downloadStoreBackup(dbBkFile, local string) error {
+	target, err := backupTargetAt(dbBkFile, internal.Development)
+	if err != nil {
+		return err
+	}
 
-	db.slowBackups = true
-	db.backupWait = 0
+	entries, err := target.list()
+	if err != nil {
+		return err
+	}
+
+	if err = os.RemoveAll(local); err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if err = target.download(entry.name, filepath.Join(local, entry.name)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// removeStoreBackup deletes the backup at dbBkFile a development manager made.
+func removeStoreBackup(dbBkFile string) error {
+	target, err := backupTargetAt(dbBkFile, internal.Development)
+	if err != nil {
+		return err
+	}
+
+	return target.removeAll()
+}
+
+// configureFastTestBackups has log stores opened from now until the Convey
+// block ends make an incremental backup every fastTestBackupEvery, instead of
+// every minimumTimeBetweenBackups, so a test sees a write reach the backup
+// promptly. Call it before the server opens its store: the backup ticker reads
+// the interval as it waits.
+func configureFastTestBackups() {
+	old := logBackupEvery.Load()
+	logBackupEvery.Store(int64(fastTestBackupEvery))
+
+	Reset(func() { logBackupEvery.Store(old) })
 }
 
 func captureTimingGlobals() func() {
@@ -4505,6 +4550,10 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(job.Exited, ShouldBeTrue)
 					So(job.Exitcode, ShouldEqual, 0)
 
+					// the store learns from the archive once folded (customdb
+					// spec D1), which a flush does.
+					So(server.inspector().flush(), ShouldBeNil)
+
 					cmd2 := "echo another high mem job"
 					jobs = append(jobs, &Job{Cmd: cmd2, Cwd: testCwd, ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
 					inserts, already, err = jq.Add(jobs, envVars, true)
@@ -6765,6 +6814,10 @@ func TestJobqueueModify(t *testing.T) {
 			job := reserve(rgroup, cmd)
 			execute(job, true, "a")
 
+			// the store learns from the archive once folded (customdb spec D1),
+			// which a flush does, so job b is added knowing what it learned.
+			So(server.inspector().flush(), ShouldBeNil)
+
 			cmd = "echo b"
 			addJobs = []*Job{{Cmd: cmd, Cwd: tmp, ReqGroup: "modified", Requirements: &jqs.Requirements{RAM: 300, Time: 10 * time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}, Override: uint8(0), Retries: uint8(0), RepGroup: "b"}}
 
@@ -7316,6 +7369,8 @@ func TestJobqueueProduction(t *testing.T) {
 			serverConfig.forceBackups = false
 		}()
 
+		configureFastTestBackups()
+
 		server, _, token, errs := serve(ctx, serverConfig)
 		So(errs, ShouldBeNil)
 
@@ -7381,8 +7436,6 @@ func TestJobqueueProduction(t *testing.T) {
 
 			// do this in 2 separate Add() calls to better test how backups
 			// work
-			configureFastTestBackups(server.boltDB())
-
 			var jobs []*Job
 
 			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
@@ -7428,6 +7481,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 				server.Stop(ctx, true)
 
+				So(os.RemoveAll(config.ManagerDBFile), ShouldBeNil)
 				err = os.Rename(manualBackup, config.ManagerDBFile)
 				So(err, ShouldBeNil)
 
@@ -7479,7 +7533,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(len(jobsByRepGroup), ShouldEqual, 2)
 
 				server.Stop(ctx, true)
-				os.Remove(config.ManagerDBFile)
+				os.RemoveAll(config.ManagerDBFile)
 				_, err = os.Stat(config.ManagerDBFile)
 				So(err, ShouldNotBeNil)
 				_, err = os.Stat(managerDBBkFile)
@@ -7505,7 +7559,8 @@ func TestJobqueueProduction(t *testing.T) {
 
 				server.Stop(ctx, true)
 
-				f, err := os.OpenFile(config.ManagerDBFile, os.O_TRUNC|os.O_RDWR, dbFilePermission)
+				So(os.RemoveAll(config.ManagerDBFile), ShouldBeNil)
+				f, err := os.OpenFile(config.ManagerDBFile, os.O_CREATE|os.O_TRUNC|os.O_RDWR, dbFilePermission)
 				So(err, ShouldBeNil)
 				_, err = f.WriteString("corrupt!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 				So(err, ShouldBeNil)
@@ -7576,8 +7631,6 @@ func TestJobqueueProduction(t *testing.T) {
 
 			defer disconnect(jq)
 
-			configureFastTestBackups(server.boltDB())
-
 			var jobs []*Job
 
 			jobs = append(jobs, &Job{Cmd: "echo 1", Cwd: testCwd, ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 10, Time: 1 * time.Second, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"})
@@ -7598,7 +7651,7 @@ func TestJobqueueProduction(t *testing.T) {
 					serverConfig.dontWipeDevDB = false
 				}()
 
-				errr := os.Remove(config.ManagerDBFile)
+				errr := os.RemoveAll(config.ManagerDBFile)
 				So(errr, ShouldBeNil)
 
 				server, _, token, errs = serve(ctx, serverConfig)
@@ -7618,7 +7671,7 @@ func TestJobqueueProduction(t *testing.T) {
 				So(deleted, ShouldEqual, 1)
 				So(err, ShouldBeNil)
 
-				errr = os.Remove(config.ManagerDBFile)
+				errr = os.RemoveAll(config.ManagerDBFile)
 				So(errr, ShouldBeNil)
 
 				server, _, token, errs = serve(ctx, serverConfig)
@@ -9200,11 +9253,8 @@ func TestJobqueueWithMounts(t *testing.T) {
 		s3BkDir := s3Path + "/" + filepath.Base(mountDir)
 		s3ServerConfig.DBFileBackup = fmt.Sprintf("s3://default@%s/db.bk", s3BkDir)
 		localBkPath := config.ManagerDBFile + ".s3backup_tmp"
-		s3BkPath := filepath.Join(s3BkDir, "db.bk.development")
-		s3BkPath, err := stripBucketFromS3Path(s3BkPath)
-		So(err, ShouldBeNil)
 
-		os.Remove(config.ManagerDBFile)
+		os.RemoveAll(config.ManagerDBFile)
 
 		s3ServerConfig.forceBackups = true
 		server, _, token, errs := serve(ctx, s3ServerConfig)
@@ -9214,13 +9264,12 @@ func TestJobqueueWithMounts(t *testing.T) {
 			// stop the server
 			server.Stop(ctx, true)
 
-			errd := server.boltDB().s3accessor.DeleteFile(s3BkPath)
-			if errd != nil {
+			if errd := removeStoreBackup(s3ServerConfig.DBFileBackup); errd != nil {
 				t.Logf("deleting s3 db backup failed: %s", errd)
 			}
 		}()
 
-		_, err = os.Stat(config.ManagerDBFile)
+		_, err := os.Stat(config.ManagerDBFile)
 		So(err, ShouldBeNil)
 		_, err = os.Stat(localBkPath)
 		So(err, ShouldNotBeNil)
@@ -9243,7 +9292,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			dlPath := filepath.Join(t.TempDir(), "db.bk")
 
 			So(pollUntilFor(s3BackupWait, func() bool {
-				if errd := server.boltDB().s3accessor.DownloadFile(s3BkPath, dlPath); errd != nil {
+				if errd := downloadStoreBackup(s3ServerConfig.DBFileBackup, dlPath); errd != nil {
 					return false
 				}
 
@@ -9278,7 +9327,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				So(len(jobsByRepGroup), ShouldEqual, 1)
 
 				server.Stop(ctx, true)
-				os.Remove(config.ManagerDBFile)
+				os.RemoveAll(config.ManagerDBFile)
 				_, err = os.Stat(config.ManagerDBFile)
 				So(err, ShouldNotBeNil)
 				_, err = os.Stat(localBkPath)
@@ -9294,11 +9343,11 @@ func TestJobqueueWithMounts(t *testing.T) {
 				_, err = os.Stat(localBkPath)
 				So(err, ShouldNotBeNil)
 
-				err = server.boltDB().s3accessor.DownloadFile(s3BkPath, localBkPath)
+				err = downloadStoreBackup(s3ServerConfig.DBFileBackup, localBkPath)
 				So(err, ShouldBeNil)
 				assertNonEmptyFile(localBkPath)
 				assertStoreFileLiveJobs(localBkPath, 1)
-				err = os.Remove(localBkPath)
+				err = os.RemoveAll(localBkPath)
 				So(err, ShouldBeNil)
 
 				jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)

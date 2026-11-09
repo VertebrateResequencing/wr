@@ -222,6 +222,10 @@ func (lc *learnChangeTest) archive(job *Job, peakRAM int) {
 	So(lc.runner.Archive(job, &JobEndState{
 		Exited: true, Exitcode: 0, PeakRAM: peakRAM, EndTime: time.Now(),
 	}), ShouldBeNil)
+
+	// the log store learns from an archive once its folder folds it (customdb
+	// spec D1), which a flush does.
+	So(lc.server.inspector().flush(), ShouldBeNil)
 }
 
 // learn reserves a job of group and archives it with peakRAM, so its ReqGroup
@@ -426,9 +430,11 @@ func TestNoHoldLearningAfterReady(t *testing.T) {
 		So(lc.runner.Release(run, &JobEndState{
 			Exited: true, Exitcode: 1, PeakRAM: learnChangePeakRAM, EndTime: time.Now(),
 		}, FailReasonRAM), ShouldBeNil)
+		So(lc.server.inspector().flush(), ShouldBeNil)
 
-		// the failure taught the ReqGroup 200, so the holder is of a ReqGroup
-		// with no stats, to keep the unlearned group
+		// the failure taught the ReqGroup 200 (once folded, which the flush
+		// does), so the holder is of a ReqGroup with no stats, to keep the
+		// unlearned group
 		holder := lc.jobOf(learnChangeNoStats, "holder", jobOverridePreferSystemReqs, learnChangeLimitOne)
 		learner := lc.job("learner", jobOverridePreferSystemReqs)
 		lc.add(holder, learner)

@@ -51,6 +51,7 @@ func TestResumeDuringFinalDrainStops(t *testing.T) {
 
 	Convey("Given a suspended job whose resume is made during the writer's final drain", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		withBoltStore(&serverConfig)
 		serverConfig.Timings.ItemTTR = time.Minute
 
 		server, _, token, err := serve(ctx, serverConfig)
@@ -162,6 +163,7 @@ func TestResumeAfterWriterStopsStops(t *testing.T) {
 
 	Convey("Given a suspended job whose resume is made after the manager began stopping", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		withBoltStore(&serverConfig)
 		serverConfig.Timings.ItemTTR = time.Minute
 
 		server, _, token, err := serve(ctx, serverConfig)

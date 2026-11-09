@@ -887,9 +887,9 @@ func TestStoreConvert(t *testing.T) {
 			}{
 				{"a complete record that cannot be decoded", bucketJobsComplete, convertNeverKey,
 					[]byte("not a job"), convertNeverKey},
-				{"a complete record whose key is not a job key", bucketJobsComplete, "not a job key", job,
+				{"a complete record whose key is not a job key", bucketJobsComplete, notAJobKey, job,
 					string(bucketJobsComplete) + " key"},
-				{"a live record whose key is not a job key", bucketJobsLive, "not a job key", job,
+				{"a live record whose key is not a job key", bucketJobsLive, notAJobKey, job,
 					string(bucketJobsLive) + " key"},
 				{"a limit of fewer than 8 bytes", bucketLGs, convertLimitGroup, []byte{0, 0, 3}, convertLimitGroup},
 				{"a limit of 7 bytes", bucketLGs, convertLimitGroup, make([]byte, limitGroupBytes-1), convertLimitGroup},

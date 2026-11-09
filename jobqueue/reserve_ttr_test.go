@@ -62,6 +62,7 @@ func TestReservationTTRStartsAtHandOut(t *testing.T) {
 
 	Convey("Given a manager with a short TTR whose database writer stalls during a reservation", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		withBoltStore(&serverConfig)
 		serverConfig.Timings.ItemTTR = reserveTTR
 
 		server, _, token, err := serve(ctx, serverConfig)

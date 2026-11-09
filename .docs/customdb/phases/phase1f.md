@@ -238,8 +238,8 @@ teardown killed between `syncLocalDB`'s renames
 ([incidentals.md](incidentals.md)).
 Depends on 1e.5 and 1f.1 to 1f.10.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.12: Stream `wr manager backup -p` to the client
 
@@ -254,7 +254,8 @@ store. Keep the file the client writes byte-identical to today's, keep
 E5's acceptance tests passing, and add a test that a backup larger than
 one chunk arrives complete and that the manager does not hold it whole.
 Resolve the 1f.3 review round 1 incidental on `Server.handleBackup`
-([incidentals.md](incidentals.md)).
+and the 1f.11 review round 3 incidental on a deploy after a teardown
+killed between `syncLocalDB`'s renames ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

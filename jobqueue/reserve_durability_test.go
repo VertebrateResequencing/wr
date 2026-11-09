@@ -119,7 +119,7 @@ func reserveDurabilityCrashAndRecover(ctx context.Context, t *testing.T, cmd str
 	server.Stop(ctx, true)
 	disconnect(jq)
 
-	So(os.WriteFile(serverConfig.DBFile, crashImage.Bytes(), 0o600), ShouldBeNil)
+	replaceDBWithImage(serverConfig.DBFile, crashImage.Bytes())
 
 	serverConfig.dontWipeDevDB = true
 	serverConfig.Timings.ItemTTR = ttrAfter

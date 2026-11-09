@@ -52,6 +52,7 @@ func TestArchiveStallDoesNotRerunJob(t *testing.T) {
 
 	Convey("Given a job whose archive is stalled behind a held write transaction", t, func() {
 		config, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		withBoltStore(&serverConfig)
 		serverConfig.Timings.ItemTTR = archiveStallTTR
 		serverConfig.Timings.TouchInterval = archiveStallTTR / 5
 

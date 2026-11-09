@@ -322,13 +322,6 @@ var jobChangeEncodedHook func()
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
 var jobExitSnapshotHook func(key string)
 
-// jobChangeAheadHook, when non-nil, is called with a job's key by
-// prepareJobChange once it has encoded the job's change ahead of it. It is nil
-// in production and exists so tests can change the job before the change is made.
-//
-//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
-var jobChangeAheadHook func(key string)
-
 // jobChangeAheadQueueingHook, when non-nil, is called with a job's key by
 // queueJobChangeAhead once it has the job's current encoding and before it
 // queues the write, with the job still write-locked. It is nil in production
@@ -1437,14 +1430,6 @@ func (db *db) copyBackup(path string) error {
 //
 //nolint:lll,gocognit,gocyclo,cyclop,funlen,maintidx,nestif // entry point: sequential fallible db open/recovery
 func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, forceBackups bool) (*db, string, error) {
-	// the manager is unreachable for the whole of this and the recovery phases
-	// that follow it, so each phase reports its own elapsed time at warn, where
-	// the default log level shows it and an operator sizing the startup window
-	// can see where the time went (spec E9). initDB's own cost is dominated by
-	// opening and mmapping the file, which at production's multi-GB size is the
-	// bulk of "process start to first log line".
-	initStarted := time.Now()
-
 	var backupsEnabled bool
 
 	var accessor s3Objects
@@ -1753,9 +1738,6 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, forceBacku
 	if backupsEnabled {
 		go dbstruct.backupTicker(ctx)
 	}
-
-	clog.Warn(ctx, "recovering: opened database", "db", dbFile,
-		"elapsed", time.Since(initStarted).Round(time.Millisecond))
 
 	return dbstruct, msg, err
 }
@@ -3021,10 +3003,6 @@ func (db *db) prepareJobChange(ctx context.Context, job *Job, change func(*Job))
 		clog.Error(ctx, "Database operation updateJobAfterChange failed due to Encode failure", "err", err)
 
 		return nil
-	}
-
-	if jobChangeAheadHook != nil {
-		jobChangeAheadHook(key)
 	}
 
 	return &jobChangeAhead{key: key, encoded: encoded, writeLocks: writeLocks, wgKey: wgKey}

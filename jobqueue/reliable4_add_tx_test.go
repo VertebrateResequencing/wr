@@ -65,7 +65,7 @@ func TestReliable4AddEnvNoRewrite(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a server", t, func() {
-		d := dgrStartServer(ctx)
+		d := dgrStartServer(ctx, withBoltStore)
 
 		defer d.stop(ctx)
 
@@ -102,7 +102,7 @@ func TestReliable4EnvMissNotCached(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a server", t, func() {
-		d := dgrStartServer(ctx)
+		d := dgrStartServer(ctx, withBoltStore)
 
 		defer d.stop(ctx)
 
@@ -147,7 +147,7 @@ func TestReliable4LimitGroupsNoWrite(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a server", t, func() {
-		d := dgrStartServer(ctx)
+		d := dgrStartServer(ctx, withBoltStore)
 
 		defer d.stop(ctx)
 
@@ -241,7 +241,7 @@ func TestReliable4AddOneWriteTx(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a server where every remaining Batch call commits alone", t, func() {
-		d := dgrStartServer(ctx)
+		d := dgrStartServer(ctx, withBoltStore)
 
 		defer d.stop(ctx)
 
@@ -358,7 +358,7 @@ func TestReliable4StoreBatchedNoEmptyBatch(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a server", t, func() {
-		d := dgrStartServer(ctx)
+		d := dgrStartServer(ctx, withBoltStore)
 
 		defer d.stop(ctx)
 

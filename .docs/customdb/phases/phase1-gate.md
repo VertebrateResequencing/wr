@@ -88,8 +88,13 @@ the injected kills as in the soak README), without `FIXTURE`. Pass when
 `soakgate.py`'s `missing` line has `absent=0`, `relburycheck.py` prints
 `problems: 0`, `soakgate.py --source wait` prints `nondurable source=wait
 inside=0 outside=0` with an `abandoned` line ending `ok` and `stalls` at
-least 1, and the `doubles` line has `outside=0`. Never replace the NFS wr
-binary while the soak's runners are live.
+least 1, and the `doubles` line has `outside=0`. Also time
+`wr status -l 1` just after each injected restart, while the restarted
+manager still has a large unfolded wal backlog, and report the times: the
+log store decodes each unfolded history entry in full on that path (the
+1f.11 incidental owned by 2b in [incidentals.md](incidentals.md)), and any
+time over 60s, the client request timeout floor, fails the gate. Never
+replace the NFS wr binary while the soak's runners are live.
 
 - [ ] implemented
 - [ ] reviewed

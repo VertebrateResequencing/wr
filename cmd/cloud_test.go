@@ -30,11 +30,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -60,6 +62,12 @@ const (
 
 	// cloudTestBackupPayload is what a test's teardown sync backup writes.
 	cloudTestBackupPayload = "remote backup"
+
+	// cloudTestE7Jobs jobs in cloudTestE7RepGroup are added to the store E7
+	// test 6 deploys, and cloudTestE7Complete of them are archived.
+	cloudTestE7Jobs     = 6
+	cloudTestE7Complete = 3
+	cloudTestE7RepGroup = "e7"
 
 	// ownerReadWriteExecute is the mode of a test's directories, and
 	// ownerReadExecute that of one a test cannot write.
@@ -265,6 +273,134 @@ func recordCloudUploads(t *testing.T) *[]cloudUpload {
 	}
 
 	return &uploads
+}
+
+// cloudTestStoredJobsSet are the commands of a manager's live and complete
+// jobs in cloudTestE7RepGroup, sorted.
+type cloudTestStoredJobsSet struct {
+	live, complete []string
+}
+
+// cloudTestStoredJobs returns the commands of jq's manager's live and complete
+// jobs in cloudTestE7RepGroup.
+func cloudTestStoredJobs(jq *jobqueue.Client) cloudTestStoredJobsSet {
+	all, err := jq.GetByRepGroup(cloudTestE7RepGroup, false, 0, "", false, false)
+	So(err, ShouldBeNil)
+
+	var set cloudTestStoredJobsSet
+
+	for _, job := range all {
+		if job.State == jobqueue.JobStateComplete {
+			set.complete = append(set.complete, job.Cmd)
+		} else {
+			set.live = append(set.live, job.Cmd)
+		}
+	}
+
+	slices.Sort(set.live)
+	slices.Sort(set.complete)
+
+	return set
+}
+
+// TestCloudDeployCarriesStoreToRemote covers spec E7 acceptance test 6 end to
+// end: the file the upload step makes, with the real ExportStore, of the store
+// a manager made, placed at a fresh production deployment's db, is restored by
+// that deployment's first manager start with all the source's jobs.
+func TestCloudDeployCarriesStoreToRemote(t *testing.T) {
+	ctx := context.Background()
+	oldConfig := config
+
+	t.Cleanup(func() { config = oldConfig })
+
+	Convey("Given a stopped manager's store with live and complete jobs", t, func() {
+		_, sourceConfig, addr, reqs, source, token := startTestServer(ctx, t, func(*jobqueue.ServerConfig) {})
+
+		stopped := false
+
+		Reset(func() {
+			if !stopped {
+				source.Stop(ctx, true)
+			}
+		})
+
+		jq, err := jobqueue.Connect(addr, sourceConfig.CAFile, sourceConfig.CertDomain, token, testConnectTimeout)
+		So(err, ShouldBeNil)
+
+		jobs := make([]*jobqueue.Job, 0, cloudTestE7Jobs)
+		for i := range cloudTestE7Jobs {
+			jobs = append(jobs, &jobqueue.Job{
+				Cmd: fmt.Sprintf("echo e7 %d", i), Cwd: t.TempDir(), ReqGroup: "e7", Requirements: reqs,
+				RepGroup: cloudTestE7RepGroup,
+			})
+		}
+
+		added, _, err := jq.Add(jobs, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, cloudTestE7Jobs)
+
+		for range cloudTestE7Complete {
+			archiveNextStatusJob(jq, time.Now())
+		}
+
+		want := cloudTestStoredJobs(jq)
+		So(want.live, ShouldHaveLength, cloudTestE7Jobs-cloudTestE7Complete)
+		So(want.complete, ShouldHaveLength, cloudTestE7Complete)
+
+		So(jq.Disconnect(), ShouldBeNil)
+		source.Stop(ctx, true)
+
+		stopped = true
+
+		Convey("the file the upload step sends, placed at a fresh production deployment's db, is restored "+
+			"there by its first manager start with the same jobs", func() {
+			config = &internal.Config{
+				Deployment:      internal.Production,
+				ManagerDBFile:   sourceConfig.DBFile,
+				ManagerDBBkFile: sourceConfig.DBFileBackup,
+			}
+			uploads := recordCloudUploads(t)
+
+			So(bootstrapDBBackupLocation(&cloud.Provider{}, cloud.NewServer("ubuntu", "192.0.2.10", ""), false),
+				ShouldEqual, defaultDBBackupName)
+			So(*uploads, ShouldHaveLength, 1)
+
+			remoteHome := t.TempDir()
+			remoteDB := filepath.Join(remoteHome, (*uploads)[0].remote)
+			So(os.MkdirAll(filepath.Dir(remoteDB), ownerReadWriteExecute), ShouldBeNil)
+			So(os.WriteFile(remoteDB, (*uploads)[0].content, ownerReadWrite), ShouldBeNil)
+
+			_, remoteConfig, remoteAddr, _ := statusTestServerConfig(t)
+			remoteConfig.DBFile = remoteDB
+			remoteConfig.DBFileBackup = remoteDB + "_bk"
+			remoteConfig.Deployment = internal.Production
+
+			remote, msg, remoteToken, err := jobqueue.Serve(ctx, remoteConfig)
+			So(err, ShouldBeNil)
+
+			Reset(func() { remote.Stop(ctx, true) })
+
+			So(msg, ShouldEqual, "restored db directory "+remoteDB+" from self-contained backup file")
+
+			select {
+			case <-remote.Serving():
+			case <-time.After(testServerPublishTimeout):
+				So("the remote manager did not start serving", ShouldBeEmpty)
+			}
+
+			info, err := os.Stat(remoteDB)
+			So(err, ShouldBeNil)
+			So(info.IsDir(), ShouldBeTrue)
+
+			rjq, err := jobqueue.Connect(remoteAddr, remoteConfig.CAFile, remoteConfig.CertDomain, remoteToken,
+				testConnectTimeout)
+			So(err, ShouldBeNil)
+
+			Reset(func() { _ = rjq.Disconnect() }) //nolint:errcheck
+
+			So(cloudTestStoredJobs(rjq), ShouldResemble, want)
+		})
+	})
 }
 
 func TestCleanupDeployForwardingProcesses(t *testing.T) {
@@ -563,6 +699,58 @@ func TestCloudDeployUploadsLocalDB(t *testing.T) {
 			soDirHoldsOnly(dir, "db")
 		})
 
+		Convey("with a store directory as its db file, the export file a killed deploy left beside it and "+
+			"the one a running deploy is making, the upload step removes only the killed deploy's", func() {
+			So(os.Mkdir(config.ManagerDBFile, ownerReadWriteExecute), ShouldBeNil)
+
+			stale := config.ManagerDBFile + ".export-1234"
+			So(os.WriteFile(stale, []byte(cloudTestExportPayload), ownerReadWrite), ShouldBeNil)
+
+			running, err := createExportFile(config.ManagerDBFile)
+			So(err, ShouldBeNil)
+
+			Reset(func() { _ = running.Close() })
+
+			recordExportStoreCalls(t, cloudTestExportPayload, nil)
+
+			So(uploadLocalDB(context.Background(), server, config.ManagerDBFile, remote), ShouldBeNil)
+			So(*uploads, ShouldHaveLength, 1)
+			So(fileIsMissing(stale), ShouldBeTrue)
+			soDirHoldsOnly(dir, "db", filepath.Base(running.Name()))
+
+			Convey("and once that deploy is killed, the next upload removes its file", func() {
+				So(running.Close(), ShouldBeNil)
+
+				So(uploadLocalDB(context.Background(), server, config.ManagerDBFile, remote), ShouldBeNil)
+				soDirHoldsOnly(dir, "db")
+			})
+		})
+
+		Convey("with a store directory as its db file, another deploy's upload step while this one uploads "+
+			"leaves this one's export file", func() {
+			So(os.Mkdir(config.ManagerDBFile, ownerReadWriteExecute), ShouldBeNil)
+
+			recordExportStoreCalls(t, cloudTestExportPayload, nil)
+
+			uploadDBFile = func(_ context.Context, _ *cloud.Server, local, _ string) error {
+				removeStaleExports(context.Background(), config.ManagerDBFile)
+
+				content, err := os.ReadFile(local)
+				if err != nil {
+					return err
+				}
+
+				*uploads = append(*uploads, cloudUpload{local: local, content: content})
+
+				return nil
+			}
+
+			So(uploadLocalDB(context.Background(), server, config.ManagerDBFile, remote), ShouldBeNil)
+			So(*uploads, ShouldHaveLength, 1)
+			So(string((*uploads)[0].content), ShouldEqual, cloudTestExportPayload)
+			soDirHoldsOnly(dir, "db")
+		})
+
 		Convey("with a store directory as its db file that ExportStore fails on, the upload step returns "+
 			"its error, uploading nothing and leaving no file behind", func() {
 			So(os.Mkdir(config.ManagerDBFile, ownerReadWriteExecute), ShouldBeNil)
@@ -571,6 +759,32 @@ func TestCloudDeployUploadsLocalDB(t *testing.T) {
 
 			So(uploadLocalDB(context.Background(), server, config.ManagerDBFile, remote), ShouldWrap,
 				errCloudTestExport)
+			So(*uploads, ShouldBeEmpty)
+			soDirHoldsOnly(dir, "db")
+		})
+
+		Convey("with a store directory as its db file whose export file cannot be synced once written, "+
+			"the upload step returns an export error, uploading nothing and leaving no file behind", func() {
+			So(os.Mkdir(config.ManagerDBFile, ownerReadWriteExecute), ShouldBeNil)
+
+			recordExportStoreCalls(t, "", nil)
+
+			// Closing the file the export wrote makes its sync fail, as a
+			// write error the file system only reports on sync would.
+			exportStore = func(_ string, w io.Writer) error {
+				if _, err := io.WriteString(w, cloudTestExportPayload); err != nil {
+					return err
+				}
+
+				f, ok := w.(*os.File)
+				So(ok, ShouldBeTrue)
+
+				return f.Close()
+			}
+
+			err := uploadLocalDB(context.Background(), server, config.ManagerDBFile, remote)
+			So(err, ShouldWrap, os.ErrClosed)
+			So(err.Error(), ShouldContainSubstring, "failed to export the local database")
 			So(*uploads, ShouldBeEmpty)
 			soDirHoldsOnly(dir, "db")
 		})

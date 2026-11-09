@@ -43,7 +43,7 @@ func TestReleaseDurabilityResendWaitsForWrite(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a job a runner has released after a failed attempt", t, func() {
-		server, jq, job := startedJobForResend(ctx, t, releaseResendRetries)
+		server, jq, job := startedJobForResend(ctx, t, releaseResendRetries, withBoltStore)
 
 		defer server.Stop(ctx, true)
 		defer disconnect(jq)
@@ -65,7 +65,7 @@ func TestReleaseDurabilityResendWaitsForWrite(t *testing.T) {
 	})
 
 	Convey("Given a job a runner has buried", t, func() {
-		server, jq, job := startedJobForResend(ctx, t, releaseDurabilityRetries)
+		server, jq, job := startedJobForResend(ctx, t, releaseDurabilityRetries, withBoltStore)
 
 		defer server.Stop(ctx, true)
 		defer disconnect(jq)

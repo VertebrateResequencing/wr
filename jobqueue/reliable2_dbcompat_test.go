@@ -65,6 +65,7 @@ func TestReliable2DBCompatOpen(t *testing.T) {
 
 	Convey("The reworked build opens a current-code-upgraded DB fixture without error or data loss", t, func() {
 		config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
+		withBoltStore(&serverConfig)
 
 		dbPath := compactedFixtureCopy(t, serverConfig.DBFile)
 		serverConfig.DBFile = dbPath
@@ -151,6 +152,7 @@ func TestReliable2RecoveryWindowReturnsRecovering(t *testing.T) {
 
 	Convey("A recovery-window j* call for a not-yet-restored key returns ErrRecovering not ErrBadJob", t, func() {
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		withBoltStore(&serverConfig)
 
 		dbPath := compactedFixtureCopy(t, serverConfig.DBFile)
 		serverConfig.DBFile = dbPath
@@ -198,6 +200,7 @@ func TestReliable2RecoveryRestoresIncompleteJobs(t *testing.T) {
 
 	Convey("Prior incomplete jobs are recovered and become reservable once the recovery window finishes", t, func() {
 		config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
+		withBoltStore(&serverConfig)
 
 		dbPath := compactedFixtureCopy(t, serverConfig.DBFile)
 		serverConfig.DBFile = dbPath

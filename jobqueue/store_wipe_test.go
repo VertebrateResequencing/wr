@@ -437,6 +437,17 @@ func TestStoreDevWipe(t *testing.T) {
 					}
 				})
 
+			Convey("with a self-contained backup holding a job at .sync, as a cloud teardown leaves it, an open "+
+				"removes it before creating an empty store", func() {
+				synced := cfg.dbFile + SyncedDBSuffix
+				plantSelfContainedBackup(ctx, kind, synced)
+
+				s := openStoreWiping(ctx, cfg)
+
+				soStoreHoldsNoJobs(s)
+				So(synced, shouldNotExist)
+			})
+
 			Convey("with its backup path in a directory that does not exist, an open succeeds", func() {
 				cfg.dbBkFile = filepath.Join(t.TempDir(), "absent", testStoreBackupFile)
 
@@ -797,6 +808,24 @@ func plantConversionLeftovers(ctx context.Context, t *testing.T, cfg storeConfig
 	So(os.Mkdir(converting, dbUnreadableDirMode), ShouldBeNil)
 	So(os.WriteFile(filepath.Join(converting, "SOURCE"), []byte(pre+"\n"), dbFilePermission), ShouldBeNil)
 	So(os.WriteFile(cfg.dbBkFile+storeWipeBoltPre, []byte("bbolt"), dbFilePermission), ShouldBeNil)
+}
+
+// plantSelfContainedBackup writes, at path, a self-contained backup of a new
+// store of kind holding one live job.
+func plantSelfContainedBackup(ctx context.Context, kind storeKind, path string) {
+	dir := filepath.Join(filepath.Dir(path), "planted")
+	So(os.Mkdir(dir, logStoreDirPerm), ShouldBeNil)
+
+	s := openStoreIn(ctx, kind, dir)
+
+	_, err := s.storeNewJobsGuarded(ctx, []*Job{testDBJob("echo planted", storeLockRepGroup)}, false, nil)
+	So(err, ShouldBeNil)
+
+	file, err := os.Create(path)
+	So(err, ShouldBeNil)
+	So(s.backup(file), ShouldBeNil)
+	So(file.Close(), ShouldBeNil)
+	So(s.close(ctx), ShouldBeNil)
 }
 
 // plantInWorkingDir makes a new temporary directory the working directory

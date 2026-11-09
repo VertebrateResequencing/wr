@@ -45,6 +45,7 @@ func TestReaddQueuedWritesNothing(t *testing.T) {
 
 	Convey("Given a manager with a ready job in the queue", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		withBoltStore(&serverConfig)
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)

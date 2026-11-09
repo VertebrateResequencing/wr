@@ -223,3 +223,14 @@ func (s *logStore) flush() error {
 
 	return s.foldNow()
 }
+
+// archivedDecodeCount returns how many complete jobs s has decoded in full from
+// its history.
+func (s *logStore) archivedDecodeCount() uint64 {
+	return s.archivedDecodes.Load()
+}
+
+// reqStatCache returns s's learned requirement cache.
+func (s *logStore) reqStatCache() *reqStatCache {
+	return s.reqStats
+}

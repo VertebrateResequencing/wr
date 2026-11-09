@@ -25,11 +25,13 @@
 
 package jobqueue
 
-// This file holds the learned-stat cache test that holds a bbolt write
-// transaction open, so is deleted with bbolt (spec F5).
+// This file holds the learned-stat cache tests that hold a bbolt write
+// transaction open or check the cache against the bbolt store's uncached
+// recommendations, so is deleted with bbolt (spec F5).
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -58,7 +60,7 @@ func TestReqStatCacheUncommittedStat(t *testing.T) {
 		"it commits", t, func() {
 		countReqStatLoads()
 
-		db := newReqStatTest(ctx, t).server.boltDB()
+		db := newReqStatTest(ctx, t, withBoltStore).server.boltDB()
 
 		db.refreshReqGroupRecs(reqStatTestGroup)
 
@@ -85,5 +87,63 @@ func TestReqStatCacheUncommittedStat(t *testing.T) {
 		_, current := db.cachedReqGroupRecs(reqStatTestGroup)
 		So(current, ShouldBeFalse)
 		So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
+	})
+}
+
+// TestReqStatCacheMatchesUncachedRecommendations proves the bbolt store's cached
+// learned values are those its uncached recommendations compute, including for
+// a ReqGroup whose name another's prefixes.
+func TestReqStatCacheMatchesUncachedRecommendations(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a bbolt server with learned stats", t, func() {
+		countReqStatLoads()
+
+		rt := newReqStatTest(ctx, t, withBoltStore)
+		server, db := rt.server, rt.server.boltDB()
+
+		Convey("its cached values equal the uncached recommendations", func() {
+			ram := make([]int, 0, 20)
+			for v := 100; v <= 2000; v += 100 {
+				ram = append(ram, v)
+			}
+
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, ram...)
+			seedReqGroupStats(server, FailReasonDisk, reqStatTestGroup, 1500, 2500)
+			seedReqGroupStats(server, FailReasonTime, reqStatTestGroup, 30, 90)
+
+			rec := db.refreshReqGroupRecs(reqStatTestGroup)
+
+			recm, err := db.recommendedReqGroupMemory(reqStatTestGroup)
+			So(err, ShouldBeNil)
+			So(rec.RAM, ShouldEqual, recm)
+			So(rec.RAM, ShouldEqual, 1500)
+
+			recd, err := db.recommendedReqGroupDisk(reqStatTestGroup)
+			So(err, ShouldBeNil)
+			So(recd, ShouldEqual, 2500)
+			So(rec.Disk, ShouldEqual, int(math.Ceil(float64(recd)/float64(mbPerGB))))
+
+			recs, err := db.recommendedReqGroupTime(reqStatTestGroup)
+			So(err, ShouldBeNil)
+			So(rec.Time, ShouldEqual, time.Duration(recs)*time.Second)
+		})
+
+		Convey("a ReqGroup's uncached recommendation excludes a ReqGroup whose name it prefixes", func() {
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestPrefixedGroup, 5000)
+
+			recm, err := db.recommendedReqGroupMemory(reqStatTestGroup)
+			So(err, ShouldBeNil)
+			So(recm, ShouldEqual, 300)
+
+			recm, err = db.recommendedReqGroupMemory(reqStatTestPrefixedGroup)
+			So(err, ShouldBeNil)
+			So(recm, ShouldEqual, 5000)
+		})
 	})
 }

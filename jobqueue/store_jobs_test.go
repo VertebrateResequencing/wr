@@ -177,6 +177,9 @@ func TestStoreResurrectedDependentSkipsCompleteJobs(t *testing.T) {
 	})
 }
 
+// notAJobKey is a key no job can have.
+const notAJobKey = "not a job key"
+
 func TestStoreCheckIfComplete(t *testing.T) {
 	ctx := context.Background()
 
@@ -202,13 +205,24 @@ func TestStoreCheckIfComplete(t *testing.T) {
 			})
 
 			Convey("a key no job can have is neither complete nor live", func() {
-				complete, errc := s.checkIfComplete("not a job key")
+				complete, errc := s.checkIfComplete(notAJobKey)
 				So(errc, ShouldBeNil)
 				So(complete, ShouldBeFalse)
 
-				live, errl := s.checkIfLive("not a job key")
+				live, errl := s.checkIfLive(notAJobKey)
 				So(errl, ShouldBeNil)
 				So(live, ShouldBeFalse)
+			})
+
+			Convey("the other lookups that take a client's key skip a key no job can have", func() {
+				jobs, errr := s.retrieveCompleteJobsByKeys([]string{notAJobKey, job.Key()})
+				So(errr, ShouldBeNil)
+				So(jobs, ShouldHaveLength, 1)
+				So(jobs[0].Key(), ShouldEqual, job.Key())
+
+				stdo, stde := s.retrieveJobStd(ctx, notAJobKey)
+				So(stdo, ShouldBeEmpty)
+				So(stde, ShouldBeEmpty)
 			})
 		})
 	})
@@ -857,9 +871,12 @@ func TestStoreJobStatsCorruptDurationGuard(t *testing.T) {
 }
 
 // storeLearnedReqs returns the requirements s has learned for reqGroup from every
-// stat it has committed, loading them if they are not current. It waits out
-// any refresh interval s has.
+// stat it has committed, loading them if they are not current. It flushes s
+// first, which on the log store folds, as the log store learns only from what
+// it has folded (customdb spec D1). It waits out any refresh interval s has.
 func storeLearnedReqs(s store, reqGroup string) *jqs.Requirements {
+	So(inspectorOf(s).flush(), ShouldBeNil)
+
 	var rec *jqs.Requirements
 
 	So(pollUntil(func() bool {

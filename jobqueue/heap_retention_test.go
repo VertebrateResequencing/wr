@@ -107,6 +107,11 @@ func TestServerArchivedJobsLeaveTheHeap(t *testing.T) {
 
 				So(server.q.Stats().Items, ShouldEqual, 0)
 
+				// the log store keeps an archived job in its history overlay until
+				// its folder folds it (customdb spec D1), which a flush does, so
+				// what is measured is what stays once archives are folded.
+				So(server.inspector().flush(), ShouldBeNil)
+
 				heaps = append(heaps, hrHeapInuse())
 			}
 

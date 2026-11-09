@@ -694,9 +694,11 @@ func (r *historyRead) folded(k logKey) []byte {
 }
 
 // job returns k's history entry's job, from the overlay, else history.bolt,
-// or nil if it has none.
+// or nil if it has none, counting each it decodes in s.archivedDecodes.
 func (r *historyRead) job(k logKey) (*Job, error) {
 	if h, ok := r.overlay[k]; ok {
+		r.s.archivedDecodes.Add(1)
+
 		return r.s.decodeJob(h.spec, h.complete, logRecComplete)
 	}
 
@@ -704,6 +706,8 @@ func (r *historyRead) job(k logKey) (*Job, error) {
 	if len(encoded) == 0 {
 		return nil, nil //nolint:nilnil // no history entry is not an error
 	}
+
+	r.s.archivedDecodes.Add(1)
 
 	return decodeStoredJob(encoded, r.s.ch)
 }

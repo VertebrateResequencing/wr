@@ -305,6 +305,7 @@ func TestReliable4RecoveryDependencyTxCost(t *testing.T) {
 
 	Convey("Given a stopped server whose database holds ready, dependent and waiting jobs", t, func() {
 		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+		withBoltStore(&serverConfig)
 
 		beforeRestart := depTxStoppedServer(ctx, config, serverConfig, addr, standardReqs, clientConnectTime)
 

@@ -61,6 +61,13 @@ func openBoltFileInspector(path string) (storeInspector, func() error, error) {
 	return &db{bolt: boltdb, ch: new(codec.BincHandle)}, boltdb.Close, nil
 }
 
+// withBoltStore makes a test server open the bbolt store, for the tests in
+// boltOnlyTests that serve a manager and reach its bbolt machinery (through
+// boltDB(), its writer or its file), now that the log store is the default.
+func withBoltStore(c *ServerConfig) {
+	c.storeKind = storeKindBolt
+}
+
 // inspectBuckets returns the buckets that hold records of kind.
 func inspectBuckets(kind recordKind) ([][]byte, error) {
 	switch kind {
@@ -220,4 +227,14 @@ func (db *db) flush() error {
 	case <-time.After(inspectFlushWait):
 		return fmt.Errorf("%w after %s", errInspectFlushTimeout, inspectFlushWait)
 	}
+}
+
+// archivedDecodeCount returns how many archived jobs db has decoded in full.
+func (db *db) archivedDecodeCount() uint64 {
+	return db.archivedDecodes.Load()
+}
+
+// reqStatCache returns db's learned requirement cache.
+func (db *db) reqStatCache() *reqStatCache {
+	return db.reqStats
 }

@@ -28,9 +28,13 @@ package jobqueue
 import (
 	"context"
 	"os"
+	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -103,6 +107,24 @@ func serverJobMeets(server *Server, key string, cond func(*Job) bool) bool {
 	return cond(job)
 }
 
+// failArmedWALSyncs installs, for the rest of the Convey block, a wal sync hook
+// that fails each sync of a log store's segment with EIO while the returned
+// flag is set, as a failing disk would, so the writes in that batch fail. Call
+// it before the server opens its store: a wal writer copies the hook when made.
+func failArmedWALSyncs() *atomic.Bool {
+	var armed atomic.Bool
+
+	Reset(wal.SetTestSyncHook(func(path string) error {
+		if armed.Load() && strings.HasSuffix(path, walFileExt) {
+			return syscall.EIO
+		}
+
+		return nil
+	}))
+
+	return &armed
+}
+
 // TestKillLostRunLeavesPendingArchive proves that neither confirming a lost run
 // dead nor a user's kill releases the job while a successful completion of it is
 // being archived: the command has exited 0, so releasing it would run it again.
@@ -117,6 +139,8 @@ func TestKillLostRunLeavesPendingArchive(t *testing.T) {
 
 	Convey("Given a reserved job that the manager has declared lost", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+
+		failSyncs := failArmedWALSyncs()
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
@@ -188,14 +212,14 @@ func TestKillLostRunLeavesPendingArchive(t *testing.T) {
 			job.StartTime = time.Now()
 			job.Unlock()
 
-			archiveTxObserver = func(_ int, _ []byte) { panic("archive stall write failure test") }
+			failSyncs.Store(true)
 
 			_, srerr, _ := server.handleArchive(ctx, &clientRequest{
 				Method: "jarchive", Keys: []string{reserved.Key()}, ClientID: jq.clientid,
 				JobEndState: &JobEndState{Exited: true, EndTime: time.Now()},
 			})
 
-			archiveTxObserver = nil
+			failSyncs.Store(false)
 
 			So(srerr, ShouldEqual, ErrDBError)
 			So(item.Stats().State, ShouldEqual, queue.ItemStateRun)

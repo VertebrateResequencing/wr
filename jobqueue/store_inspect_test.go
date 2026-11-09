@@ -68,8 +68,10 @@ var boltOnlyTests = []string{ //nolint:gochecknoglobals
 	// writers and the transactions they make.
 	"archive_before_start_bolt_test.go",
 	"archive_stall_bolt_test.go",
+	"crash_mid_add_guard_bolt_test.go",
 	"db_bench_test.go",
 	"depgranularity_txcost_bolt_test.go",
+	"kick_order_bolt_test.go",
 	"nohold_write_turns_bench_test.go",
 	"nohold_write_turns_test.go",
 	"readd_queued_bolt_test.go",
@@ -348,8 +350,8 @@ func TestStoreInspector(t *testing.T) {
 }
 
 // forEachStore runs fn once for the store kind named by the WR_TEST_STORE env
-// var ("bolt", the default until item 1f.11 switches it to "log"), or for every
-// kind when it is "all". An unknown kind fails the test.
+// var ("log", the default, or "bolt"), or for every kind when it is "all". An
+// unknown kind fails the test.
 func forEachStore(t *testing.T, fn func(kind storeKind)) {
 	t.Helper()
 
@@ -363,12 +365,12 @@ func testStoreKinds(t *testing.T) []storeKind {
 	t.Helper()
 
 	switch name := os.Getenv(testStoreEnv); name {
-	case "", "bolt":
-		return []storeKind{storeKindBolt}
-	case "log":
+	case "", "log":
 		return []storeKind{storeKindLog}
+	case "bolt":
+		return []storeKind{storeKindBolt}
 	case "all":
-		return []storeKind{storeKindBolt, storeKindLog}
+		return []storeKind{storeKindLog, storeKindBolt}
 	default:
 		t.Fatalf("%s=%q: want bolt, log or all", testStoreEnv, name)
 	}
@@ -649,7 +651,9 @@ func rewriteStoredLiveJob(s *Server, key string, change func(*Job)) error {
 
 // seedArchivedJobs gives config's database an archived history: it opens the
 // store there, adds jobs, calls afterAdd (if not nil) to change any of them,
-// archives each of them as it then is, and closes the store.
+// archives each of them as it then is, folds them into the log store's history
+// as its folder would soon after, so the history is an old one, and closes the
+// store.
 func seedArchivedJobs(ctx context.Context, config ServerConfig, jobs []*Job, afterAdd func()) {
 	s, _, err := openStore(ctx, storeConfig{
 		dbFile: config.DBFile, dbBkFile: config.DBFileBackup, deployment: internal.Development,
@@ -664,6 +668,11 @@ func seedArchivedJobs(ctx context.Context, config ServerConfig, jobs []*Job, aft
 	}
 
 	So(archiveJobsInStore(s, jobs), ShouldBeNil)
+
+	if folder, ok := s.(interface{ foldNow() error }); ok {
+		So(folder.foldNow(), ShouldBeNil)
+	}
+
 	So(s.close(ctx), ShouldBeNil)
 }
 
@@ -718,4 +727,21 @@ func testDBArchivedJob(cmd, repGroup string, endTime time.Time) *Job {
 	job.CPUtime = time.Second
 
 	return job
+}
+
+// archivedDecodeCounter is a store that counts the complete jobs it decodes in
+// full from its history.
+type archivedDecodeCounter interface {
+	archivedDecodeCount() uint64
+}
+
+// archivedDecodeCount returns how many complete jobs s's store has decoded in
+// full from its history.
+func (s *Server) archivedDecodeCount() uint64 {
+	counter, ok := s.db.(archivedDecodeCounter)
+	if !ok {
+		panic(fmt.Sprintf("store %T does not count its archived decodes", s.db))
+	}
+
+	return counter.archivedDecodeCount()
 }

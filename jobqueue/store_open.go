@@ -47,6 +47,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 )
 
@@ -90,6 +91,12 @@ const (
 	// wrote it.
 	storeBoltPreInfix = ".bolt-pre-"
 )
+
+// SyncedDBSuffix follows a db file's path in the name of the file a cloud
+// teardown backs the remote manager's database up to, before renaming it to the
+// db file. A manager that finds no db file but this file opens it as the db
+// file, as a teardown killed between those renames leaves it.
+const SyncedDBSuffix = ".sync"
 
 const (
 	// storeTarMagicOffset and storeTarMagic say where a tar header, and so a
@@ -813,7 +820,7 @@ func openLogStoreInOrder(ctx context.Context, cfg storeConfig, lock *storeLock) 
 
 // openLogStoreAt is openLogStoreInOrder without the lock.
 func openLogStoreAt(ctx context.Context, cfg storeConfig) (*logStore, string, error) {
-	if err := undoRestoreLeftovers(cfg.dbFile); err != nil {
+	if err := undoRestoreLeftovers(ctx, cfg.dbFile); err != nil {
 		return nil, "", unreadableOr(err, cfg.dbFile)
 	}
 
@@ -832,20 +839,27 @@ func openLogStoreAt(ctx context.Context, cfg storeConfig) (*logStore, string, er
 // undoRestoreLeftovers puts back what a restore interrupted between its two
 // renames set aside (spec E2 order, step 2): with no dbFile, a dbFile +
 // ".corrupt" is renamed back to dbFile, durably, as it may be the only copy of
-// the data, such as a self-contained backup restored in place. Then it removes
-// any dbFile + ".restoring", and any ".corrupt" beside a store directory, the
-// restored store a restore's rename to dbFile leaves, so the restore, if still
-// needed, runs again from the original dbFile. A ".corrupt" beside a dbFile
-// that is not a directory was not left by a restore, so it returns
-// errCorruptBesideDBFile, removing nothing.
-func undoRestoreLeftovers(dbFile string) error {
+// the data, such as a self-contained backup restored in place. With no dbFile
+// and no ".corrupt", a dbFile + ".sync" is renamed to dbFile the same way: it
+// is the remote database a cloud teardown killed between its renames left
+// (spec E7), and only a whole backup is ever renamed to that name. Then it
+// removes any dbFile + ".restoring", and any ".corrupt" beside a store
+// directory, the restored store a restore's rename to dbFile leaves, so the
+// restore, if still needed, runs again from the original dbFile. A ".corrupt"
+// beside a dbFile that is not a directory was not left by a restore, so it
+// returns errCorruptBesideDBFile, removing nothing. A ".sync" put back is
+// logged, so a stale one used in place of dbBkFile can be seen.
+func undoRestoreLeftovers(ctx context.Context, dbFile string) error {
 	corrupt := dbFile + storeCorruptSuffix
 
 	info, err := os.Lstat(dbFile)
 
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		err = putBack(corrupt, dbFile)
+		_, err = putBack(corrupt, dbFile)
+		if err == nil {
+			err = putBackSynced(ctx, dbFile)
+		}
 	case err == nil && !info.IsDir():
 		err = refuseCorruptBeside(dbFile, corrupt)
 	}
@@ -857,18 +871,42 @@ func undoRestoreLeftovers(dbFile string) error {
 	return errors.Join(os.RemoveAll(dbFile+storeRestoringSuffix), os.RemoveAll(corrupt))
 }
 
-// putBack renames corrupt, if it is there, to dbFile, durably.
-func putBack(corrupt, dbFile string) error {
-	err := os.Rename(corrupt, dbFile)
+// putBack renames setAside, if it is there and dbFile is not, to dbFile,
+// durably, saying if it did.
+func putBack(setAside, dbFile string) (bool, error) {
+	_, err := os.Lstat(dbFile)
+	if err == nil {
+		return false, nil
+	}
+
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+
+	err = os.Rename(setAside, dbFile)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	return syncDir(filepath.Dir(dbFile))
+	return true, syncDir(filepath.Dir(dbFile))
+}
+
+// putBackSynced puts back the dbFile + ".sync" a cloud teardown left (see
+// putBack), logging a warning if it did.
+func putBackSynced(ctx context.Context, dbFile string) error {
+	synced := dbFile + SyncedDBSuffix
+
+	moved, err := putBack(synced, dbFile)
+	if moved {
+		clog.Warn(ctx, "recovering: recovered the database from an interrupted teardown's .sync file",
+			"db", dbFile, "sync", synced)
+	}
+
+	return err
 }
 
 // refuseCorruptBeside returns errCorruptBesideDBFile, naming dbFile and
@@ -890,15 +928,18 @@ func refuseCorruptBeside(dbFile, corrupt string) error {
 // wipeDevStore, if cfg asks for a development wipe, removes everything the DB
 // at cfg.dbFile owns, so that a development manager starts from an empty DB
 // (spec E3): dbFile, file or directory, the directories a conversion or
-// restore left beside it, the bbolt files a conversion kept for rollback, and
-// the backup at cfg.dbBkFile (see wipeDevBackup). The ".upgrade" sidecar is
-// left, as is the ".lock" file, which the caller holds.
+// restore left beside it, the ".sync" file a cloud teardown left beside it
+// (which an open would otherwise put back as dbFile), the bbolt files a
+// conversion kept for rollback, and the backup at cfg.dbBkFile (see
+// wipeDevBackup). The ".upgrade" sidecar is left, as is the ".lock" file,
+// which the caller holds.
 func wipeDevStore(cfg storeConfig) error {
 	if !cfg.wipeDevDB || cfg.deployment != internal.Development {
 		return nil
 	}
 
-	err := removeOwned(cfg.dbFile, storeConvertingSuffix, storeRestoringSuffix, storeCorruptSuffix)
+	err := removeOwned(cfg.dbFile, storeConvertingSuffix, storeRestoringSuffix, storeCorruptSuffix,
+		SyncedDBSuffix)
 	if err != nil {
 		return fmt.Errorf("wipe development db %s: %w", cfg.dbFile, err)
 	}

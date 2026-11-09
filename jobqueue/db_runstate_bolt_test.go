@@ -1014,7 +1014,7 @@ func TestReserveAndStartWriteRunState(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a runner's manager with a job whose Cmd is 10,000 bytes, added and its add committed", t, func() {
-		f := newMovedOnFixture(ctx, t, serverRC)
+		f := newMovedOnFixture(ctx, t, serverRC, withBoltStore)
 		defer f.stop(ctx)
 
 		cmd := restFormTrue + " " + strings.Repeat("x", runStateBigCmdBytes)

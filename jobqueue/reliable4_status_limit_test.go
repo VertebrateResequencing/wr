@@ -34,9 +34,9 @@ package jobqueue
 //
 // Two things are pinned here, and they matter equally:
 //
-//  1. the number of FULL archived decodes (db.archivedDecodes, the INERT counter
-//     5c75a15 added) is O(limit), not O(history), across the WHOLE multi-RepGroup
-//     -z loop rather than per RepGroup; and
+//  1. the number of FULL archived decodes (the store's archivedDecodeCount, the
+//     INERT counter 5c75a15 added) is O(limit), not O(history), across the WHOLE
+//     multi-RepGroup -z loop rather than per RepGroup; and
 //  2. the jobs `wr status` returns are byte-for-byte what it returned before -
 //     the same jobs, in the same order, carrying the same Similar counts - since
 //     this is a "stop materialising what you were always going to discard" fix
@@ -118,7 +118,7 @@ func TestReliable4StatusLimitPushdown(t *testing.T) {
 		So(waitUntilRecovered(server), ShouldBeTrue)
 
 		decodes := func() uint64 {
-			return server.boltDB().archivedDecodes.Load()
+			return server.archivedDecodeCount()
 		}
 
 		// the reference: the unlimited fetch this fix deliberately leaves alone,
@@ -498,7 +498,7 @@ func TestReliable4StatusLimitMixedHistory(t *testing.T) {
 		So(waitUntilRecovered(server), ShouldBeTrue)
 
 		decodes := func() uint64 {
-			return server.boltDB().archivedDecodes.Load()
+			return server.archivedDecodeCount()
 		}
 
 		reference, refSrerr, _ := server.getJobsByRepGroup(ctx, statusLimitOpts(mixedRepGroup,

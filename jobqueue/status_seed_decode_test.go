@@ -29,7 +29,7 @@ package jobqueue
 // decode every live RepGroup's archived history just to count it. The seed only
 // shows how many complete jobs each RepGroup has, which the count-only
 // retrieveCompleteJobStatusByRepGroup answers from keys alone. The cost is
-// asserted as a count of full archived decodes (db.archivedDecodes), not as a
+// asserted as a count of full archived decodes (archivedDecodeCount), not as a
 // timing bound.
 
 import (
@@ -78,12 +78,12 @@ func TestStatusSeedCountsWithoutDecodingHistory(t *testing.T) {
 		Convey("opening the status page seeds its counts without decoding that history", func() {
 			recorder := dialStatusWS(ctx, t, server, token)
 
-			before := server.boltDB().archivedDecodes.Load()
+			before := server.archivedDecodeCount()
 
 			So(recorder.ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
 			recorder.waitQuiet()
 
-			decodes := server.boltDB().archivedDecodes.Load() - before
+			decodes := server.archivedDecodeCount() - before
 
 			msgs := recorder.snapshot()
 			begins, ends, _ := seedBoundaries(msgs)

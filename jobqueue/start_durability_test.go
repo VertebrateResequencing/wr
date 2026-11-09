@@ -82,6 +82,7 @@ func TestStartDurability(t *testing.T) {
 
 	Convey("Given a manager that acknowledged a job's start with the start write held off disk", t, func() {
 		config, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		withBoltStore(&serverConfig)
 
 		dir := t.TempDir()
 		marker := filepath.Join(dir, "runs")

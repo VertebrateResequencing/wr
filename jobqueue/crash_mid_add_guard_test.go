@@ -27,24 +27,24 @@ package jobqueue
 
 // This file covers item 12 of .docs/bugfixes/260930-dep-group-rerun-gaps.md:
 // an add's write looks up only the dependents whose archive may have taken them
-// out of the live bucket (see rerunGuard.atRiskKeys), so it must still find one
+// out of the live jobs (see rerunGuard.atRiskKeys), so it must still find one
 // whose archive committed after the add read it but before the add guarded it,
-// whether or not the archive has yet removed its queue item, and one whose
-// archive's transaction was open when the add started.
+// whether or not the archive has yet removed its queue item, while an archive
+// that commits after the add's write still takes a job that is not one of the
+// add's dependents out of the live jobs. Its bbolt-only case, an archive whose
+// transaction was open when the add started, is in
+// crash_mid_add_guard_bolt_test.go.
 
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
-
-// cmgHoldLimit bounds how long an archive's transaction is held open for an add
-// to read its dependents, so a test that has gone wrong fails rather than hangs.
-const cmgHoldLimit = 30 * time.Second
 
 // TestRerunGuardKeepsOnlyDependentsLive proves an archive that commits after an
 // add's write, while the add guards the live dependents it read, still takes a
@@ -106,30 +106,34 @@ func TestCrashMidAddArchivedBeforeGuard(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("Given a running job that depends on a dep group an add is adding a member to", t, func() {
-		d, jq, waiter := rdrRunningWaiter(ctx)
+	forEachStore(t, func(kind storeKind) {
+		Convey(fmt.Sprintf("Given a running job on a %s store that depends on a dep group an add is adding a "+
+			"member to", storeKindName(kind)), t, func() {
+			d, jq, waiter := rdrRunningWaiter(ctx, func(c *ServerConfig) { c.storeKind = kind })
 
-		defer d.stop(ctx)
-		defer disconnect(jq)
+			defer d.stop(ctx)
+			defer disconnect(jq)
 
-		defer func() {
-			dependentsGuardHook, dependencyUpdatesHook, archiveCommittedHook = nil, nil, nil
-		}()
+			defer func() {
+				dependentsGuardHook, dependencyUpdatesHook, archiveCommittedHook = nil, nil, nil
+			}()
 
-		second := dgaMemberJob(d, rdrGroup, rdrSecondName)
+			second := dgaMemberJob(d, rdrGroup, rdrSecondName)
 
-		for _, itemRemoved := range []bool{true, false} {
-			Convey("if its archive commits before the add guards it, "+cmgItemWhen(itemRemoved)+
-				", and the manager crashes before the add replies, it waits on the new member, then runs again", func() {
-				client := cmgAddArchivedBeforeGuardAndCrash(ctx, d, jq, waiter, second, itemRemoved)
-				defer disconnect(client)
+			for _, itemRemoved := range []bool{true, false} {
+				Convey("if its archive commits before the add guards it, "+cmgItemWhen(itemRemoved)+
+					", and the manager crashes before the add replies, it waits on the new member, then runs again",
+					func() {
+						client := cmgAddArchivedBeforeGuardAndCrash(ctx, d, jq, waiter, second, itemRemoved)
+						defer disconnect(client)
 
-				rdrSoCompleteRecorded(d, waiter.Key())
-				So(cmrJobState(client, second), ShouldEqual, JobStateReady)
+						rdrSoCompleteRecorded(d, waiter.Key())
+						So(cmrJobState(client, second), ShouldEqual, JobStateReady)
 
-				cmrSoRerunsAfterSecond(ctx, d, client, waiter, second)
-			})
-		}
+						cmrSoRerunsAfterSecond(ctx, d, client, waiter, second)
+					})
+			}
+		})
 	})
 }
 
@@ -208,108 +212,6 @@ func cmgAddArchivedBeforeGuardAndCrash(ctx context.Context, d *dgrServer, jq *Cl
 	So(backupErr, ShouldBeNil)
 
 	archiveCommittedHook = nil
-
-	cmrCrashTo(ctx, d, crashImage)
-
-	return d.connect()
-}
-
-// TestCrashMidAddArchiveOpenAtStart proves a dependent whose archive's
-// transaction had looked for adds in flight before an add to its dep group
-// started, and commits after the add read it, with the manager crashing after
-// the add's write and before its reply, is re-run after the new member once the
-// manager is back.
-func TestCrashMidAddArchiveOpenAtStart(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("Given a running job that depends on a dep group an add is adding a member to", t, func() {
-		d, jq, waiter := rdrRunningWaiter(ctx)
-
-		defer d.stop(ctx)
-		defer disconnect(jq)
-
-		defer func() {
-			dependentsGuardHook, dependencyUpdatesHook, archiveGuardsSeenHook = nil, nil, nil
-		}()
-
-		second := dgaMemberJob(d, rdrGroup, rdrSecondName)
-
-		Convey("if its archive's transaction is open when the add starts and commits after the add read it, "+
-			"and the manager crashes before the add replies, it waits on the new member, then runs again", func() {
-			client := cmgAddDuringOpenArchiveAndCrash(ctx, d, jq, waiter, second)
-			defer disconnect(client)
-
-			rdrSoCompleteRecorded(d, waiter.Key())
-			So(cmrJobState(client, second), ShouldEqual, JobStateReady)
-
-			cmrSoRerunsAfterSecond(ctx, d, client, waiter, second)
-		})
-	})
-}
-
-// cmgAddDuringOpenArchiveAndCrash has the running waiter's runner archive it,
-// holding the archive's transaction open once it has looked for adds in flight
-// while jq adds second, until the add has read its dependents. It then replaces
-// the manager with one recovering the database as committed after the add's
-// write, but before the add went on to handle the waiter, and returns a client
-// of the new manager.
-func cmgAddDuringOpenArchiveAndCrash(ctx context.Context, d *dgrServer, jq *Client, waiter, second *Job) *Client {
-	runner := rdrReconnect(d, jq)
-	defer disconnect(runner)
-
-	seen := make(chan struct{})
-	read := make(chan struct{})
-
-	var heldUntilRead bool
-
-	archiveGuardsSeenHook = func(key []byte) {
-		if string(key) != waiter.Key() {
-			return
-		}
-
-		close(seen)
-
-		select {
-		case <-read:
-			heldUntilRead = true
-		case <-time.After(cmgHoldLimit):
-		}
-	}
-
-	archived := make(chan error, 1)
-
-	go func() {
-		archived <- runner.Archive(waiter, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()})
-	}()
-
-	<-seen
-
-	dependentsGuardHook = func() {
-		dependentsGuardHook = nil
-
-		close(read)
-	}
-
-	crashImage := &bytes.Buffer{}
-
-	var backupErr error
-
-	dependencyUpdatesHook = func() {
-		dependencyUpdatesHook = nil
-		backupErr = d.server.BackupDB(crashImage)
-	}
-
-	_, _, erra := jq.Add([]*Job{second}, envVars, true)
-	So(erra, ShouldBeNil)
-	So(<-archived, ShouldBeNil)
-	So(heldUntilRead, ShouldBeTrue)
-	So(backupErr, ShouldBeNil)
-
-	archiveGuardsSeenHook = nil
 
 	cmrCrashTo(ctx, d, crashImage)
 

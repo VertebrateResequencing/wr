@@ -38,7 +38,7 @@ called ready, or explicitly deferred with the owner.
   and `openStoreFileInspector` go through the store, and A2 test 4
   (`TestBoltOnlyTests`) type-checks the package with every listed file
   emptied. `boltDB()` and `archivedDecodes` were never in listed files.
-- [ ] (from 0b.1) Unlisted tests reach the bbolt store through
+- [x] (from 0b.1) Unlisted tests reach the bbolt store through
   `server.boltDB()`, which panics once 1f.11 makes the log store the
   default, so they fail at 1f.11, not at F5. 0b.1 ported the plain store
   inspection ones (`crash_mid_add_guard_test.go`,
@@ -69,6 +69,29 @@ called ready, or explicitly deferred with the owner.
   `storeKindLog` first); a first run with it made saw `boltDB()` panics in
   `jobqueue_test.go` (`configureFastTestBackups`) and
   `reliable4_add_tx_test.go`, before the suite stopped.
+  Done in 1f.11: listed tests that serve a manager are pinned to bbolt
+  with `withBoltStore` (`store_bolt_inspect_test.go`).
+  `configureFastTestBackups` now shortens the log store's backup interval
+  before `TestJobqueueProduction` starts its server, and the S3 test in
+  `TestJobqueueWithMounts` reads and removes the log store's backup through
+  `backupTargetAt` (run against S3: passes). `archivedDecodes` and
+  `reqStats` are reached through `Server.archivedDecodeCount` and
+  `reqStatStoreOf`, methods on both stores; the log store now counts its
+  full history decodes (`historyRead.job`). `jobChangeAheadHook` moved
+  from `db.prepareJobChange` to the new `Server.prepareJobChange`, so its
+  tests run on the log store; the bbolt-only windows
+  (`jobChangeAheadQueueingHook`, `jobExitSnapshotHook`, an overlapping
+  prepared change) moved to `kick_order_bolt_test.go`, and the
+  `archiveGuardsSeenHook` case (`TestCrashMidAddArchiveOpenAtStart`) to
+  `crash_mid_add_guard_bolt_test.go`, both listed (spec "The store
+  interface": a store may return nil from `prepareJobChange`; the log
+  store's guard races are C4 tests 9 to 11). `dependentsReadHook`,
+  `dependentsGuardHook` (from the shared `guardDependentsRead`) and
+  `reqStatLoadHook` are called by both stores, so
+  `TestCrashMidAddArchivedBeforeGuard` stays in
+  `crash_mid_add_guard_test.go` and runs on every store. Tests that asserted a
+  report updates learned values at once flush the store first, as the log
+  store learns once it folds (spec D1).
 - [ ] (from 0b.1) Unlisted tests still open a bbolt `*db` directly
   (`initDB`, `depGroupSeenGets`, for example in `jobqueue_test.go`,
   `db_unreadable_test.go`, `db_encode_test.go`, `client_payload_test.go`
@@ -125,7 +148,7 @@ called ready, or explicitly deferred with the owner.
   `TestLogHeldArchiveStall`, does. No action beyond keeping the log-store
   form; F5 deletes the bbolt one. Owner: 2e.1 (F5), to delete it.
 
-- [ ] (from 1e.1) C3's tests need a manager on the log store before 1f.11
+- [x] (from 1e.1) C3's tests need a manager on the log store before 1f.11
   makes it the default, so `openStore` opens the log store for
   `storeKindLog`, and `storeKindBolt` is put first in `store.go`, making it
   the zero `storeKind` and so still the default. The log store's `backup`
@@ -147,6 +170,8 @@ called ready, or explicitly deferred with the owner.
   (`openConvertedLogStore`, `openLogStoreInOrder` since 1f.4), after which
   `upgradedOnOpen` is true.
   1f.5 added the log store's incremental backups (`store_backup_tick.go`).
+  Done in 1f.11: `storeKindLog` is first in `store.go` again, so is the
+  default, and `WR_TEST_STORE` defaults to `log`.
 - [x] (from 0b.1 review) F5 broke the `reliability_repro` build:
   `envIntDefault` and `reliable4GiB` were defined only in the listed
   `reliable4_backup_repro_test.go`. Done in 0b.1: both moved to
@@ -1051,7 +1076,7 @@ called ready, or explicitly deferred with the owner.
   flip a byte only after the header frame, as a flip inside it is now
   corruption, as a flip of its length already was.
 
-- [ ] (from 1e.5 review round 3) Log-store methods other than
+- [x] (from 1e.5 review round 3) Log-store methods other than
   `checkIfComplete` and `checkIfLive` that take keys through
   `parseLogKeys` (for example `retrieveCompleteJobsByKeys` in
   `jobqueue/store_log.go`) return an error for a malformed key, where
@@ -1060,6 +1085,14 @@ called ready, or explicitly deferred with the owner.
   `return false, nil`; make the two match. Owner: 1f.11 (the switch):
   trace whether a client can pass these methods unchecked keys, and if so
   match bbolt with a test on both stores.
+  Done in 1f.11: a client's keys reach only `checkIfLive`,
+  `checkIfComplete`, `retrieveCompleteJobsByKeys` and `retrieveJobStd`,
+  which all already give no match for a malformed key; `deleteLiveJobs`,
+  `modifyLiveJobs`, `archiveCompletion` and the guard put-backs take keys
+  of jobs the server holds. `TestStoreCheckIfComplete` now checks the other
+  two on both stores. `checkIfComplete` cannot carry the `nolint`: `nilerr`
+  does not flag its return, and `nolintlint` rejects the unused directive,
+  so it carries `checkIfLive`'s comment without it.
 
 - [x] (from 1f.1 review) `initDB`'s bbolt corrupt-restore path still
   removes with plain `os.Remove`: the temporary S3 download at `bkPath`
@@ -1525,7 +1558,7 @@ called ready, or explicitly deferred with the owner.
   compact on the store directory): word the lock failure for compact, and
   test the rename-failure path with an injected fault.
 
-- [ ] (from 1f.7) E7 test 6 is proved in two halves, since a manager that
+- [x] (from 1f.7) E7 test 6 is proved in two halves, since a manager that
   `cmd` starts opens bbolt until 1f.11 makes the log store the default, so
   `cmd` tests can neither make a store directory nor start a remote
   manager on one. `TestCloudDeployUploadsLocalDB` (`cmd/cloud_test.go`)
@@ -1537,8 +1570,13 @@ called ready, or explicitly deferred with the owner.
   complete jobs. Owner: 1f.11 (the switch): make the `cmd` leaf end to end,
   with the real `jobqueue.ExportStore` of a store a `cmd` manager made and
   a fresh `cmd` manager started on the uploaded file.
+  Done in 1f.11: `TestCloudDeployCarriesStoreToRemote` (`cmd/cloud_test.go`)
+  starts a manager, adds and archives jobs, stops it, runs the upload step
+  with the real `ExportStore`, and starts a fresh production manager on the
+  uploaded file, which reports E2 test 3's message and has the same live
+  and complete jobs.
 
-- [ ] (from 1f.7 review round 1) A deploy killed while `uploadLocalDB`
+- [x] (from 1f.7 review round 1) A deploy killed while `uploadLocalDB`
   (`cmd/cloud.go`) exports a store directory leaves its temporary
   `<db>.export-*` file beside the db, which nothing removes and which can
   be as large as the store. Not reachable from `cmd` until 1f.11 makes the
@@ -1546,8 +1584,15 @@ called ready, or explicitly deferred with the owner.
   remove a concurrent deploy's file in progress. Owner: 1f.11 (the switch,
   which makes this path live): choose a cleanup that cannot remove a
   running deploy's file, and test it.
+  Done in 1f.11: `createExportFile` takes an exclusive flock on the export
+  file, which `uploadLocalDB` holds until the file is uploaded and removed
+  and the kernel releases if the deploy dies, and `uploadLocalDB` first
+  removes, with `removeStaleExports`, each `<db>.export-*` file whose lock
+  it can take. Tested in `TestCloudDeployUploadsLocalDB` with a killed
+  deploy's file, one a running deploy holds, and another deploy's cleanup
+  run during this one's upload.
 
-- [ ] (from 1f.7 review round 2) A teardown killed between `syncLocalDB`'s
+- [x] (from 1f.7 review round 2) A teardown killed between `syncLocalDB`'s
   two renames (`cmd/cloud.go`, store directory case only) leaves no db,
   the store directory at `<db>.old` and the remote's database at
   `<db>.sync`. Nothing is lost on disk, but the next local manager start
@@ -1559,6 +1604,11 @@ called ready, or explicitly deferred with the owner.
   when db is missing and `<db>.sync` or `<db>.old` exists, recovers
   `<db>.sync` to db (or refuses to start rather than create an empty
   store), and test it.
+  Done in 1f.11: E2 order step 2 (`undoRestoreLeftovers`) now renames
+  `<db>.sync` to db, durably, when db and `.corrupt` are missing;
+  `BackupDB` only ever renames a whole backup to that name, and the next
+  steps open it as a self-contained file or bbolt. `<db>.old` is left. Spec
+  E2 step 2 and E7 amended; tested in `TestStoreOpenRestore`.
 
 - [x] (from 1f.8 review round 2) Nothing checks that `openStoppedStore`
   (`store_export.go`) holds the store lock for the whole of a `ReadStore`
@@ -1578,3 +1628,43 @@ called ready, or explicitly deferred with the owner.
   (the folder paused) after flipping a byte of a completion's record or
   of the live job's spec record, requiring `readJobs` to fail (kills J12
   and J13b).
+
+- [ ] (from 1f.11) The log store decodes each history entry still in its
+  overlay (archived but not yet folded) in full on the status and control
+  paths (`historyRead.offerArchived`, `addOverlayStatus`), where a folded
+  entry is read for its facets alone. `TestReliable4StatusLimitPushdown`
+  saw a `wr status` limit of 1 decode all 5,001 archived jobs of a history
+  seeded and not yet folded (1 once folded). The folder runs every second,
+  so the overlay is small in steady state, but after a start with a large
+  unfolded wal backlog these paths cost O(backlog) until it is folded.
+  1f.11 has `seedArchivedJobs` fold, as the seeded history stands for an
+  old one. With it, no test reads `archivedDecodeCount` on an unfolded
+  history, so nothing covers the count the overlay branch of
+  `historyRead.job` (`store_history_bolt.go`) adds: a mutant dropping it
+  survives every decode-count test. Owner: 2b (D3 history queries): read an
+  overlay entry's facets without a full decode, with a test on an unfolded
+  history that asserts `archivedDecodeCount`, so it also covers that
+  branch. Until then the phase 1 gate's crash soak (1g.3) records
+  `wr status -l 1`'s latency just after each injected restart.
+
+- [ ] (from 1f.11) `wr manager compact`'s help (`cmd/manager.go`) still
+  says a database made by wr 0.37.2 or earlier must be compacted once
+  before the manager will start on it. With the log store the default, a
+  manager start converts such a bbolt file instead (spec E1 accepts schema
+  0, dropping the std of complete jobs), so the help, and
+  `TestManagerCompactHelpSaysCompactIsRequired`, are out of date. Owner:
+  2d.2 (E6 compact on the store directory): reword the help for the log
+  store.
+
+- [ ] (from 1f.11 review round 3) A deploy run after a teardown killed
+  between `syncLocalDB`'s renames, with no local manager start in between,
+  still loses the remote's data. The killed teardown leaves no db, the
+  store directory at `<db>.old` and the remote's database at `<db>.sync`;
+  `bootstrapDBBackupLocation` (`cmd/cloud.go`) sees no db and deploys an
+  empty remote, and the next teardown's `syncLocalDB` overwrites
+  `<db>.sync` with that empty remote's database. 1f.11 fixed the local
+  manager start path only. The window is microseconds wide. Owner: 1f.12
+  (next item touching the backup path in `cmd`): before deploy decides
+  there is no local db, put `<db>.sync` back the way E2 step 2 does (or
+  refuse to deploy while `<db>.sync` exists without a db), and add a leaf
+  to the cloud tests.

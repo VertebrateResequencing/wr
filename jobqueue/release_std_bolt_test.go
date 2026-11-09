@@ -55,6 +55,7 @@ func TestBuriedJobsStdIsThereOnceItIsBuried(t *testing.T) {
 
 	ctx := context.Background()
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+	withBoltStore(&serverConfig)
 
 	Convey("Given a job that is being buried with some stderr", t, func() {
 		server, _, token, err := serve(ctx, serverConfig)
