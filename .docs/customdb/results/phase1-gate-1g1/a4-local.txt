@@ -1,0 +1,75 @@
+# go test lines of TestStoreCrash (local), with each store log line dropped;
+# then counts of the dropped store log messages.
+=== RUN   TestStoreCrash
+    store_crash_test.go:641: log "" round 0: killed after 2.870774056s, 9 waves, 2700 keys acked this round (2292 archived), 2700 in all, 334 calls unacked; recovered 393 live and 2307 complete; 0 missing
+    store_crash_test.go:641: log "" round 1: killed after 3.352680243s, 9 waves, 2750 keys acked this round (2292 archived), 5400 in all, 445 calls unacked; recovered 785 live and 4615 complete; 0 missing
+    store_crash_test.go:641: log "" round 2: killed after 2.643310612s, 7 waves, 2150 keys acked this round (1832 archived), 7500 in all, 165 calls unacked; recovered 1042 live and 6458 complete; 0 missing
+    store_crash_test.go:641: log "" round 3: killed after 3.343423192s, 9 waves, 2450 keys acked this round (2260 archived), 9900 in all, 463 calls unacked; recovered 1175 live and 8725 complete; 0 missing
+    store_crash_test.go:641: log "" round 4: killed after 1.950005925s, 5 waves, 1550 keys acked this round (1339 archived), 11400 in all, 134 calls unacked; recovered 1324 live and 10076 complete; 0 missing
+    store_crash_test.go:641: log "" round 5: killed after 4.24521743s, 11 waves, 3350 keys acked this round (2906 archived), 14700 in all, 212 calls unacked; recovered 1698 live and 13002 complete; 0 missing
+    store_crash_test.go:641: log "" round 6: killed after 3.374730242s, 8 waves, 2450 keys acked this round (2250 archived), 17100 in all, 182 calls unacked; recovered 1845 live and 15255 complete; 0 missing
+    store_crash_test.go:641: log "" round 7: killed after 2.450778969s, 7 waves, 2150 keys acked this round (1685 archived), 19200 in all, 263 calls unacked; recovered 2240 live and 16960 complete; 0 missing
+    store_crash_test.go:641: log "" round 8: killed after 2.899671679s, 8 waves, 2150 keys acked this round (1957 archived), 21300 in all, 409 calls unacked; recovered 2675 live and 18925 complete; 0 missing
+    store_crash_test.go:641: log "" round 9: killed after 2.951578083s, 8 waves, 2450 keys acked this round (2019 archived), 23708 in all, 166 calls unacked; recovered 3037 live and 20963 complete; 0 missing
+    store_crash_test.go:641: log "" round 10: killed after 1.564606126s, 4 waves, 1250 keys acked this round (997 archived), 24912 in all, 150 calls unacked; recovered 3235 live and 21965 complete; 0 missing
+    store_crash_test.go:641: log "" round 11: killed after 2.045300462s, 5 waves, 1550 keys acked this round (1322 archived), 26415 in all, 70 calls unacked; recovered 3404 live and 23296 complete; 0 missing
+    store_crash_test.go:641: log "" round 12: killed after 2.80929342s, 7 waves, 2150 keys acked this round (1801 archived), 28521 in all, 148 calls unacked; recovered 3700 live and 25100 complete; 0 missing
+    store_crash_test.go:641: log "" round 13: killed after 2.244556978s, 6 waves, 1850 keys acked this round (1374 archived), 30321 in all, 383 calls unacked; recovered 4113 live and 26487 complete; 0 missing
+    store_crash_test.go:641: log "" round 14: killed after 4.156434635s, 11 waves, 3350 keys acked this round (2874 archived), 33622 in all, 294 calls unacked; recovered 4524 live and 29376 complete; 0 missing
+    store_crash_test.go:641: log "" round 15: killed after 3.136585847s, 8 waves, 2450 keys acked this round (2171 archived), 36023 in all, 146 calls unacked; recovered 4740 live and 31560 complete; 0 missing
+2464 total assertions
+    store_crash_test.go:665: backup round 0: killed inside put 00000036.wal.0000000000000000; 8 waves, 2400 keys acked this round, 2400 in all, 18 ticks completed, 2400 keys guaranteed in the backup, which refused to restore: false; recovered 230 live and 2170 complete; 0 missing
+    store_crash_test.go:665: backup round 1: killed before put 0000003b.wal.000000000005f7e8; 6 waves, 1850 keys acked this round, 4200 in all, 14 ticks completed, 4200 keys guaranteed in the backup, which refused to restore: false; recovered 403 live and 3797 complete; 0 missing
+    store_crash_test.go:665: backup round 2: killed after put 0000005e.wal.0000000000007cca; 5 waves, 1550 keys acked this round, 5700 in all, 10 ticks completed, 5700 keys guaranteed in the backup, which refused to restore: false; recovered 731 live and 4969 complete; 0 missing
+    store_crash_test.go:665: backup round 3: killed inside put 00000065.wal.00000000000f63e3; 10 waves, 3050 keys acked this round, 8700 in all, 25 ticks completed, 8400 keys guaranteed in the backup, which refused to restore: false; recovered 1173 live and 7527 complete; 0 missing
+    store_crash_test.go:665: backup round 4: killed after put 0000009e.wal.0000000000000000; 8 waves, 2450 keys acked this round, 11100 in all, 14 ticks completed, 10800 keys guaranteed in the backup, which refused to restore: false; recovered 1501 live and 9599 complete; 0 missing
+    store_crash_test.go:665: backup round 5: killed inside put 000000a9.wal.000000000010dc53; 10 waves, 3050 keys acked this round, 14100 in all, 23 ticks completed, 14100 keys guaranteed in the backup, which refused to restore: false; recovered 1665 live and 12435 complete; 0 missing
+    store_crash_test.go:665: backup round 6: killed inside put history.bolt; 11 waves, 3350 keys acked this round, 17400 in all, 15 ticks completed, 17100 keys guaranteed in the backup, which refused to restore: false; recovered 1862 live and 15538 complete; 0 missing
+    store_crash_test.go:665: backup round 7: killed before remove 0000010b.wal.000000000012bc89; 6 waves, 1850 keys acked this round, 19200 in all, 9 ticks completed, 18900 keys guaranteed in the backup, which refused to restore: false; recovered 2156 live and 17044 complete; 0 missing
+    store_crash_test.go:665: backup round 8: killed inside put 00000151.wal.0000000000000000; 9 waves, 2750 keys acked this round, 21900 in all, 15 ticks completed, 21600 keys guaranteed in the backup, which refused to restore: false; recovered 2408 live and 19492 complete; 0 missing
+    store_crash_test.go:665: backup round 9: killed before put 0000015d.wal.0000000000000000; 10 waves, 3050 keys acked this round, 24900 in all, 17 ticks completed, 24900 keys guaranteed in the backup, which refused to restore: false; recovered 2564 live and 22336 complete; 0 missing
+    store_crash_test.go:665: backup round 10: killed before put 00000190.wal.0000000000000000; 7 waves, 2150 keys acked this round, 27000 in all, 11 ticks completed, 26700 keys guaranteed in the backup, which refused to restore: false; recovered 2781 live and 24219 complete; 0 missing
+    store_crash_test.go:665: backup round 11: killed before remove 0000019a.ckpt; 5 waves, 1550 keys acked this round, 28500 in all, 9 ticks completed, 28200 keys guaranteed in the backup, which refused to restore: false; recovered 3078 live and 25422 complete; 0 missing
+    store_crash_test.go:665: backup round 12: killed before put 000001e0.wal.0000000000000000; 9 waves, 2750 keys acked this round, 31200 in all, 11 ticks completed, 30600 keys guaranteed in the backup, which refused to restore: false; recovered 3264 live and 27936 complete; 0 missing
+    store_crash_test.go:665: backup round 13: killed before put 000001ec.wal.000000000004573b; 9 waves, 2750 keys acked this round, 33900 in all, 10 ticks completed, 33600 keys guaranteed in the backup, which refused to restore: false; recovered 3668 live and 30232 complete; 0 missing
+    store_crash_test.go:665: backup round 14: killed inside put 0000021f.wal.0000000000008453; 8 waves, 2450 keys acked this round, 36300 in all, 8 ticks completed, 35700 keys guaranteed in the backup, which refused to restore: false; recovered 3958 live and 32342 complete; 0 missing
+    store_crash_test.go:665: backup round 15: killed inside put 00000233.ckpt; 9 waves, 2750 keys acked this round, 39000 in all, 9 ticks completed, 38700 keys guaranteed in the backup, which refused to restore: false; recovered 4212 live and 34788 complete; 0 missing
+2722 total assertions
+    store_crash_test.go:679: log "ackearly" round 0: killed after 2.798154618s, 1 waves, 300 keys acked this round (0 archived), 300 in all, 2 calls unacked; recovered 300 live and 0 complete; 3 missing
+    the round reports missing acked transitions ✔
+2730 total assertions
+    store_crash_test.go:698: log "droprelease" round 0: killed after 3.582121053s, 12 waves, 3600 keys acked this round (3306 archived), 3600 in all, 206 calls unacked; recovered 272 live and 3328 complete; 28 missing
+    a round reports missing acked transitions ✔
+2737 total assertions
+--- PASS: TestStoreCrash (387.81s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	387.833s
+	Command being timed: "go test -tags netgo -count 1 -timeout 0 -v -run ^TestStoreCrash$ ./jobqueue"
+	User time (seconds): 302.49
+	System time (seconds): 126.36
+	Percent of CPU this job got: 109%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 6:31.50
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 548220
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 12167
+	Minor (reclaiming a frame) page faults: 5860755
+	Voluntary context switches: 5328620
+	Involuntary context switches: 704699
+	Swaps: 0
+	File system inputs: 950176
+	File system outputs: 63329488
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+exit 0
+# store log messages by msg:
+    370 lvl=warn msg="recovering: opened database"
+    319 lvl=warn msg="recovery truncated a wal file's damaged tail"
+    256 lvl=warn msg="recovery moved history's folded position back to the log's damaged end"
+# damaged copies opened: 320

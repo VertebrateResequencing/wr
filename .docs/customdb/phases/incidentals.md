@@ -1701,3 +1701,15 @@ called ready, or explicitly deferred with the owner.
   (`checkpointFoldedHookFor`), and the three tests stop the restarted
   server. A/B with the kick test ahead of it, `-count 10`, run side by
   side: before 10/10 fail, after 0/10.
+
+- [ ] (from 1g.1 review) A4 test 2's oracle (`recoverDamagedCrashCopy`,
+  `jobqueue/store_crash_test.go`) checks only that a damaged copy recovers
+  no state the child never wrote. It cannot see intact records lost before
+  the damage point, or a key recovered both live and complete, which the
+  spec's Recovery text says must not happen after A4 test 2's cut. Mutants
+  dropping intact records before the cut or making `dropFoldedLive` a no-op
+  survive `TestStoreCrash`, though other `TestLogStore*` tests kill them.
+  Owner: 2a.1 (before 2g.1 reruns A4 on the final store): assert in
+  `recoverDamagedCrashCopy` that no key is returned by both
+  `recoverIncompleteJobs` and `retrieveCompleteJobsByKeys`, and show it
+  kills the `dropFoldedLive` no-op mutant.

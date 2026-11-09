@@ -54,6 +54,8 @@ item's segment writer.
 Tests 1, 2 and 4 are deferred to item 2b.2 ([phase2b.md](phase2b.md)):
 they need the folder to seal segments (2b.2), and test 4 also needs
 `retrieveCompleteJobsByRepGroup` answered from segments (2b.1).
+Also resolve the 1g.1 review incidental on A4 test 2's oracle not seeing a
+key recovered both live and complete ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

@@ -56,8 +56,8 @@ from item 0d.1 ([phase0d.md](phase0d.md)); acceptance tests 1, 3 and 4 run
 against the log store too. Run `FuzzScan` and `FuzzFlatSpec` for 10
 minutes each with no crasher.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1g.2: A5 replay of the Phase 0 recording
 
