@@ -615,7 +615,7 @@ called ready, or explicitly deferred with the owner.
   requires bbolt's last completion times, history, learned requirements
   and sample count before and after reopen, with nothing left unfolded.
 
-- [ ] (from 1d.1) The log store loads its whole history key index from
+- [x] (from 1d.1) The log store loads its whole history key index from
   `completeSeq` at open (spec "In-memory state of logStore", from 1c.3),
   so its startup and heap grow with the number of completed keys, which
   DEVELOPERS.md rule 6 forbids for bbolt's startup: measured at about
@@ -627,6 +627,52 @@ called ready, or explicitly deferred with the owner.
   store converted from a prod-sized database, and if either is too much,
   route a lazier index (seqs read from `completeSeq` on demand) back to
   the spec.
+  Done in 1f.8: `TestLogStoreStartupProbe` (`store_startup_probe_test.go`,
+  tag `reliability_repro`) converted a copy of `sb10-bigdb/prod.db`
+  (2,273,367 jobs) in 9m34s to a store of 2,155,154 history keys and
+  118,213 live jobs, then opened it 6 times on NFS: `openStore` took
+  12.0s to 15.0s and held 143MB to 160MB of heap, and loading the
+  history key index alone (opening `history.bolt` and reading
+  `completeSeq`, as recovery does) took 11.7s to 13.6s and 120MB to
+  127MB. On a warm local copy the index took about 0.95s (0.45µs per
+  key) and `openStore` 1.2s, so on NFS the time is reading
+  `completeSeq`'s pages cold, which each open's flock forces. Too much:
+  the index is almost all of the store's startup, and it grows with the
+  number of completed jobs. Routed back to the spec as the next entry.
+
+- [ ] (from 1f.8) The log store's startup reads every key of
+  `completeSeq` into its history key index (spec "In-memory state of
+  logStore"), which on a store converted from prod's database took 12s
+  to 15s on NFS and held about 125MB of heap at 2.15M completed jobs,
+  growing with the number of completed jobs (DEVELOPERS.md rule 6; see
+  the previous entry for the measurement). The spec should make the
+  index lazy, as the 1d.1 entry suggests: a key's last folded complete
+  seq read from `completeSeq` on demand (a `Get` per key, as
+  `checkIfComplete` and the folder need it), with only the overlay's
+  keys in memory. Routed by the orchestrator: the spec chose an in-memory
+  key index on purpose ("Key index in memory", with an on-disk fallback)
+  and Phase 1 never reaches a release, so Phase 1 keeps it; today's bbolt
+  manager takes about 36s to recover the same database, so 12s to 15s is
+  no regression. Phase 2 loads the same index from segment footers.
+  Owner: 2d.1 (conversion to segments, the first item that can make a
+  segment store from the prod copy): measure that load cold on NFS with
+  `TestLogStoreStartupProbe` on a segment store converted from the prod
+  copy left at `/nfs/hgi/wr/sb10-bigdb/customdb/1f8/prod-copy.db` (1.8GB
+  on disk; delete it once 2d.1 has its numbers), and if it is not well
+  under today's recovery time, or grows the heap past the spec's
+  50-100MB, take the spec's on-disk fallback or the lazy index above, with
+  a spec change the owner approves.
+
+- [ ] (from 1f.8 review) `developers/soak/dbstart/testdata/store.tar.gz`,
+  the store `TestRunPrintsBboltColumns` reads, is a Phase 1 store (its
+  history in `history.bolt`), made by `jobqueue`'s
+  `TestWriteDBStartFixture` with `storeKindBolt` beside `storeKindLog`.
+  The spec rules out migrating a Phase 1 store to Phase 2, and 2e.1
+  removes `storeKindBolt`, so Phase 2 stores cannot open it. Owner: 2d.1:
+  regenerate the fixture as a segment store with the same two jobs
+  (`golden.tsv` stays, since it is what the bbolt dbstart printed), or
+  keep a bbolt fixture that the test converts, and update
+  `TestWriteDBStartFixture` to match.
 
 - [x] (from 1d.1 review) Folds were unbounded: a fold read the whole log
   from F to the durable end, so after a backlog (150,000 archives from 64
@@ -1486,3 +1532,15 @@ called ready, or explicitly deferred with the owner.
   when db is missing and `<db>.sync` or `<db>.old` exists, recovers
   `<db>.sync` to db (or refuses to start rather than create an empty
   store), and test it.
+
+- [ ] (from 1f.8 review round 2) Nothing checks that `openStoppedStore`
+  (`store_export.go`) holds the store lock for the whole of a `ReadStore`
+  or `ExportStore`: mutant J16, which releases the lock straight after
+  taking it, survives the suite. In Phase 1 `history.bolt`'s own lock
+  still blocks a second opener, but Phase 2 removes `history.bolt`.
+  Mutants J12 and J13b (a history decode error or a `liveJobs` error
+  swallowed by `ReadStore`) also survive, though both need a store that
+  breaks after a successful recovery. Owner: 1f.10: add a leaf whose `fn`
+  (and an `ExportStore` writer) calls `lockStore` with
+  `shortenDBOpenTimeout` and requires `ErrDBLocked`, and cover J12 and
+  J13b if a seam makes it cheap.

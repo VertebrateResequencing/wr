@@ -169,6 +169,43 @@ func TestHistoryBoltBackupRemap(t *testing.T) {
 	})
 }
 
+func TestReadStoreHistoryEntryMissing(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a stopped log store whose history key index names a complete job history.bolt has no "+
+		"record of", t, func() {
+		dir := filepath.Join(t.TempDir(), "store")
+		So(openLogStoreIn(ctx, dir).close(ctx), ShouldBeNil)
+
+		history, err := openHistoryBolt(dir, new(codec.BincHandle))
+		So(err, ShouldBeNil)
+
+		var k logKey
+
+		k[logKeyLen-1] = 1
+
+		So(history.bolt.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket(bucketCompleteSeq).Put([]byte(k.String()), binary.BigEndian.AppendUint64(nil, 1))
+		}), ShouldBeNil)
+		So(history.close(), ShouldBeNil)
+
+		Convey("ReadStore fails with errStoreCorrupt, calling fn for nothing", func() {
+			calls := 0
+
+			So(ReadStore(dir, func(bool, *Job) error {
+				calls++
+
+				return nil
+			}), ShouldWrap, errStoreCorrupt)
+			So(calls, ShouldEqual, 0)
+		})
+	})
+}
+
 // historyTestStore is what the history tests ask of a store.
 type historyTestStore interface {
 	historyQuerier

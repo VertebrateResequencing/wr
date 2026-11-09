@@ -45,6 +45,10 @@ Make conversion write `.hist` segments instead of `history.bolt`
 against the final store.
 Keep the 1f.2 coverage of `reliable2_dbcompat_test.go`'s recovery tests,
 as the 0b.1 incidental owned by 1f.2 says ([incidentals.md](incidentals.md)).
+Also resolve the 1f.8 incidental on the startup cost of loading the
+history key index at prod scale, measured on a segment store converted
+from the prod copy, and the 1f.8 review incidental on regenerating
+dbstart's Phase 1 store fixture ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

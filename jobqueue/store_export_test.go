@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"testing"
 	"time"
 
@@ -58,8 +59,19 @@ const (
 	exportWriterRoom = 512
 )
 
-// errExportTestWrite is the error a failingExportWriter fails with.
-var errExportTestWrite = errors.New("export writer full")
+var (
+	// errExportTestWrite is the error a failingExportWriter fails with.
+	errExportTestWrite = errors.New("export writer full")
+
+	// errReadStoreTestFn is the error a ReadStore test's fn fails with.
+	errReadStoreTestFn = errors.New("fn failed")
+)
+
+// readStoreReservedCmd is the command of the job reservedCrashImage reserves.
+const readStoreReservedCmd = "echo read store reserved"
+
+// readStoreNothing is a ReadStore fn that does nothing.
+func readStoreNothing(bool, *Job) error { return nil }
 
 // failingExportWriter takes room bytes, then fails with errExportTestWrite,
 // as a file on a full disk does.
@@ -172,11 +184,11 @@ func TestExportStore(t *testing.T) {
 			So(ExportStore(dbDir, &bytes.Buffer{}), ShouldWrap, errStoreCorrupt)
 		})
 
-		Convey("ExportStore of an empty directory fails with errExportNotStore, making no store there", func() {
+		Convey("ExportStore of an empty directory fails with errNotStoreDir, making no store there", func() {
 			empty := filepath.Join(t.TempDir(), "empty")
 			So(os.Mkdir(empty, 0o700), ShouldBeNil)
 
-			So(ExportStore(empty, &bytes.Buffer{}), ShouldWrap, errExportNotStore)
+			So(ExportStore(empty, &bytes.Buffer{}), ShouldWrap, errNotStoreDir)
 
 			entries, err := os.ReadDir(empty)
 			So(err, ShouldBeNil)
@@ -192,11 +204,11 @@ func TestExportStore(t *testing.T) {
 			So(missing+storeLockSuffix, shouldNotExist)
 		})
 
-		Convey("ExportStore of a regular file fails with errExportNotStore, leaving it as it was", func() {
+		Convey("ExportStore of a regular file fails with errNotStoreDir, leaving it as it was", func() {
 			path := filepath.Join(t.TempDir(), "file.db")
 			So(os.WriteFile(path, []byte("not a store"), dbFilePermission), ShouldBeNil)
 
-			So(ExportStore(path, &bytes.Buffer{}), ShouldWrap, errExportNotStore)
+			So(ExportStore(path, &bytes.Buffer{}), ShouldWrap, errNotStoreDir)
 
 			content, err := os.ReadFile(path)
 			So(err, ShouldBeNil)
@@ -268,4 +280,260 @@ func shortenDBOpenTimeout() {
 	Reset(func() { managerDBOpenTimeout = original })
 
 	managerDBOpenTimeout = exportLockedTimeout
+}
+
+// readStoreResult is what ReadStore passed fn: the key and command of each
+// live and each complete job of storeRestoreRepGroup, and whether each call,
+// in order, was of a live job.
+type readStoreResult struct {
+	live, complete []string
+	order          []bool
+}
+
+// readStoreChunked returns what ReadStore of the store at dbDir passes fn when
+// it reads complete jobs chunk at a time.
+func readStoreChunked(dbDir string, chunk int) readStoreResult {
+	original := readStoreChunk
+	readStoreChunk = chunk
+
+	defer func() { readStoreChunk = original }()
+
+	var read readStoreResult
+
+	So(ReadStore(dbDir, func(live bool, job *Job) error {
+		described := job.Key() + " " + job.Cmd
+		if live {
+			read.live = append(read.live, described)
+		} else {
+			read.complete = append(read.complete, described)
+		}
+
+		read.order = append(read.order, live)
+
+		return nil
+	}), ShouldBeNil)
+
+	return read
+}
+
+func TestReadStore(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a stopped store with 10 live and 10 complete jobs", t, func() {
+		dbDir, want := exportSourceStore(ctx, t)
+
+		Convey("ReadStore calls fn for every live job, then every complete job, each in key order, "+
+			"however many chunks it reads the complete jobs in", func() {
+			for _, chunk := range []int{readStoreChunk, 3, 1} {
+				read := readStoreChunked(dbDir, chunk)
+
+				So(read.live, ShouldResemble, want.live)
+				So(read.complete, ShouldResemble, want.complete)
+				So(read.order, ShouldResemble, slices.Concat(slices.Repeat([]bool{true}, exportLiveJobs),
+					slices.Repeat([]bool{false}, exportCompleteJobs)))
+			}
+		})
+
+		Convey("ReadStore stops at the first error fn returns and returns it, leaving the store free, "+
+			"so it can be read again at once", func() {
+			shortenDBOpenTimeout()
+
+			calls := 0
+
+			So(ReadStore(dbDir, func(bool, *Job) error {
+				calls++
+
+				return errReadStoreTestFn
+			}), ShouldWrap, errReadStoreTestFn)
+			So(calls, ShouldEqual, 1)
+
+			read := readStoreChunked(dbDir, readStoreChunk)
+			So(read.live, ShouldResemble, want.live)
+		})
+
+		Convey("ReadStore, while a manager runs on the store, fails with ErrDBLocked, calling fn for nothing", func() {
+			_, serverConfig, _, _, _ := jobqueueTestInit(false)
+			serverConfig.storeKind = storeKindLog
+			serverConfig.DBFile = dbDir
+			serverConfig.dontWipeDevDB = true
+
+			server, _, _, err := serve(ctx, serverConfig)
+			So(err, ShouldBeNil)
+
+			Reset(func() { server.Stop(ctx, true) })
+
+			shortenDBOpenTimeout()
+
+			calls := 0
+
+			So(ReadStore(dbDir, func(bool, *Job) error {
+				calls++
+
+				return nil
+			}), ShouldWrap, ErrDBLocked)
+			So(calls, ShouldEqual, 0)
+		})
+
+		Convey("ReadStore of an empty directory fails with errNotStoreDir, making no store there", func() {
+			empty := filepath.Join(t.TempDir(), "empty")
+			So(os.Mkdir(empty, 0o700), ShouldBeNil)
+
+			So(ReadStore(empty, readStoreNothing), ShouldWrap, errNotStoreDir)
+
+			entries, err := os.ReadDir(empty)
+			So(err, ShouldBeNil)
+			So(entries, ShouldBeEmpty)
+			So(empty+storeLockSuffix, shouldNotExist)
+		})
+
+		Convey("ReadStore of a path with no store fails, creating nothing there", func() {
+			missing := filepath.Join(t.TempDir(), "absent")
+
+			So(ReadStore(missing, readStoreNothing), ShouldWrap, os.ErrNotExist)
+			So(missing, shouldNotExist)
+			So(missing+storeLockSuffix, shouldNotExist)
+		})
+	})
+
+	Convey("Given a stopped store with a job completed, then put back live to be re-run", t, func() {
+		job := testDBJob("echo read store rerun", storeRestoreRepGroup)
+		dbDir := stoppedStoreOf(ctx, t, func(s *logStore) {
+			_, err := s.storeNewJobsGuarded(ctx, []*Job{job}, false, nil)
+			So(err, ShouldBeNil)
+
+			archiveTestJob(s, job, time.Now().Add(-time.Minute), time.Now())
+
+			job.RerunAfterRun = true
+			So(s.storeLiveForRerun([]*Job{job}), ShouldBeNil)
+		})
+
+		Convey("ReadStore calls fn with it once as a live job, then once as a complete job", func() {
+			read := readStoreChunked(dbDir, readStoreChunk)
+
+			described := job.Key() + " " + job.Cmd
+			So(read.live, ShouldResemble, []string{described})
+			So(read.complete, ShouldResemble, []string{described})
+			So(read.order, ShouldResemble, []bool{true, false})
+		})
+	})
+
+	Convey("Given a stopped store with no live jobs and 3 complete jobs", t, func() {
+		dbDir := stoppedStoreOf(ctx, t, func(s *logStore) {
+			jobs := make([]*Job, 3)
+			for i := range jobs {
+				jobs[i] = testDBJob(fmt.Sprintf("echo read store complete %d", i), storeRestoreRepGroup)
+			}
+
+			_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+			So(err, ShouldBeNil)
+			So(archiveJobsInStore(s, jobs), ShouldBeNil)
+		})
+
+		Convey("ReadStore stops at the first error fn returns for a complete job and returns it, "+
+			"however many chunks it reads the complete jobs in", func() {
+			original := readStoreChunk
+
+			Reset(func() { readStoreChunk = original })
+
+			for _, chunk := range []int{original, 2, 1} {
+				readStoreChunk = chunk
+				calls := 0
+
+				So(ReadStore(dbDir, func(live bool, _ *Job) error {
+					calls++
+
+					if live {
+						return nil
+					}
+
+					return errReadStoreTestFn
+				}), ShouldWrap, errReadStoreTestFn)
+				So(calls, ShouldEqual, 1)
+			}
+		})
+	})
+
+	Convey("Given a crash image of a log-store manager's store with a job reserved but not started", t, func() {
+		dbDir, hostname := reservedCrashImage(ctx, t)
+
+		Convey("ReadStore reports the job live, reserved on this host", func() {
+			var jobs []*Job
+
+			So(ReadStore(dbDir, func(live bool, job *Job) error {
+				if live {
+					jobs = append(jobs, job)
+				}
+
+				return nil
+			}), ShouldBeNil)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cmd, ShouldEqual, readStoreReservedCmd)
+			So(jobs[0].State, ShouldEqual, JobStateReserved)
+			So(jobs[0].Host, ShouldEqual, hostname)
+		})
+	})
+}
+
+// stoppedStoreOf returns the directory of a new log store, stopped after
+// setup has been called with it open.
+func stoppedStoreOf(ctx context.Context, t *testing.T, setup func(s *logStore)) string {
+	t.Helper()
+
+	dbDir := filepath.Join(t.TempDir(), "db")
+	s := openLogStoreIn(ctx, dbDir)
+	setup(s)
+	So(s.close(ctx), ShouldBeNil)
+
+	return dbDir
+}
+
+// reservedCrashImage starts a log-store manager, adds and reserves a job of
+// readStoreReservedCmd, takes a backup, and stops the manager. It returns the
+// directory the backup is extracted into, the store as the manager left it at
+// the reservation, and this host's name.
+func reservedCrashImage(ctx context.Context, t *testing.T) (string, string) {
+	t.Helper()
+
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+	serverConfig.storeKind = storeKindLog
+
+	server, _, token, err := serve(ctx, serverConfig)
+	So(err, ShouldBeNil)
+
+	defer server.Stop(ctx, true)
+
+	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+	So(err, ShouldBeNil)
+
+	defer disconnect(jq)
+
+	job := &Job{Cmd: readStoreReservedCmd, Cwd: t.TempDir(), ReqGroup: "readstore", RepGroup: "readstore",
+		Requirements: standardReqs}
+	added, _, err := jq.Add([]*Job{job}, os.Environ(), true)
+	So(err, ShouldBeNil)
+	So(added, ShouldEqual, 1)
+
+	reserved, err := jq.Reserve(clientConnectTime)
+	So(err, ShouldBeNil)
+	So(reserved, ShouldNotBeNil)
+
+	image := filepath.Join(t.TempDir(), "crash.tar")
+	f, err := os.Create(image)
+	So(err, ShouldBeNil)
+	So(server.BackupDB(f), ShouldBeNil)
+	So(f.Close(), ShouldBeNil)
+
+	dbDir := filepath.Join(t.TempDir(), "db")
+	So(os.Mkdir(dbDir, 0o700), ShouldBeNil)
+	So(extractStoreBackup(image, dbDir), ShouldBeNil)
+
+	hostname, err := os.Hostname()
+	So(err, ShouldBeNil)
+
+	return dbDir, hostname
 }

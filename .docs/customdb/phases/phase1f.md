@@ -182,8 +182,8 @@ acceptance test from F3.
 Also resolve the 1d.1 incidental on the startup history key index at prod
 scale ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.9: F4 - soakgate reads "reservation wait" lines
 
@@ -208,7 +208,8 @@ converted-store clause (the first open is of a store converted from bbolt
 holding k, with E1) to `jobqueue/store_recover_test.go`. Also resolve
 the 1f.5 review round 5 incidental on `TestStoreCrash` making no backup
 ticks and the 1f.5 review round 12 incidental on a spent wal file, mutant
-W51 and `forgetRecoveryCuts` ([incidentals.md](incidentals.md)). Depends on 1f.2 and 1f.4.
+W51 and `forgetRecoveryCuts`, and the 1f.8 review round 2 incidental on
+`openStoppedStore` holding the store lock ([incidentals.md](incidentals.md)). Depends on 1f.2 and 1f.4.
 
 - [ ] implemented
 - [ ] reviewed
@@ -225,9 +226,10 @@ it and with `WR_TEST_STORE=all`. Start from the patch and failure list
 in the blocker file. Resolve the 0b.1 incidental on tests that reach
 bbolt through `server.boltDB()` or `db.go` hooks
 ([incidentals.md](incidentals.md)), port or pin the out-of-package
-bbolt readers (`cmd/manager_queue_db_test.go` `readStoredJobs`;
-`developers/soak/dbstart` `TestRunReadsRealReservation`, with 1f.8), and
-find the root cause of each server test that fails on the log store.
+bbolt reader `cmd/manager_queue_db_test.go` `readStoredJobs` (1f.8
+replaced `developers/soak/dbstart`'s `TestRunReadsRealReservation` with
+`TestReadStore`'s crash-image case in `jobqueue`), and find the root
+cause of each server test that fails on the log store.
 Also resolve the 1e.5 review round 3 incidental on log-store methods that
 reject malformed keys, and the 1f.7 incidentals on making E7 test 6's
 `cmd` half end-to-end, on deploy's leftover export files and on a

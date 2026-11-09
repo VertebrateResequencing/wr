@@ -85,7 +85,7 @@ Build these with `go build -o <dir> ./developers/soak/<name>`. `run.sh` builds
 | directory | what it does |
 | --- | --- |
 | `psinspect/` | Prints state, exit code, attempts and fail reason of the jobs in the given rep groups (`inc:` for incomplete only, `key:` for one job) of the manager `WR_CONFIG_DIR` names. |
-| `dbstart/` | Reads a stopped manager's DB read-only and prints each soak job's state, attempts, host, pid and start and end times. |
+| `dbstart/` | Reads a stopped manager's store directory, taking its lock (so it fails while a manager runs on it) and recovering the store in place as a manager start would, and prints each soak job's state, attempts, host, pid and start and end times. It reads no bbolt file. |
 | `bboltexp/` | Checks (`tx.Check()`) or churns a copy of a manager DB, opened as the manager opens it. |
 
 ### Isolated repros

@@ -30,7 +30,7 @@
 # - the "command ran OK" and "killed by user request" substring pre-checks:
 #   OK's and KILLED's regexes require them.
 # - pid_of keeping runs with no S: their None start never equals an s1.
-# - dbstart rows needing 5 fields: dbstart writes 11, or 1 (schemaVersion=).
+# - dbstart rows needing 5 fields: dbstart writes 11.
 # KILLED's prefix, with or without msg=", and its closing quote are not in that
 # list: case 31 pins them with M.1 (a signal error leads the kill reason, as
 # "sigErr; myerr") and H.1 (text after it). wr also wraps the reason when a kill
