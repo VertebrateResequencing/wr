@@ -683,6 +683,30 @@ func TestCloudDeployUploadsLocalDB(t *testing.T) {
 			So(*exports, ShouldBeEmpty)
 		})
 
+		Convey("with no db file, but the store directory at db.old and the remote's backup file at db.sync "+
+			"that a teardown killed between its renames left, the upload step puts db.sync back as db and "+
+			"sends it unchanged", func() {
+			exports := recordExportStoreCalls(t, "", errCloudTestExport)
+
+			old := config.ManagerDBFile + ".old"
+			So(os.Mkdir(old, ownerReadWriteExecute), ShouldBeNil)
+			So(os.WriteFile(filepath.Join(old, "VERSION"), []byte("1"), ownerReadWrite), ShouldBeNil)
+			So(os.WriteFile(config.ManagerDBFile+jobqueue.SyncedDBSuffix, []byte(cloudTestExportPayload),
+				ownerReadWrite), ShouldBeNil)
+
+			So(bootstrapDBBackupLocation(&cloud.Provider{}, server, false), ShouldEqual, defaultDBBackupName)
+			So(*uploads, ShouldHaveLength, 1)
+			So((*uploads)[0].remote, ShouldEqual, remote)
+			So(string((*uploads)[0].content), ShouldEqual, cloudTestExportPayload)
+			So(*exports, ShouldBeEmpty)
+
+			content, err := os.ReadFile(config.ManagerDBFile)
+			So(err, ShouldBeNil)
+			So(string(content), ShouldEqual, cloudTestExportPayload)
+			soDirHoldsOnly(dir, "db", "db.old")
+			soDirHoldsOnly(old, "VERSION")
+		})
+
 		Convey("with a store directory as its db file, the upload step sends the file ExportStore made of "+
 			"it to .wr_<deployment>/db, removing it afterwards", func() {
 			So(os.Mkdir(config.ManagerDBFile, ownerReadWriteExecute), ShouldBeNil)

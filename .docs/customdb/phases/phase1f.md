@@ -257,5 +257,5 @@ Resolve the 1f.3 review round 1 incidental on `Server.handleBackup`
 and the 1f.11 review round 3 incidental on a deploy after a teardown
 killed between `syncLocalDB`'s renames ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

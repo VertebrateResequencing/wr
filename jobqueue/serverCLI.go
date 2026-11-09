@@ -55,6 +55,7 @@ import (
 // client.go (requestMethodStart etc.).
 const (
 	requestMethodPing          = "ping"
+	requestMethodBackupChunk   = "backupchunk"
 	requestMethodAdd           = "add"
 	requestMethodReserve       = "reserve"
 	requestMethodGetByCmd      = "getbc"
@@ -842,18 +843,48 @@ func (s *Server) serverInfoCopy() *ServerInfo {
 	return si
 }
 
-// handleBackup backs the database up into the response.
-func (s *Server) handleBackup(ctx context.Context) (*serverResponse, string, string) {
-	clog.Debug(ctx, "backup requested")
-	// make an io.Writer that writes to a byte slice, so we can return the db as
-	// that
-	var b bytes.Buffer
+// handleBackupChunk starts a backup of the database for the client to fetch,
+// replying with its id, when the request names none; otherwise it replies
+// with the next chunk of the backup it names (see backupStreams), or ends that
+// backup if the client has given up fetching it.
+func (s *Server) handleBackupChunk(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+	switch {
+	case cr.BackupID == "":
+		return s.startBackupStream(ctx)
+	case cr.BackupCancel:
+		s.backupStreams.cancel(cr.BackupID)
 
-	if err := s.BackupDB(&b); err != nil {
-		return nil, ErrInternalError, err.Error()
+		return &serverResponse{}, "", ""
 	}
 
-	return &serverResponse{DB: b.Bytes()}, "", ""
+	data, done, err := s.backupStreams.chunk(cr.BackupID, cr.BackupOffset)
+	if err != nil {
+		srerr, qerr := backupStreamErr(err)
+
+		return nil, srerr, qerr
+	}
+
+	return &serverResponse{BackupID: cr.BackupID, DB: data, BackupDone: done}, "", ""
+}
+
+// startBackupStream starts a backup of the database for the client to fetch,
+// replying with its id.
+func (s *Server) startBackupStream(ctx context.Context) (*serverResponse, string, string) {
+	clog.Debug(ctx, "backup requested")
+
+	produce := s.BackupDB
+	if hook := backupProduceHook.Load(); hook != nil {
+		produce = *hook
+	}
+
+	id, err := s.backupStreams.start(produce)
+	if err != nil {
+		srerr, qerr := backupStreamErr(err)
+
+		return nil, srerr, qerr
+	}
+
+	return &serverResponse{BackupID: id}, "", ""
 }
 
 // handlePause pauses the server, resuming immediately if it was already paused
@@ -2476,8 +2507,8 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 	switch cr.Method {
 	case requestMethodPing:
 		return s.handlePing(), "", ""
-	case "backup":
-		return s.handleBackup(ctx)
+	case requestMethodBackupChunk:
+		return s.handleBackupChunk(ctx, cr)
 	case "pause":
 		return s.handlePause(ctx)
 	case "resume":

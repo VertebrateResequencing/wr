@@ -1311,7 +1311,7 @@ called ready, or explicitly deferred with the owner.
   requires a commit growing it past the default mapping, and a read after
   it, to finish during the copy. Spec "Location, lock, ..." says so.
 
-- [ ] (from 1f.3 review round 1) `Server.handleBackup`
+- [x] (from 1f.3 review round 1) `Server.handleBackup`
   (`serverCLI.go`) buffers the whole backup in a `bytes.Buffer` and sends
   it as one response: multi-GB of manager memory at prod scale, held while
   the log store's `backup` holds `ckptMu`. bbolt's backup did the same, so
@@ -1319,6 +1319,13 @@ called ready, or explicitly deferred with the owner.
   (delivery-queue row 25) that it must stream. Owner: 1f.12: stream the
   backup to the client in chunks, so the manager never holds the whole
   backup in memory.
+  Done in 1f.12: `handleBackup` is replaced by `handleBackupChunk` and
+  `backupStreams` (`backup_stream.go`): the store's `backup(w)` writes to a
+  pipe and `Client.BackupDB` fetches it a chunk (4MiB) per request, with an
+  idle timeout, a cap of 4 at once and an abort on manager stop. Tested in
+  `TestClientBackupDBStreams` (live heap growth under half a 64MiB+
+  backup), `TestBackupStreamLifecycle` and
+  `TestBackupStreamStopWithQueuedBackup`.
 
 - [x] (from 1f.3 review round 3) No test races a backup's start against
   `close`, so a `startBackup` (`store_backup.go`) that joins
@@ -1656,7 +1663,7 @@ called ready, or explicitly deferred with the owner.
   2d.2 (E6 compact on the store directory): reword the help for the log
   store.
 
-- [ ] (from 1f.11 review round 3) A deploy run after a teardown killed
+- [x] (from 1f.11 review round 3) A deploy run after a teardown killed
   between `syncLocalDB`'s renames, with no local manager start in between,
   still loses the remote's data. The killed teardown leaves no db, the
   store directory at `<db>.old` and the remote's database at `<db>.sync`;
@@ -1668,3 +1675,29 @@ called ready, or explicitly deferred with the owner.
   there is no local db, put `<db>.sync` back the way E2 step 2 does (or
   refuse to deploy while `<db>.sync` exists without a db), and add a leaf
   to the cloud tests.
+  Done in 1f.12: `bootstrapDBBackupLocation` first calls the new
+  `jobqueue.PutBackSetAsideDB` (E2 step 2's put-back of `.corrupt`, else
+  `.sync`, which `undoRestoreLeftovers` now calls too). Spec E7 test 7;
+  tested in `TestCloudDeployUploadsLocalDB`.
+
+- [x] (from 1f.12 review round 1) `TestLogStoreCheckpointCloseStopsMerge`
+  failed once in a long full-package `go test ./jobqueue` run outside
+  `make test`, then passed 10/10 run alone. It does not touch the backup
+  streams, and it is not on the known-flake list. There is no load-matched
+  A/B yet, so the cause, test or store, is unknown. Owner: phase 1 gate:
+  watch for it in the gate's full runs, and on a repeat run it under a
+  matched load, before and after, to find whether it is a test timing or a
+  checkpoint close defect.
+  Done in 1f.12 (fix round 2), after a second failure in review round 2:
+  a test defect, not a store one. `logCheckpointFoldedHook` is global, and
+  with `logCheckpointEvery` at 1 every open log store's checkpoint calls
+  it. A store left open by an earlier test called it first, so `close`
+  returned before the hook saw it stopping. Three tests left that store
+  open (`TestKickOfReplacedJobKicksItemsJob`,
+  `TestSuspendOfReplacedJobSuspendsItemsJob` and
+  `TestSuspendRacingResumeKeepsResume`): they marked the server stopped
+  before `rdrCrash` restarted it, so the restarted one was never stopped.
+  The hook now gets the store, the tests' hooks act on their own store only
+  (`checkpointFoldedHookFor`), and the three tests stop the restarted
+  server. A/B with the kick test ahead of it, `-count 10`, run side by
+  side: before 10/10 fail, after 0/10.

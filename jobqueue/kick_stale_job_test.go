@@ -53,13 +53,8 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 
 	Convey("Given a buried complete waiter that an add re-runs while it is being kicked", t, func() {
 		d := dgrStartServer(ctx)
-		serverStopped := false
 
-		defer func() {
-			if !serverStopped {
-				d.stop(ctx)
-			}
-		}()
+		defer d.stop(ctx)
 
 		jq := d.connect()
 		defer disconnect(jq)
@@ -177,8 +172,6 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 		})
 
 		Convey("a crash recovers the re-added job ready under its new rep group", func() {
-			serverStopped = true
-
 			rdrCrash(ctx, d, func() {})
 
 			recoveredJQ := d.connect()

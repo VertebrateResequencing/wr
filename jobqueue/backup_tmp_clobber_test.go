@@ -33,6 +33,7 @@ package jobqueue
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -235,7 +236,11 @@ func backupTmpStageUnderUmask(path string, umask int) string {
 	previous := syscall.Umask(umask)
 	defer syscall.Umask(previous)
 
-	tmpPath, err := stageBackup(path, []byte(backupTmpStagedContent))
+	tmpPath, err := stageBackup(path, func(w io.Writer) error {
+		_, errw := io.WriteString(w, backupTmpStagedContent)
+
+		return errw
+	})
 	So(err, ShouldBeNil)
 
 	return tmpPath

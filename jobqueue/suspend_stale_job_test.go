@@ -54,13 +54,8 @@ func TestSuspendOfReplacedJobSuspendsItemsJob(t *testing.T) {
 
 	Convey("Given a ready complete waiter that an add re-runs while it is being suspended", t, func() {
 		d := dgrStartServer(ctx)
-		serverStopped := false
 
-		defer func() {
-			if !serverStopped {
-				d.stop(ctx)
-			}
-		}()
+		defer d.stop(ctx)
 
 		jq := d.connect()
 		defer disconnect(jq)
@@ -171,8 +166,6 @@ func TestSuspendOfReplacedJobSuspendsItemsJob(t *testing.T) {
 		})
 
 		Convey("a crash recovers the re-added job suspended under its new rep group", func() {
-			serverStopped = true
-
 			rdrCrash(ctx, d, func() {})
 
 			recoveredJQ := d.connect()

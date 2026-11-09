@@ -126,8 +126,9 @@ var (
 // Test seams, nil or 0 outside tests.
 var (
 	// logCheckpointFoldedHook is called by each checkpoint once the folded
-	// position has reached its cut (spec "Checkpoints", step 2).
-	logCheckpointFoldedHook atomic.Pointer[func()] //nolint:gochecknoglobals // a test seam
+	// position has reached its cut (spec "Checkpoints", step 2), with the store
+	// making it, as every log store open in the process calls it.
+	logCheckpointFoldedHook atomic.Pointer[func(*logStore)] //nolint:gochecknoglobals // a test seam
 
 	// logCheckpointRenameHook is called by each checkpoint once its .tmp file
 	// is durable, before it is renamed; an error it returns ends the
@@ -1133,7 +1134,9 @@ func (s *logStore) checkpointLocked() error {
 		return err
 	}
 
-	callHook(&logCheckpointFoldedHook)
+	if hook := logCheckpointFoldedHook.Load(); hook != nil {
+		(*hook)(s)
+	}
 
 	swap, err := s.writeCheckpoint(walFrom, folded)
 	if err != nil {

@@ -521,7 +521,10 @@ type clientRequest struct {
 	RepGroupMatch           RepGroupMatch
 	ConfirmDeadCloudServers bool
 	DestroyCloudHost        string
-	ReturnIDs               bool // when adding jobs, return the IDs of the added jobs
+	ReturnIDs               bool   // when adding jobs, return the IDs of the added jobs
+	BackupID                string // the backup to fetch the next chunk of; "" starts one
+	BackupOffset            int64  // how many bytes of BackupID the client already has
+	BackupCancel            bool   // end BackupID, which the client has given up fetching
 	// Attempted is ADDITIVE wire-only: on a release it says the runner actually
 	// tried to run the job's Cmd, so the release must spend one of the job's
 	// retries even though no start was ever reported (an old client sends false,
@@ -1812,12 +1815,63 @@ func (c *Client) processTreeCPUtime(pid int) time.Duration {
 	return currentProcessTreeCPUtime(pid)
 }
 
-// stageBackup writes db to a uniquely named file in path's own directory,
-// returning that file's name for the caller to rename over path. The name is
-// unique because a fixed name is one the user may already have a file at, and
-// staging there would destroy it. The directory is path's own so that the
-// publishing rename stays within one filesystem.
-func stageBackup(path string, db []byte) (string, error) {
+// fetchBackup has the manager start a backup and writes it to w, fetching it a
+// chunk per request, so that neither the manager nor this client holds the
+// whole backup in memory.
+func (c *Client) fetchBackup(w io.Writer) error {
+	resp, err := c.request(&clientRequest{Method: requestMethodBackupChunk})
+	if err != nil {
+		return err
+	}
+
+	if resp.BackupID == "" {
+		return errBackupNotStarted
+	}
+
+	return c.fetchBackupChunks(w, resp.BackupID)
+}
+
+// fetchBackupChunks writes each chunk of backup id to w in turn, until the
+// last. A chunk it fails to write ends the backup.
+func (c *Client) fetchBackupChunks(w io.Writer, id string) error {
+	var offset int64
+
+	for {
+		resp, err := c.request(&clientRequest{Method: requestMethodBackupChunk, BackupID: id, BackupOffset: offset})
+		if err != nil {
+			return err
+		}
+
+		n, err := w.Write(resp.DB)
+		if err != nil {
+			c.cancelBackup(id)
+
+			return err
+		}
+
+		offset += int64(n)
+
+		if resp.BackupDone {
+			return nil
+		}
+	}
+}
+
+// cancelBackup tells the manager this client has given up fetching backup id,
+// so that it ends the backup at once rather than once it has gone unfetched
+// for its idle timeout. It is best effort: a manager that does not hear it
+// still ends the backup then.
+func (c *Client) cancelBackup(id string) {
+	cr := &clientRequest{Method: requestMethodBackupChunk, BackupID: id, BackupCancel: true}
+	c.request(cr) //nolint:errcheck // best effort, as the doc says
+}
+
+// stageBackup calls write to put a backup in a uniquely named file in path's
+// own directory, returning that file's name for the caller to rename over
+// path. The name is unique because a fixed name is one the user may already
+// have a file at, and staging there would destroy it. The directory is path's
+// own so that the publishing rename stays within one filesystem.
+func stageBackup(path string, write func(w io.Writer) error) (string, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.")
 	if err != nil {
 		return "", err
@@ -1825,7 +1879,7 @@ func stageBackup(path string, db []byte) (string, error) {
 
 	tmpPath := tmp.Name()
 
-	if err = writeBackupTemp(tmp, db); err != nil {
+	if err = writeBackupTemp(tmp, write); err != nil {
 		return "", errWithRemoval(err, tmpPath)
 	}
 
@@ -2658,13 +2712,13 @@ func (c *Client) ShutdownServer() bool {
 // file or the complete new one, and no other file of yours is disturbed. The
 // staged bytes are not fsynced before the rename, so that covers a concurrent
 // reader, not a machine that loses power mid-backup.
+//
+// The backup is fetched in chunks, and the manager's store keeps its backup
+// open for the whole fetch: on the log store that holds its checkpoint lock,
+// so its checkpoints and periodic backups wait, and concurrent backups run one
+// after another; on the bolt store it holds a read transaction.
 func (c *Client) BackupDB(path string) error {
-	resp, err := c.request(&clientRequest{Method: "backup"})
-	if err != nil {
-		return err
-	}
-
-	tmpPath, err := stageBackup(path, resp.DB)
+	tmpPath, err := stageBackup(path, c.fetchBackup)
 	if err != nil {
 		return err
 	}
@@ -2844,11 +2898,11 @@ type executeCmd struct {
 	stdoutWait           <-chan error
 }
 
-// writeBackupTemp writes db to tmp and closes it. os.CreateTemp's mode is
-// subject to the umask, so the mode the backup is meant to have is set
-// explicitly.
-func writeBackupTemp(tmp *os.File, db []byte) error {
-	if _, err := tmp.Write(db); err != nil {
+// writeBackupTemp calls write to put the backup in tmp, then closes it.
+// os.CreateTemp's mode is subject to the umask, so the mode the backup is
+// meant to have is set explicitly.
+func writeBackupTemp(tmp *os.File, write func(w io.Writer) error) error {
+	if err := write(tmp); err != nil {
 		_ = tmp.Close()
 
 		return err

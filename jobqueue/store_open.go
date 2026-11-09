@@ -856,10 +856,7 @@ func undoRestoreLeftovers(ctx context.Context, dbFile string) error {
 
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		_, err = putBack(corrupt, dbFile)
-		if err == nil {
-			err = putBackSynced(ctx, dbFile)
-		}
+		err = PutBackSetAsideDB(ctx, dbFile)
 	case err == nil && !info.IsDir():
 		err = refuseCorruptBeside(dbFile, corrupt)
 	}
@@ -869,6 +866,20 @@ func undoRestoreLeftovers(ctx context.Context, dbFile string) error {
 	}
 
 	return errors.Join(os.RemoveAll(dbFile+storeRestoringSuffix), os.RemoveAll(corrupt))
+}
+
+// PutBackSetAsideDB puts back, as dbFile, what an interrupted restore or
+// cloud teardown set aside when it left no dbFile (spec E2 order, step 2): a
+// dbFile + ".corrupt", or else a dbFile + ".sync", renamed durably. It does
+// nothing if dbFile exists. A cloud deploy calls it before deciding whether
+// there is a local database to upload, so it sees the database the next local
+// manager start would open.
+func PutBackSetAsideDB(ctx context.Context, dbFile string) error {
+	if _, err := putBack(dbFile+storeCorruptSuffix, dbFile); err != nil {
+		return err
+	}
+
+	return putBackSynced(ctx, dbFile)
 }
 
 // putBack renames setAside, if it is there and dbFile is not, to dbFile,

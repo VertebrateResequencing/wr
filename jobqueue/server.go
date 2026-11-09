@@ -775,7 +775,9 @@ type serverResponse struct {
 	SStats          *ServerStats
 	CompletionTimes map[string]time.Time
 	StatusSummaries map[string]*RepGroupStatus
-	DB              []byte
+	DB              []byte // a chunk of a backup (see Client.BackupDB)
+	BackupID        string // the backup DB is a chunk of
+	BackupDone      bool   // DB is the backup's last chunk
 	Path            string
 	BadServers      []*BadServer
 	SubscriptionID  string
@@ -1804,6 +1806,7 @@ type Server struct {
 	wsWriteMutexes      map[string]*wsConnWriter // write mutex per websocket connection
 	wsHandlerWG         sync.WaitGroup
 	clientSubscriptions map[string]*serverSubscription
+	backupStreams       backupStreams
 	badServers          map[string]*cloud.Server
 	schedIssues         map[string]*schedulerIssue
 	scheduleRetries     map[string]bool // groups with a retry loop running; true if wanted again
@@ -9084,6 +9087,11 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 func (s *Server) closeServerCommsAndDB(ctx context.Context) {
 	// close our command line interface
 	s.closeClientSubscriptions()
+
+	// end the backups clients are fetching, and refuse any more, before the
+	// store's close below, which would wait for them: so no backup is left
+	// running, and no chunk request starts one, once the store is closing
+	s.backupStreams.close()
 
 	if s.clientHandlingStarted() {
 		close(s.stopClientHandling)

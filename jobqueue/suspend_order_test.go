@@ -55,13 +55,8 @@ func TestSuspendRacingResumeKeepsResume(t *testing.T) {
 
 	Convey("Given a ready job resumed as soon as its suspend has moved its item", t, func() {
 		d := dgrStartServer(ctx)
-		serverStopped := false
 
-		defer func() {
-			if !serverStopped {
-				d.stop(ctx)
-			}
-		}()
+		defer d.stop(ctx)
 
 		jq := d.connect()
 		defer disconnect(jq)
@@ -127,8 +122,6 @@ func TestSuspendRacingResumeKeepsResume(t *testing.T) {
 		})
 
 		Convey("a crash recovers it ready", func() {
-			serverStopped = true
-
 			rdrCrash(ctx, d, func() {})
 
 			recoveredJQ := d.connect()

@@ -563,12 +563,12 @@ func TestLogStoreCheckpointDue(t *testing.T) {
 	Convey("Given a log store just opened, with its checkpoints due at the defaults", t, func() {
 		var started atomic.Int32
 
+		s, _ := openTestLogStore(t, ctx)
+
 		starting := func() { started.Add(1) }
-		logCheckpointFoldedHook.Store(&starting)
+		logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, starting))
 
 		Reset(func() { logCheckpointFoldedHook.Store(nil) })
-
-		s, _ := openTestLogStore(t, ctx)
 
 		_, err := s.storeNewJobsGuarded(ctx, testLogJobs("c6 due at open", "c6", 20), false, nil)
 		So(err, ShouldBeNil)
@@ -1132,7 +1132,7 @@ func TestLogStoreCheckpointReplacedSpecs(t *testing.T) {
 					So(replaced, ShouldEqual, 1)
 				}
 
-				logCheckpointFoldedHook.Store(&archived)
+				logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, archived))
 
 				Reset(func() { logCheckpointFoldedHook.Store(nil) })
 
@@ -1157,7 +1157,7 @@ func TestLogStoreCheckpointReplacedSpecs(t *testing.T) {
 					_, archiveErr = s.archiveCompletion(k.Key(), k)
 				}
 
-				logCheckpointFoldedHook.Store(&archived)
+				logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, archived))
 
 				Reset(func() { logCheckpointFoldedHook.Store(nil) })
 
@@ -1235,7 +1235,7 @@ func TestLogStoreCheckpointWaitsForFoldReads(t *testing.T) {
 				}
 			}
 
-			logCheckpointFoldedHook.Store(&archivedThenFolding)
+			logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, archivedThenFolding))
 
 			Reset(func() {
 				logCheckpointFoldedHook.Store(nil)
@@ -1796,7 +1796,7 @@ func TestLogStoreCheckpointCloseStopsMerge(t *testing.T) {
 					})
 				}
 
-				logCheckpointFoldedHook.Store(&closing)
+				logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, closing))
 				logCheckpointEvery.Store(1)
 
 				Reset(func() {
@@ -2317,7 +2317,7 @@ func TestLogStoreReadersHoldWithTheirRefs(t *testing.T) {
 						}
 					}
 
-					logCheckpointFoldedHook.Store(&archivedThenFolding)
+					logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, archivedThenFolding))
 
 					Reset(func() {
 						logCheckpointFoldedHook.Store(nil)
@@ -2543,6 +2543,19 @@ func checkpointed(s *logStore) uint32 {
 	So(cut, ShouldBeGreaterThan, 0)
 
 	return cut
+}
+
+// checkpointFoldedHookFor returns a logCheckpointFoldedHook that calls fn for
+// s's checkpoints only: the hook is global, so a store another test left open,
+// whose checkpoints logCheckpointEvery may make due, calls it too.
+func checkpointFoldedHookFor(s *logStore, fn func()) *func(*logStore) {
+	hook := func(st *logStore) {
+		if st == s {
+			fn()
+		}
+	}
+
+	return &hook
 }
 
 // walFilesBelow returns the wal files in dir numbered below cut.

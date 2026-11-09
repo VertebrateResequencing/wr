@@ -2484,6 +2484,26 @@ never stalls the manager or rewrites gigabytes.
 As a user, I want `wr manager backup -p <file>` to still write one file
 that a manager can start from.
 
+`Client.BackupDB` streams the backup in chunks of at most `backupChunkSize`
+(4MiB), one request each (owner's ruling of 2026-11-07), so neither the
+manager nor the client holds a whole backup, whichever the store. The first
+request starts the store's `backup(w)` writing to a pipe and returns its id;
+each later one names that id and the offset the client has, and gets the
+next chunk, the last marked done. A chunk asked for at any other offset,
+as a resent request would be, ends the backup with an error. A backup left
+unfetched for `backupStreamIdleTimeout` (twice `ClientMinRequestTimeout`,
+so 120s, as it counts a reply's transfer too) is abandoned, as are all of
+them when the manager stops, before its readers stop, so the store's backup
+ends and a waiting chunk request is told the manager is stopping. A client
+that fails to write a chunk asks the manager to end the backup at once. At
+most `maxBackupStreams` (4) run at once. The store's backup stays open for
+the whole fetch: on the log store it holds `ckptMu`, so checkpoints and E4
+backup ticks wait for it and concurrent backups run one after another. A
+store backup that fails, even with an error wrapping `io.EOF`, fails
+`Client.BackupDB`, which leaves no file. The file the client writes is
+byte-for-byte what `backup(w)` wrote. A client and manager of different
+versions fail the backup with an error rather than write part of one.
+
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_backup.go`
 **Test file:** `jobqueue/store_backup_test.go`
@@ -2496,6 +2516,9 @@ that a manager can start from.
    (E2) yields every job acknowledged before `backup` was called.
 2. Given `Client.BackupDB(path)`, when called, then `path` is one regular
    file and starting a manager with it as `dbFile` restores it (E2 test 3).
+3. Given a store whose backup is over 128 chunks, when `Client.BackupDB`
+   runs, then the file holds every job and the live heap grows by less
+   than half the file's size.
 
 ### E6: Compact
 
@@ -2563,7 +2586,10 @@ As a cloud user, I want deploy and teardown to keep carrying my database.
   if that fails. A failed `BackupDB` leaves `ManagerDBFile` as it was, even
   with `--force`, which carries on to destroy the remote. A teardown killed
   between the two renames leaves no `ManagerDBFile`, so the next local
-  start opens the `.sync` file as it (E2 order, step 2). The S3 branch
+  start opens the `.sync` file as it (E2 order, step 2), and so does a
+  deploy: `bootstrapDBBackupLocation` first calls
+  `jobqueue.PutBackSetAsideDB`, which puts back what E2 step 2 would,
+  before deciding whether there is a local database to upload. The S3 branch
   also `os.RemoveAll`s `ManagerDBFile + ".old"` before its rename: today's
   `os.Rename` fails on a stale non-empty `.old` directory or a `.old` file
   when the source is a directory, and only warns, so a local start would
@@ -2599,6 +2625,10 @@ func ExportStore(dbDir string, w io.Writer) error
    remote deployment's `.wr_<deployment>/db`, when that remote manager
    first starts, then `db` is a store directory with the source store's
    live and complete jobs and the message is E2 test 3's.
+7. Given no `db`, a store directory at `db.old` and a backup file at
+   `db.sync`, as a teardown killed between its renames leaves, when the
+   upload step runs (test seam), then `db` is that file, it is what was
+   uploaded, unchanged, and `db.old` is untouched.
 
 ## F: Server cleanup, config, tools and docs
 

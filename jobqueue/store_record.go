@@ -134,7 +134,7 @@ var storeReplays = map[string]replayFunc{
 
 		return storeDigest(rp.s.resolveDependencies(rp.ctx, rp.jobList(a.Jobs), groups))
 	}),
-	"backup": replayWith(func(rp *replayer, _ *recNone) [32]byte { //nolint:goconst // as recorded
+	"backup": replayWith(func(rp *replayer, _ *recNone) [32]byte {
 		return storeDigest(rp.s.backup(io.Discard))
 	}),
 	"upgradedOnOpen": replayWith(func(rp *replayer, _ *recNone) [32]byte {

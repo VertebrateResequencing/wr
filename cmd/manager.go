@@ -600,6 +600,11 @@ time there is a change.
 You can use this command to create an additional backup to a different location.
 Note that the manager must be running.
 
+The backup streams from the manager, which holds its store's checkpoint lock
+while it runs, so concurrent backups run one after another (a second may time
+out if the first takes longer than its request timeout). On the bolt store it
+instead holds a read transaction open for the whole fetch.
+
 (When the manager is stopped, you can backup the database by simply copying it
 somewhere.)`,
 	Run: func(_ *cobra.Command, _ []string) {

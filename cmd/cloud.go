@@ -1130,6 +1130,14 @@ func bootstrapDBBackupLocation(provider *cloud.Provider, server *cloud.Server,
 
 	ctx := context.Background()
 
+	// a teardown killed between syncLocalDB's renames left the remote's
+	// database at <db>.sync and no db; uploading nothing would deploy an empty
+	// remote whose next teardown replaces that file
+	if err := jobqueue.PutBackSetAsideDB(ctx, config.ManagerDBFile); err != nil {
+		teardown(ctx, provider)
+		die("failed to recover the local database set aside beside %s: %s", config.ManagerDBFile, err)
+	}
+
 	// copy over our database
 	_, errf := os.Stat(config.ManagerDBFile)
 	if errf != nil {
