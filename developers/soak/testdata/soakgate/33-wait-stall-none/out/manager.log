@@ -1,0 +1,4 @@
+t=1970-01-01T01:15:50+0100 lvl=info msg="wr manager  started on 10.0.0.1:1, pid 11"
+t=1970-01-01T01:16:00+0100 lvl=warn msg="reservation wait" n=4 p50=1.2ms p99=10.000123s max=10.000456s notDurable=0 abandoned=0 caller=clog.go:338
+t=1970-01-01T01:17:00+0100 lvl=warn msg="reservation wait" n=3 p50=1.2ms p99=10.000123s max=10.000456s notDurable=0 abandoned=0 caller=clog.go:338
+t=1970-01-01T01:20:00+0100 lvl=warn msg="reservation wait" n=6 p50=1.2ms p99=10.000123s max=10.000456s notDurable=0 abandoned=0 caller=clog.go:338

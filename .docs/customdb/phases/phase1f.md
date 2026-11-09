@@ -195,8 +195,8 @@ lines C3 writes. Cover all 6 acceptance tests from F4.
 Also resolve the 1e.2 incidental on `anyway.py` describing the pre-C3
 behaviour ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.10: C5 - Recovery clauses deferred from 1c
 

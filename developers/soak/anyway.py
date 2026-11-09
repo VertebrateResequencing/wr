@@ -3,6 +3,12 @@
 
 usage: anyway.py <outdir> <runnerlogdir> <doubles.tsv> <managerlog> [managerlog...]
 
+This applies only to soak trees from wr before customdb's durable reservations (spec C3). Since
+then the manager hands a reservation out only once it is on disk, abandoning one that is not
+recorded within reserveDurableWait() instead of handing it out anyway, and there is no warning;
+soakgate.py --source wait counts non-durable hand-outs and abandoned reservations from the
+"reservation wait" lines.
+
 When a reservation's durable write takes longer than ReserveWriteWait (10s by default), the
 manager hands the job out anyway, and a crash before that job's start is recorded loses the
 reservation, so the job runs again: the documented cost (.docs/bugfixes/260928-reserve-durability.md).
@@ -34,7 +40,7 @@ import collections, datetime, glob, os, re, sys
 if len(sys.argv) < 5:
     sys.exit(__doc__)
 d, rl, dbl, mlogs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
-RESERVE_WRITE_WAIT_MS = 10000  # jobqueue's serverReserveWriteWait() with the default timeouts
+RESERVE_WRITE_WAIT_MS = 10000  # pre-C3 jobqueue's serverReserveWriteWait() with the default timeouts
 WARN_NEAR_MS = 60000
 
 def ts(s):

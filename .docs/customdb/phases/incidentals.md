@@ -905,12 +905,16 @@ called ready, or explicitly deferred with the owner.
   Done in 1e.4: `skipNonModuleDir` skips them; a stray `.tmp/agent/*.go`
   naming a knob failed the test before and passes after.
 
-- [ ] (from 1e.2 review) `developers/soak/anyway.py` (and
+- [x] (from 1e.2 review) `developers/soak/anyway.py` (and
   `developers/soak/README.md` where it describes it) still describe the
   pre-C3 behaviour: `ReserveWriteWait`, `serverReserveWriteWait()` and
   reservations "handed out anyway". It still works on soak trees from
   before customdb. Owner: 1f.9 (F4): say it applies only to trees from
   before C3.
+  Done in 1f.9: `anyway.py`'s docstring opens by saying it applies only
+  to trees from before C3 and points at `soakgate.py --source wait`; the
+  README's table row and analysis block say the same, and the analysis
+  block now runs `soakgate.py --source wait`.
 
 - [ ] (from 1e.2 review) F6 lists only the two removed config keys for
   the CHANGELOG, but 1e.1 and 1e.2 also removed exported Go API that

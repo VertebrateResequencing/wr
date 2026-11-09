@@ -1,0 +1,6 @@
+nondurable source=wait inside=1 outside=2 runs=10000 outsidePct=0.0200
+totals n/a
+abandoned n=3 stalls=1 ok
+doubles inside=0 outside=0 acknowledged=0
+missing ran=0 absent=0 excused=0
+peakRUN=6100

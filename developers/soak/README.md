@@ -68,13 +68,13 @@ record the final stop that `wrdev.sh prodsim` makes as it ends.
 | --- | --- |
 | `markers.py <outdir>` | Runs per kind, runs with no end marker, double runs (a key run again after an exit 0), overlaps, re-runs by nearest restart or stall, and `--cmd_deps` ordering. |
 | `doubles.py <outdir> [doubles.tsv]` | Each double run classified by the outage its first run straddled. |
-| `anyway.py <outdir> <runnerlogdir> <doubles.tsv> <managerlog>...` | Which double runs had their first reservation handed out before it was on disk, judged from the first run's own runner log (its reports rejected as "bad job" or "you must Reserve()" after a crash, and no "command ran OK" for it) or the manager's rate-limited warning, with a reserve reply 10s or more after the request as supporting evidence; how often each signal fires on all other reservations; and the first run's own outcome lines. |
+| `anyway.py <outdir> <runnerlogdir> <doubles.tsv> <managerlog>...` | For soak trees from wr before durable reservations (customdb spec C3) only, which double runs had their first reservation handed out before it was on disk, judged from the first run's own runner log (its reports rejected as "bad job" or "you must Reserve()" after a crash, and no "command ran OK" for it) or the manager's rate-limited warning, with a reserve reply 10s or more after the request as supporting evidence; how often each signal fires on all other reservations; and the first run's own outcome lines. |
 | `runnerlogs.py <runnerlogdir> [unacked.tsv]` | Unacknowledged start reports and how they settled, final-state failures, kills with no kill line. |
 | `starttimes.py <outdir> <dbstart.tsv> <unacked.tsv>` | Recorded StartTime against the real start, for all, pre-crash and unacknowledged runs. |
 | `latency.py <outdir> <runnerlogdir>` | End-to-acknowledgement latency per outcome and per 10 minutes, and ends per minute. |
 | `rundepcheck.py <outdir>` | A verdict per `rundep.sh` instance. |
 | `relburycheck.py <outdir> <runnerlogdir> [dbstart.tsv]` | A verdict per `relbury.sh` batch: acknowledged-then-lost, stuck and extra runs. |
-| `soakgate.py --source d1\|warning <outdir> <runnerlogdir> <doubles.tsv> <dbstart.tsv>` | A crash soak's gate counts: non-durable hand-outs inside and outside injected commit stalls (from the per-reservation D1 lines with `d1`, or the rate-limited warning with `warning` for a tree without them) and whether each manager process's D1 totals are complete, double runs inside and outside those stalls and which were acknowledged (a first run is printed `killed` and not counted if its runner logged the exact line `msg="jobqueue Execute(<key>): killed by user request"` for that run's own reservation by the time the rerun began, since `psimjob.sh` writes its exit-0 marker just before exiting and a stop's kill can land between; a kill of another reservation by the same runner does not count), jobs that ran but are missing from the DB, and peak LSF RUN. Prints `outsidePct=nan`, which fails any bound, when the soak recorded no runs. Refuses (`ROTATED`, exit 1) if the manager's log rotated. Its fixtures are in `testdata/soakgate/`; `testdata/soakgate/run.sh` checks it. |
+| `soakgate.py --source wait\|d1\|warning <outdir> <runnerlogdir> <doubles.tsv> <dbstart.tsv>` | A crash soak's gate counts: non-durable hand-outs inside and outside injected commit stalls (from the periodic `"reservation wait"` lines' `notDurable=` with `wait`; for trees from wr before durable reservations, the per-reservation D1 lines with `d1`, or the rate-limited warning with `warning` for a tree without them) and whether each manager process's D1 totals are complete, with `wait` the abandoned reservations' total and `NONE` if a soak with stalls abandoned none, double runs inside and outside those stalls and which were acknowledged (a first run is printed `killed` and not counted if its runner logged the exact line `msg="jobqueue Execute(<key>): killed by user request"` for that run's own reservation by the time the rerun began, since `psimjob.sh` writes its exit-0 marker just before exiting and a stop's kill can land between; a kill of another reservation by the same runner does not count), jobs that ran but are missing from the DB, and peak LSF RUN. Prints `outsidePct=nan`, which fails any bound, when the soak recorded no runs. Refuses (`ROTATED`, exit 1) if the manager's log rotated. Its fixtures are in `testdata/soakgate/`; `testdata/soakgate/run.sh` checks it. |
 | `stopcheck.sh <outdir> <stopBegin> <stopEnd> [<prevStart>]` | Joins the portal runs in flight at a clean stop to the manager's state for them: an exit 0 must be complete, a killed run buried. Needs the manager up. |
 
 ### DB helpers
@@ -208,6 +208,7 @@ With `out=$SOAK_ROOT/prodsim-<epoch>` and `rl=$SOAK_ROOT/runnerlogs`:
 ```bash
 python3 developers/soak/markers.py "$out"            # double runs first
 python3 developers/soak/doubles.py "$out" "$out/doubles.tsv"
+# only for a tree from wr before durable reservations (customdb spec C3)
 python3 developers/soak/anyway.py "$out" "$rl" "$out/doubles.tsv" "$out"/manager.log*
 python3 developers/soak/runnerlogs.py "$rl" "$out/unacked.tsv"
 python3 developers/soak/latency.py "$out" "$rl"
@@ -217,8 +218,9 @@ go build -o "$SOAK_ROOT/dbstart" ./developers/soak/dbstart
 "$SOAK_ROOT/dbstart" "$SOAK_DBDIR/db" > "$out/dbstart.tsv"
 python3 developers/soak/starttimes.py "$out" "$out/dbstart.tsv" "$out/unacked.tsv"
 python3 developers/soak/relburycheck.py "$out" "$rl" "$out/dbstart.tsv"
-# the gate's counts; --source warning for a tree without the D1 log line
-python3 developers/soak/soakgate.py --source d1 "$out" "$rl" "$out/doubles.tsv" "$out/dbstart.tsv"
+# the gate's counts; for a tree from wr before durable reservations, --source d1,
+# or --source warning for one without the D1 log line
+python3 developers/soak/soakgate.py --source wait "$out" "$rl" "$out/doubles.tsv" "$out/dbstart.tsv"
 ```
 
 `soakgate.py` counts an `unmapped` double (one whose first run's runner log

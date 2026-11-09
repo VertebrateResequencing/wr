@@ -23,16 +23,19 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """Count a crash soak's gate criteria: non-durable hand-outs, double runs and missing jobs.
 
-usage: soakgate.py --source d1|warning <outdir> <runnerlogdir> <doubles.tsv> <dbstart.tsv>
+usage: soakgate.py --source wait|d1|warning <outdir> <runnerlogdir> <doubles.tsv> <dbstart.tsv>
 
 Windows: an injected FUSE commit stall (stall.log's "<epoch> STALL START" to its "STALL END")
-excuses what happens from its START to its END plus ReserveWriteWait (10s), or to START plus
+excuses what happens from its START to its END plus reserveDurableWait (10s), or to START plus
 STALL_SECS (180) plus 10s if it has no END, both ends inclusive, in whole seconds. A START
 followed by another START ends as one with no END. With no stall.log there are no windows.
 
 Non-durable hand-outs are read from <outdir>/manager.log only (manager.log.<epoch> files are
 copies of it), split into one segment per manager process at each "wr manager ... started on
-..., pid N" line; lines before the first start are ignored. With --source d1 each "reservation
+..., pid N" line; lines before the first start are ignored. With --source wait (a tree from wr
+with the reservation wait line, which has neither D1 lines nor the warning) each "reservation
+wait" line adds its notDurable= to the hand-out count, placed by its t=, and its abandoned= to an
+abandoned total; it never counts D1 lines or warnings. With --source d1 each "reservation
 handed out before it was recorded on disk" line counts 1, and each segment's total= values must
 be exactly 1..max, each once; a D1 line with no total= still counts, and makes the totals GAP.
 It never counts warnings, even in a log with no D1 line.
@@ -71,8 +74,11 @@ Every psimjob (kind, id) with an S marker must be in dbstart.tsv, except a put o
 last run's E status is not 0 or which has no E marker (prodsim may have removed it).
 
 It prints:
-  nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx|nan>
+  nondurable source=<wait|d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx|nan>
   totals <ok|GAP pid <pid> after <n>|n/a>
+  abandoned n=<n> stalls=<k> <ok|NONE>   (--source wait only; k is the number of stall windows,
+                                          and NONE, when k > 0 and n is 0, says no reservation
+                                          was abandoned in a soak that stalled commits)
   doubles inside=<n> outside=<n> acknowledged=<n>   (killed rows are in none of these)
   missing ran=<n> absent=<n> excused=<n>
   peakRUN=<n>
@@ -90,7 +96,7 @@ import os
 import re
 import sys
 
-RESERVE_WRITE_WAIT_S = 10  # jobqueue's ReserveWriteWait with the default timeouts
+RESERVE_WAIT_S = 10  # jobqueue's reserveDurableWait() with the default timeouts
 STALL_SECS = 180  # stall.sh's default stall length
 EXCUSABLE_KINDS = {'put', 'fofnput'}  # kinds prodsim may remove after a failed run
 
@@ -100,6 +106,8 @@ D1 = 'msg="reservation handed out before it was recorded on disk"'
 TOTAL = re.compile(r' total=(\d+)')
 WARN = 'msg="reservation not yet recorded on disk,'
 REPEATS = re.compile(r' \(repeated\)" repeats=(\d+)')
+WAIT = 'msg="reservation wait"'
+WAIT_COUNTS = re.compile(r' notDurable=(\d+) abandoned=(\d+)')
 ROTATED = re.compile(r'^log-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3})(?:\.gz)?$')
 RES = re.compile(r'msg="reserved a job" key=([0-9a-f]{32}) cmd="\S*psimjob\.sh (\S+) (\S+) ')
 PID = re.compile(r' pid=(\d+)')
@@ -151,13 +159,13 @@ def stall_windows(outdir: str) -> list[Window]:
             continue
         if f[2] == 'START':
             if start is not None:
-                windows.append((start, start + STALL_SECS + RESERVE_WRITE_WAIT_S))
+                windows.append((start, start + STALL_SECS + RESERVE_WAIT_S))
             start = int(f[0])
         elif f[2] == 'END' and start is not None:
-            windows.append((start, int(f[0]) + RESERVE_WRITE_WAIT_S))
+            windows.append((start, int(f[0]) + RESERVE_WAIT_S))
             start = None
     if start is not None:
-        windows.append((start, start + STALL_SECS + RESERVE_WRITE_WAIT_S))
+        windows.append((start, start + STALL_SECS + RESERVE_WAIT_S))
     return windows
 
 
@@ -166,9 +174,13 @@ def inside(t: int, windows: list[Window]) -> bool:
     return any(lo <= t <= hi for lo, hi in windows)
 
 
-def manager_segments(outdir: str, source: str) -> list[tuple[str, list[tuple[int, int]]]]:
-    """Return per manager process (pid) its non-durable hand-outs as (time, total or count)."""
-    segments: list[tuple[str, list[tuple[int, int]]]] = []
+Handout = tuple[int, int, int]
+Segment = tuple[str, list[Handout]]
+
+
+def manager_segments(outdir: str, source: str) -> list[Segment]:
+    """Return per manager process (pid) its hand-out lines as (time, total or count, abandoned)."""
+    segments: list[Segment] = []
     with open(os.path.join(outdir, 'manager.log'), errors='replace') as log:
         for line in log:
             m = T.match(line)
@@ -182,27 +194,35 @@ def manager_segments(outdir: str, source: str) -> list[tuple[str, list[tuple[int
                 continue
             value = handout(line, source)
             if value is not None:
-                segments[-1][1].append((epoch(m.group(1)), value))
+                segments[-1][1].append((epoch(m.group(1)), *value))
     return segments
 
 
-def handout(line: str, source: str) -> int | None:
-    """Return a hand-out line's D1 total (0 if none), its warning count, or None for other lines."""
+def handout(line: str, source: str) -> tuple[int, int] | None:
+    """Return a hand-out line's D1 total (0 if none), warning count or wait line's notDurable, and
+    its abandoned count (0 but for a wait line), or None for other lines."""
+    if source == 'wait':
+        if WAIT not in line:
+            return None
+        w = WAIT_COUNTS.search(line)
+        if not w:
+            sys.exit(f'soakgate: a "reservation wait" line has no notDurable= abandoned=: {line}')
+        return int(w.group(1)), int(w.group(2))
     if source == 'd1':
         if D1 not in line:
             return None
         m = TOTAL.search(line)
-        return int(m.group(1)) if m else 0  # 0 is never a valid total: GAP
+        return (int(m.group(1)) if m else 0), 0  # 0 is never a valid total: GAP
     if WARN not in line:
         return None
     r = REPEATS.search(line)
-    return int(r.group(1)) if r else 1
+    return (int(r.group(1)) if r else 1), 0
 
 
-def totals_verdict(segments: list[tuple[str, list[tuple[int, int]]]]) -> str:
+def totals_verdict(segments: list[Segment]) -> str:
     """Return "ok", or a GAP naming the first segment whose totals are not exactly 1..max."""
     for pid, handouts in segments:
-        seen = collections.Counter(total for _, total in handouts)
+        seen = collections.Counter(total for _, total, _ in handouts)
         k = 0
         while seen[k + 1] == 1:
             k += 1
@@ -342,7 +362,7 @@ def missing_jobs(runs: dict[tuple[str, str, str, str], Run],
 def main() -> None:
     """Print the gate's counts for one soak's output."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--source', required=True, choices=('d1', 'warning'))
+    ap.add_argument('--source', required=True, choices=('wait', 'd1', 'warning'))
     for name in ('outdir', 'runnerlogdir', 'doubles', 'dbstart'):
         ap.add_argument(name)
     a = ap.parse_args()
@@ -355,12 +375,16 @@ def main() -> None:
     windows = stall_windows(a.outdir)
     segments = manager_segments(a.outdir, a.source)
     handouts = [h for _, hs in segments for h in hs]
-    n_in = sum(n if a.source == 'warning' else 1 for t, n in handouts if inside(t, windows))
-    n_out = sum(n if a.source == 'warning' else 1 for t, n in handouts if not inside(t, windows))
+    n_in = sum(1 if a.source == 'd1' else n for t, n, _ in handouts if inside(t, windows))
+    n_out = sum(1 if a.source == 'd1' else n for t, n, _ in handouts if not inside(t, windows))
     runs_total = first_line_runs(a.outdir)
     pct = f'{100 * n_out / runs_total:.4f}' if runs_total else 'nan'
     print(f'nondurable source={a.source} inside={n_in} outside={n_out} runs={runs_total} outsidePct={pct}')
     print('totals ' + (totals_verdict(segments) if a.source == 'd1' else 'n/a'))
+    if a.source == 'wait':
+        abandoned = sum(n for _, _, n in handouts)
+        verdict = 'NONE' if windows and not abandoned else 'ok'
+        print(f'abandoned n={abandoned} stalls={len(windows)} {verdict}')
 
     runs = marker_runs(a.outdir)
     rows = classify_doubles(a.doubles, runs, a.runnerlogdir, windows)
