@@ -1,0 +1,51 @@
+TestStoreReplay, WR_TEST_STORE=bolt, HEAD 3f1733c4 plus the final 1g.2 working tree after review round 2
+(store_record.go sha256 198a45d6..., store_record_test.go sha256 55219684...)
+
+## go test -v lines (store log lines dropped)
+=== RUN   TestStoreReplay
+
+✔
+    store_record_test.go:640: replayed 400863 calls, 1 skipped, 0 mismatches
+✔✔
+✔
+
+
+4 total assertions
+
+--- PASS: TestStoreReplay (110.55s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	110.573s
+
+## dropped log lines, by message
+      2 msg="archive fold"
+      2 msg="db writer" writer=addChunk
+      2 msg="db writer" writer=archive
+      2 msg="db writer" writer=batch
+      2 msg="db writer" writer=bestEffort
+      2 msg="db writer" writer=newJobs
+      1 msg="recovering: opened database"
+
+## time -v
+	Command being timed: "env WR_STORE_REPLAY=/nfs/hgi/wr/sb10-bigdb/customdb/recordings/phase0-prodsim-20261028b.rec WR_TEST_STORE=bolt go test -tags netgo -count=1 -timeout 0 -v -run ^TestStoreReplay$ ./jobqueue/"
+	User time (seconds): 54.62
+	System time (seconds): 18.61
+	Percent of CPU this job got: 64%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:53.26
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 630552
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 11169
+	Minor (reclaiming a frame) page faults: 1130692
+	Voluntary context switches: 905549
+	Involuntary context switches: 220052
+	Swaps: 0
+	File system inputs: 72
+	File system outputs: 9866496
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

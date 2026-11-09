@@ -145,10 +145,12 @@ linters:
       # G703 is unstable (#584), and the log store opens and removes only files
       # whose paths it builds from the configured dbFile or its own directory
       # and either a fixed name or suffix (such as VERSION or .tmp) or a uint32
-      # file number formatted %08x, none of which can traverse out of it.
+      # file number formatted %08x, none of which can traverse out of it. Its
+      # bbolt conversion also uses the kept bbolt file its SOURCE names, which
+      # it refuses if that name holds a path separator.
       - linters:
           - gosec
-        path: jobqueue/store_(checkpoint|log|open|recover)\.go
+        path: jobqueue/store_(checkpoint|convert|log|open|recover)\.go
         text: "G703"
       - linters:
           - funlen

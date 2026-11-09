@@ -75,8 +75,8 @@ forced folds hide fold-liveness bugs (a folder that stalls or never folds
 without the hook), so D1's tests must cover fold liveness; this replay
 cannot.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1g.3: Crash soak at production LSF concurrency
 

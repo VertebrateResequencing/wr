@@ -48,6 +48,7 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	"github.com/VertebrateResequencing/wr/limiter"
+	"github.com/gofrs/uuid/v5"
 	"github.com/ugorji/go/codec"
 )
 
@@ -146,7 +147,13 @@ var storeReplays = map[string]replayFunc{
 			guard.setDependents(a.GuardKeys, a.GuardMember)
 		}
 
-		return storeDigest(rp.s.storeNewJobsGuarded(rp.ctx, rp.jobList(a.Jobs), a.IgnoreAdded, guard))
+		jobs := rp.jobList(a.Jobs)
+		stored, err := rp.s.storeNewJobsGuarded(rp.ctx, jobs, a.IgnoreAdded, guard)
+		digest := storeDigest(stored, err)
+		rp.acceptDependentsAsStored(stored, err, digest)
+		rp.noteAdded(a.Jobs, jobs, stored.jobsToQueue)
+
+		return digest
 	}),
 	"registerRerunGuard": replayWith(func(rp *replayer, _ *recNone) [32]byte {
 		guard := rp.s.registerRerunGuard()
@@ -178,28 +185,44 @@ var storeReplays = map[string]replayFunc{
 		return storeDigest(rp.s.checkIfComplete(a.Key))
 	}),
 	"updateJobRunStateDurable": replayWith(func(rp *replayer, a *recJob) [32]byte {
-		return storeDigest(rp.s.updateJobRunStateDurable(rp.job(a.Job)))
+		job := rp.job(a.Job)
+		rp.noteRunState(job)
+
+		return storeDigest(rp.s.updateJobRunStateDurable(job))
 	}),
 	"reserveRunState": replayWith(func(rp *replayer, a *recJob) [32]byte {
-		return storeDigest(rp.reserve(rp.job(a.Job), reserveDurableWait()))
+		job := rp.job(a.Job)
+		rp.noteRunState(job)
+
+		return storeDigest(rp.reserve(job, reserveDurableWait()))
 	}),
 	// removed in Phase 1: a reservation, waited for as the recording waited,
 	// whose answer is not compared, since reserveRunState does not wait.
 	"updateJobRunStateDurableWithin": replayWith(func(rp *replayer, a *recWithin) [32]byte {
 		rp.accept = func([32]byte) bool { return true }
+		job := rp.job(a.Job)
+		rp.noteRunState(job)
 
-		return storeDigest(rp.reserve(rp.job(a.Job), a.Wait))
+		return storeDigest(rp.reserve(job, a.Wait))
 	}),
 	"updateJobAfterChangeDurable": replayWith(func(rp *replayer, a *recJob) [32]byte {
-		return storeDigest(rp.s.updateJobAfterChangeDurable(rp.job(a.Job)))
+		job := rp.job(a.Job)
+		rp.noteLive(job, a.Job)
+
+		return storeDigest(rp.s.updateJobAfterChangeDurable(job))
 	}),
 	"updateJobAfterExit": replayWith(func(rp *replayer, a *recExit) [32]byte {
-		rp.s.updateJobAfterExit(rp.ctx, rp.job(a.Job), a.Stdo, a.Stde, a.Force)
+		job := rp.job(a.Job)
+		rp.noteLive(job, a.Job)
+		rp.s.updateJobAfterExit(rp.ctx, job, a.Stdo, a.Stde, a.Force)
 
 		return storeDigest()
 	}),
 	"updateJobAfterExitDurable": replayWith(func(rp *replayer, a *recExit) [32]byte {
-		return storeDigest(rp.s.updateJobAfterExitDurable(rp.job(a.Job), a.Stdo, a.Stde, a.Force))
+		job := rp.job(a.Job)
+		rp.noteLive(job, a.Job)
+
+		return storeDigest(rp.s.updateJobAfterExitDurable(job, a.Stdo, a.Stde, a.Force))
 	}),
 	"expectJobExitUpdate": replayWith(func(rp *replayer, _ *recNone) [32]byte {
 		done := rp.s.expectJobExitUpdate()
@@ -217,9 +240,15 @@ var storeReplays = map[string]replayFunc{
 		return storeDigest()
 	}),
 	"archiveCompletion": replayWith(func(rp *replayer, a *recArchive) [32]byte {
-		outcome, err := rp.s.archiveCompletion(a.Key, rp.job(a.Job))
-		if outcome == archiveRemovedLive {
+		job := rp.job(a.Job)
+
+		outcome, err := rp.s.archiveCompletion(a.Key, job)
+		switch outcome {
+		case archiveRemovedLive:
 			rp.forget(a.Key)
+		case archiveKeptLive:
+			rp.noteRerunLive(job, a.Job)
+		case archiveNotWritten, archiveAlreadyWritten:
 		}
 
 		return storeDigest(outcome, err)
@@ -232,19 +261,31 @@ var storeReplays = map[string]replayFunc{
 			rp.aheads[rp.call.Start] = ahead
 		}
 
+		rp.acceptNoAhead(ahead)
+
 		return storeDigest(ahead)
 	}),
 	"queueJobChangeAhead": replayWith(func(rp *replayer, a *recChange) [32]byte {
 		job, change := rp.change(a.Job)
 		rp.s.queueJobChangeAhead(rp.ctx, job, rp.takeAhead(a.Ahead), change)
 
+		// bbolt writes the change only with the handle it prepared
+		if a.Ahead != 0 {
+			rp.noteLive(job, a.Job)
+		}
+
 		return storeDigest()
 	}),
 	"moveJobChangeAhead": replayWith(func(rp *replayer, a *recMove) [32]byte {
-		moved := rp.s.moveJobChangeAhead(rp.job(a.From), rp.job(a.To), rp.takeAhead(a.Ahead))
+		given := rp.takeAhead(a.Ahead)
+		moved := rp.s.moveJobChangeAhead(rp.job(a.From), rp.job(a.To), given)
 
 		if moved != nil {
 			rp.aheads[rp.call.Start] = moved
+		}
+
+		if given == nil {
+			rp.acceptNoAhead(moved)
 		}
 
 		return storeDigest(moved)
@@ -261,13 +302,34 @@ var storeReplays = map[string]replayFunc{
 		return storeDigest(err)
 	}),
 	"modifyLiveJobs": replayWith(func(rp *replayer, a *recModify) [32]byte {
-		return storeDigest(rp.s.modifyLiveJobs(rp.ctx, a.OldKeys, rp.jobList(a.Jobs)))
+		jobs := rp.jobList(a.Jobs)
+		err := rp.s.modifyLiveJobs(rp.ctx, a.OldKeys, jobs)
+
+		rp.forgetLive(a.OldKeys...)
+
+		for i, job := range jobs {
+			rp.noteLive(job, a.Jobs[i])
+		}
+
+		return storeDigest(err)
 	}),
 	"storeLiveForRerun": replayWith(func(rp *replayer, a *recJobs) [32]byte {
-		return storeDigest(rp.s.storeLiveForRerun(rp.jobList(a.Jobs)))
+		jobs := rp.jobList(a.Jobs)
+		for i, job := range jobs {
+			rp.noteRerunLive(job, a.Jobs[i])
+		}
+
+		return storeDigest(rp.s.storeLiveForRerun(jobs))
 	}),
 	"storeRunningRerunMarks": replayWith(func(rp *replayer, a *recJobs) [32]byte {
-		return storeDigest(rp.s.storeRunningRerunMarks(rp.jobList(a.Jobs)))
+		jobs := rp.jobList(a.Jobs)
+		for i, job := range jobs {
+			if job.rerunAfterRun() {
+				rp.noteLive(job, a.Jobs[i])
+			}
+		}
+
+		return storeDigest(rp.s.storeRunningRerunMarks(jobs))
 	}),
 	"retrieveCompleteJobsByKeys": replayWith(func(rp *replayer, a *recKeys) [32]byte {
 		return storeDigest(rp.s.retrieveCompleteJobsByKeys(a.Keys))
@@ -535,10 +597,21 @@ func (w writeSpans) overlaps(c *recordedCall) bool {
 // persisted fields each call sets to the recorded ones, and the handles s
 // returned, by the recorded id of the call that returned them.
 type replayer struct {
-	ctx       context.Context //nolint:containedctx // the replay's own, passed to each call
-	s         store
-	jobs      map[string]*Job
-	guards    map[uint64]*rerunGuard
+	ctx    context.Context //nolint:containedctx // the replay's own, passed to each call
+	s      store
+	jobs   map[string]*Job
+	guards map[uint64]*rerunGuard
+
+	// stored is, by key, the recorded encoding of the job bbolt's live record
+	// holds, as the replay notes it at each write that rewrites that record
+	// (see noteLive): what bbolt answers the job as when an add reads it as a
+	// live dependent (see acceptDependentsAsStored). runStateOver holds the
+	// keys of those whose run state bbolt has written since. The notes follow
+	// the recording's call order, not bbolt's commits, and are not complete
+	// (spec A5): a missing or wrong note can only add a mismatch.
+	stored       map[string][]byte
+	runStateOver map[string]bool
+
 	aheads    map[uint64]*jobChangeAhead
 	exitDones map[uint64]func()
 	lastEnd   uint64
@@ -565,13 +638,15 @@ type replayer struct {
 // newReplayer returns a replayer for s.
 func newReplayer(ctx context.Context, s store) *replayer {
 	return &replayer{
-		ctx:       ctx,
-		s:         s,
-		jobs:      make(map[string]*Job),
-		guards:    make(map[uint64]*rerunGuard),
-		aheads:    make(map[uint64]*jobChangeAhead),
-		exitDones: make(map[uint64]func()),
-		learned:   newLearnedReplay(),
+		ctx:          ctx,
+		s:            s,
+		jobs:         make(map[string]*Job),
+		stored:       make(map[string][]byte),
+		runStateOver: make(map[string]bool),
+		guards:       make(map[uint64]*rerunGuard),
+		aheads:       make(map[uint64]*jobChangeAhead),
+		exitDones:    make(map[uint64]func()),
+		learned:      newLearnedReplay(),
 	}
 }
 
@@ -693,6 +768,17 @@ func (rp *replayer) forget(keys ...string) {
 	for _, key := range keys {
 		delete(rp.jobs, key)
 	}
+
+	rp.forgetLive(keys...)
+}
+
+// forgetLive drops what the replay noted of bbolt's live records of keys,
+// which bbolt no longer holds.
+func (rp *replayer) forgetLive(keys ...string) {
+	for _, key := range keys {
+		delete(rp.stored, key)
+		delete(rp.runStateOver, key)
+	}
 }
 
 // sharedJob returns the replay's job for decoded's key, decoded itself if it
@@ -731,6 +817,121 @@ func setPersistedFields(dst, src *Job) {
 			d.Field(i).Set(s.Field(i))
 		}
 	}
+}
+
+// noteLive notes encoded, the recorded encoding of job, as what bbolt's live
+// record of job's key holds after a write the replay is replaying: an add or a
+// modify that stores job, a full change (updateJobAfterChangeDurable, or
+// queueJobChangeAhead with the handle bbolt prepared), an exit
+// (updateJobAfterExit, updateJobAfterExitDurable) or a running job's mark to
+// run again (storeRunningRerunMarks). bbolt writes the last of a job's full
+// changes and exits to arrive, and the replay notes them in the recording's
+// order.
+func (rp *replayer) noteLive(job *Job, encoded []byte) {
+	key := job.Key()
+	rp.stored[key] = encoded
+	delete(rp.runStateOver, key)
+}
+
+// noteRerunLive is noteLive of the live record bbolt puts back for job,
+// recorded as encoded, to run again (db.rerunRecords), at storeLiveForRerun or
+// an archive that keeps job live: job without its RerunAfterRun mark or its
+// ReservedBy.
+func (rp *replayer) noteRerunLive(job *Job, encoded []byte) {
+	rerun := rp.decodedJob(encoded)
+	rerun.RerunAfterRun = false
+	rerun.ReservedBy = uuid.UUID{}
+
+	rp.noteLive(job, encodeRecorded(rerun))
+}
+
+// noteRunState notes that bbolt writes job's run state, apart from its live
+// record, if the replay has noted that record.
+func (rp *replayer) noteRunState(job *Job) {
+	if key := job.Key(); rp.stored[key] != nil {
+		rp.runStateOver[key] = true
+	}
+}
+
+// noteAdded is noteLive of each of an add's own jobs, recorded as encoded, that
+// bbolt stored in its live bucket: each in queued, the add's jobsToQueue, but
+// not one whose live record bbolt kept (see liveRecordKept). A complete
+// dependent the add puts back in jobsToQueue to run again is not one of its own
+// jobs, so it goes unnoted.
+func (rp *replayer) noteAdded(encoded [][]byte, jobs, queued []*Job) {
+	keys := make(map[string]bool, len(queued))
+	for _, job := range queued {
+		keys[job.Key()] = true
+	}
+
+	for i, job := range jobs {
+		if key := job.Key(); keys[key] && !rp.liveRecordKept(key) {
+			rp.noteLive(job, encoded[i])
+		}
+	}
+}
+
+// liveRecordKept reports whether bbolt keeps its live record of key when an
+// add stores the job again (db.liveRecordKept): the replay noted that record,
+// and bbolt has since written the job's run state, or the record is of a job
+// handed out.
+func (rp *replayer) liveRecordKept(key string) bool {
+	existing, ok := rp.stored[key]
+	if !ok {
+		return false
+	}
+
+	return rp.runStateOver[key] || liveRecordHandedOut(rp.decodedJob(existing))
+}
+
+// acceptDependentsAsStored accepts, for an add whose results, with the given
+// digest, include live dependents, the recorded answer with each dependent as
+// the replay noted bbolt's live record of it (see noteLive) but with the
+// replayed dependent's Dependencies, as well as the replayed answer. A server
+// reads only a dependent's key and Dependencies (updateLiveDependents), and
+// bbolt answers a dependent as its live record holds it, without the run state
+// it keeps apart, where the log store answers it with its latest state (spec
+// A5). If the replay noted no live record for a dependent, it accepts only the
+// replayed answer.
+func (rp *replayer) acceptDependentsAsStored(stored storedNewJobs, err error, digest [32]byte) {
+	dependents := stored.dependents.jobs
+	if len(dependents) == 0 {
+		return
+	}
+
+	asStored := make([]*Job, len(dependents))
+
+	for i, dependent := range dependents {
+		encoded, ok := rp.stored[dependent.Key()]
+		if !ok {
+			return
+		}
+
+		asStored[i] = rp.decodedJob(encoded)
+
+		dependent.RLock()
+		asStored[i].Dependencies = dependent.Dependencies
+		dependent.RUnlock()
+	}
+
+	stored.dependents.jobs = asStored
+	alternative := storeDigest(stored, err)
+
+	rp.accept = func(recorded [32]byte) bool { return recorded == digest || recorded == alternative }
+}
+
+// acceptNoAhead accepts, for a prepareJobChange, or a moveJobChangeAhead given
+// no handle, that returned ahead, a recorded answer with or without a
+// change-ahead handle if ahead is nil: any store may prepare none (spec, The
+// store interface), and queueJobChangeAhead given none makes the change
+// afresh. A move given a handle must answer one.
+func (rp *replayer) acceptNoAhead(ahead *jobChangeAhead) {
+	if ahead != nil {
+		return
+	}
+
+	none, one := storeDigest(ahead), storeDigest(&jobChangeAhead{})
+	rp.accept = func(recorded [32]byte) bool { return recorded == none || recorded == one }
 }
 
 // job is the replay's job for a recorded job, set as recorded.

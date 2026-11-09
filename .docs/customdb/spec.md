@@ -1299,12 +1299,74 @@ hashes a canonical result: jobs sorted by key, with fields not persisted by
 that did not overlap a write call in the recording ([Start, End] seq
 intervals). `ctx` is never recorded; replay passes its own.
 
-In Phase 0 an error result is digested by its text, and a handle result
+An error result is digested by its text, and a handle result
 (`*jobChangeAhead`, `*rerunGuard`, the `expectJobExitUpdate` func) only by
-whether it is nil, so a store that returns a nil handle where bbolt returns
-one mismatches. A bbolt replay cannot test either choice, since bbolt gives
-the recorded errors and handles; the first log-store replay (Phase 1 gate
-1g.2) revisits both.
+whether it is nil. A bbolt replay cannot test either choice, since bbolt
+gives the recorded errors and handles, so the first log-store replay (Phase
+1 gate 1g.2) revisited both. No error text mismatched. Any store may
+prepare no change ahead (The store interface), and the log store prepares
+none, so a `prepareJobChange` that returns nil, or a `moveJobChangeAhead`
+given none that returns nil, matches a recorded handle too. A
+`moveJobChangeAhead` given a handle that returns nil, or either call
+returning a handle where the recording has none, still mismatches. A
+`*rerunGuard` or `expectJobExitUpdate` func that is nil where the
+recording has one still mismatches.
+
+That replay found one more answer the stores give differently with no
+difference to a server: the live dependents in `storeNewJobsGuarded`'s
+result. A server reads only each dependent's key and `Dependencies`
+(`updateLiveDependents`). bbolt answers a dependent as its live record
+holds it, without the run state it keeps apart; the log store answers it
+with its latest state. So a recorded `storeNewJobsGuarded` answer with
+dependents also matches the replayed one with each dependent replaced by
+the job the replay noted bbolt's live record of it holds, given the
+replayed dependent's `Dependencies`. A store that answers a dependent's
+key or `Dependencies` wrongly, or any other part of the result, still
+mismatches.
+
+The replay notes a job's live record, as recorded, at each write that
+bbolt makes to it, in the recording's order:
+
+- each of an add's own jobs that it stores (in `jobsToQueue`), unless
+  bbolt keeps the existing record: a job handed out, or one whose run state
+  bbolt has written since its record;
+- each job `modifyLiveJobs` stores, dropping the old keys;
+- a full change (`updateJobAfterChangeDurable`, or `queueJobChangeAhead`
+  with a recorded handle);
+- an exit (`updateJobAfterExit`, `updateJobAfterExitDurable`);
+- a job `storeRunningRerunMarks` is given marked to run again;
+- each job `storeLiveForRerun` stores, and a job an archive keeps live
+  (`archiveKeptLive`), as bbolt puts it back: without `RerunAfterRun` or
+  `ReservedBy`.
+
+The replay forgets the record of a job it sees archived
+(`archiveRemovedLive`) or deleted. The notes follow the recording's call
+order, not bbolt's commits, and the recording does not show every write
+bbolt makes or skips, so the notes are not complete. Cases known to go
+unnoted or be noted wrongly include:
+
+- a job `recoverIncompleteJobs` recovers, which has only a digest in the
+  recording;
+- a job a rerun guard keeps live at its archive, which is answered as
+  `archiveRemovedLive`, like any archived job;
+- a complete dependent an add puts back to run again, which bbolt stores
+  in `jobsToQueue` but which is not one of the add's own jobs, and was
+  forgotten when it was archived;
+- a change, exit or mark to run again that bbolt skips, since it no
+  longer holds the key live or (for `storeRunningRerunMarks`) the job's
+  archive is pending, but which the replay notes;
+- a `modifyLiveJobs`, `storeLiveForRerun` or add whose transaction failed,
+  which the replay still notes;
+- a best-effort write (`updateJobAfterExit`, `queueJobChangeAhead`) that
+  bbolt has queued but not yet committed, so an add that does not overlap
+  it in the recording reads bbolt's older record, where the replay has
+  noted the newer one.
+
+Where the replay has noted no record for a dependent, it accepts only the
+replayed answer; where it noted a wrong one, the alternative is wrong.
+Either way the replay may report a false mismatch, but never accepts a
+wrong answer: each dependent's key and `Dependencies`, and the rest of the
+answer, are still compared.
 
 The learned-requirements cache reads (`cachedReqGroupRecs`,
 `refreshReqGroupRecs` and `reqStatChanges`) are not compared by digest.

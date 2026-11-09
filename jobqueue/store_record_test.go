@@ -41,6 +41,7 @@ import (
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	"github.com/VertebrateResequencing/wr/limiter"
+	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -63,6 +64,9 @@ const (
 	recordTestChildDepGroup = "record-child-dg"
 	recordTestLimitGroup    = "record-lg"
 	recordTestReqGroup      = "db_test"
+
+	// recordTestHost is the host the recorded jobs run on.
+	recordTestHost = "record-host"
 )
 
 // recordTestBase is the fixed time recordWorkload's job times count from, so
@@ -114,6 +118,63 @@ const (
 	learnedTestLoadDelay = 100 * time.Millisecond
 )
 
+func exitDependentDurably(_ context.Context, s store, dependent *Job) *Job {
+	dependent.State, dependent.Exited, dependent.Exitcode = JobStateBuried, true, 1
+	So(s.updateJobAfterExitDurable(dependent, []byte("o"), []byte("e"), false), ShouldBeNil)
+
+	return dependent
+}
+
+func exitDependent(ctx context.Context, s store, dependent *Job) *Job {
+	done := s.expectJobExitUpdate()
+	dependent.State, dependent.Exited, dependent.Exitcode = JobStateBuried, true, 1
+	s.updateJobAfterExit(ctx, dependent, []byte("o"), nil, false)
+	done()
+
+	// waits for every expected exit update
+	stdo, _ := s.retrieveJobStd(ctx, dependent.Key())
+	So(string(stdo), ShouldEqual, "o")
+
+	return dependent
+}
+
+func markDependent(_ context.Context, s store, dependent *Job) *Job {
+	dependent.RerunAfterRun = true
+	So(s.storeRunningRerunMarks([]*Job{dependent}), ShouldBeNil)
+
+	return dependent
+}
+
+// unmarkedDependent changes dependent without storing the change, then asks for
+// its mark to be stored, which stores nothing, since it is not marked.
+func unmarkedDependent(_ context.Context, s store, dependent *Job) *Job {
+	dependent.State, dependent.UntilBuried = JobStateDelayed, 2
+	So(s.storeRunningRerunMarks([]*Job{dependent}), ShouldBeNil)
+
+	return dependent
+}
+
+// modifyDependentKeepingKey modifies dependent's priority, which keeps its key,
+// as `wr mod` does when it leaves the command alone: bbolt deletes its live
+// record and then stores the modified one under the same key.
+func modifyDependentKeepingKey(ctx context.Context, s store, dependent *Job) *Job {
+	modified := testDBJob(dependent.Cmd, "record-dependent")
+	modified.Dependencies = dependent.Dependencies
+	modified.Priority = dependent.Priority + 1
+	So(modified.Key(), ShouldEqual, dependent.Key())
+	So(s.modifyLiveJobs(ctx, []string{dependent.Key()}, []*Job{modified}), ShouldBeNil)
+
+	return modified
+}
+
+func modifyDependent(ctx context.Context, s store, dependent *Job) *Job {
+	modified := testDBJob("echo record dependent modified", "record-dependent")
+	modified.Dependencies = dependent.Dependencies
+	So(s.modifyLiveJobs(ctx, []string{dependent.Key()}, []*Job{modified}), ShouldBeNil)
+
+	return modified
+}
+
 // flippedChangeAheadStore is a store whose prepareJobChange discards the handle
 // its store prepared and returns none, or returns a handle where its store
 // prepared none: a store whose handle answer differs from the recorded one,
@@ -133,6 +194,219 @@ func (f flippedChangeAheadStore) prepareJobChange(ctx context.Context, job *Job,
 	f.discardJobChangeAhead(job, ahead)
 
 	return nil
+}
+
+// TestStoreRecordReplayLiveDependents covers the live dependents of an add in
+// spec A5: a bbolt recording of an add reading a started live dependent, after
+// each write that leaves bbolt's live record of it other than as it was
+// added, replays against the log store with no mismatch.
+func TestStoreRecordReplayLiveDependents(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	unwrapped := func(s store) store { return s }
+
+	for name, write := range dependentWrites() {
+		Convey("Given a bbolt recording of an add reading a started live dependent "+name, t, func() {
+			path := filepath.Join(t.TempDir(), "dependent.rec")
+			recordDependentRead(t, ctx, path, unwrapped, write)
+
+			Convey("replayed against a fresh log store, there is no mismatch", func() {
+				replayTo, _ := openTestStore(t, ctx, storeKindLog)
+
+				stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
+				So(err, ShouldBeNil)
+				So(mismatchedMethods(stats), ShouldBeEmpty)
+			})
+		})
+	}
+
+	Convey("Given a bbolt recording of an add reading a started live dependent changed ahead with no handle, "+
+		"which bbolt does not store", t, func() {
+		path := filepath.Join(t.TempDir(), "dependent.rec")
+		flipped := func(s store) store { return flippedChangeAheadStore{store: s} }
+		recordDependentRead(t, ctx, path, flipped, func(ctx context.Context, s store, dependent *Job) *Job {
+			ahead := s.prepareJobChange(ctx, dependent, recordKickChange)
+			So(ahead, ShouldBeNil)
+			s.queueJobChangeAhead(ctx, dependent, ahead, recordKickChange)
+
+			return dependent
+		})
+
+		Convey("replayed against a fresh log store, there is no mismatch", func() {
+			replayTo, _ := openTestStore(t, ctx, storeKindLog)
+
+			stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
+			So(err, ShouldBeNil)
+			So(mismatchedMethods(stats), ShouldBeEmpty)
+		})
+	})
+
+	Convey("Given a bbolt recording of an add reading a started live dependent reserved through "+
+		"reserveRunState and added again, with the reservation rewritten as Phase 0's "+
+		"updateJobRunStateDurableWithin", t, func() {
+		recorded := filepath.Join(t.TempDir(), "dependent.rec")
+		recordDependentRead(t, ctx, recorded, unwrapped, addRunStateReservedDependentAgain)
+
+		path, rewritten := asPhase0Within(t, recorded)
+		So(rewritten, ShouldEqual, 1)
+
+		Convey("replayed against a fresh log store, there is no mismatch", func() {
+			replayTo, _ := openTestStore(t, ctx, storeKindLog)
+
+			stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
+			So(err, ShouldBeNil)
+			So(mismatchedMethods(stats), ShouldBeEmpty)
+		})
+	})
+
+	Convey("Given a bbolt recording through a store whose add reading a live dependent also fails, "+
+		"of that add reading a started live dependent", t, func() {
+		path := filepath.Join(t.TempDir(), "dependent.rec")
+		failing := func(s store) store { return failingDependentsAddStore{store: s} }
+		recordDependentRead(t, ctx, path, failing, func(_ context.Context, _ store, dependent *Job) *Job {
+			return dependent
+		})
+
+		Convey("replayed against such a log store, there is no mismatch", func() {
+			replayTo, _ := openTestStore(t, ctx, storeKindLog)
+
+			stats, err := replayRecordingFolding(ctx, path, failingDependentsAddStore{store: replayTo}, replayTo)
+			So(err, ShouldBeNil)
+			So(mismatchedMethods(stats), ShouldBeEmpty)
+		})
+	})
+}
+
+// dependentWrites are, by name, the writes after which bbolt's live record of
+// a job, which is what bbolt answers it as when an add reads it as a live
+// dependent, is not as the job was added (spec A5).
+func dependentWrites() map[string]dependentWrite {
+	return map[string]dependentWrite{
+		"modified":                 modifyDependent,
+		"modified keeping its key": modifyDependentKeepingKey,
+		"reserved through reserveRunState and added again":                    addRunStateReservedDependentAgain,
+		"delayed, deleted and added again":                                    readdDeletedDependent,
+		"alongside a second started dependent with other Dependencies":        startSecondDependent,
+		"reserved, put back to run again, and added again":                    readdReservedPutBackDependent,
+		"delayed, modified to another key, and added again under its old key": readdModifiedDependent,
+		"added again in another RepGroup":                                     addDependentAgain,
+		"added again in another RepGroup once reserved":                       addReservedDependentAgain,
+		"added again in another RepGroup once delayed":                        addDelayedDependentAgain,
+		"kept live by its archive and added again ignoring complete jobs":     addArchivedDependentAgain,
+		"changed durably":                         changeDependentDurably,
+		"changed ahead with a handle":             changeDependentAhead,
+		"exited durably":                          exitDependentDurably,
+		"exited":                                  exitDependent,
+		"put back to run again":                   putBackDependent,
+		"kept live by its archive":                archiveDependentKeptLive,
+		"marked to run again":                     markDependent,
+		"not marked to run again, being unmarked": unmarkedDependent,
+	}
+}
+
+// recordDependentRead records to path, against bbolt wrapped by wrap: an add
+// of a job depending on a dep group, write to it, its start, and then an add
+// of a member of that dep group, which reads the started job as a live
+// dependent. bbolt answers that dependent as its live record holds it, without
+// its run state, and the log store with its latest state.
+func recordDependentRead(t *testing.T, ctx context.Context, path string, wrap func(store) store,
+	write dependentWrite) {
+	t.Helper()
+
+	s, err := newRecordingStore(ctx, wrap(openStoreIn(ctx, storeKindBolt, t.TempDir())), path)
+	So(err, ShouldBeNil)
+
+	dependent := testDBJob("echo record dependent", "record-dependent")
+	dependent.Dependencies = Dependencies{NewDepGroupDependency(recordTestDepGroup)}
+	_, err = s.storeNewJobsGuarded(ctx, []*Job{dependent}, false, nil)
+	So(err, ShouldBeNil)
+
+	dependent = write(ctx, s, dependent)
+	startDependent(s, dependent)
+
+	member := testDBJob("echo record member", "record-member")
+	member.DepGroups = []string{recordTestDepGroup}
+
+	stored, err := s.storeNewJobsGuarded(ctx, []*Job{member}, false, nil)
+	So(slices.ContainsFunc(stored.dependents.jobs, func(job *Job) bool { return job.Key() == dependent.Key() }),
+		ShouldBeTrue)
+
+	for _, read := range stored.dependents.jobs {
+		So(read.State, ShouldNotEqual, JobStateRunning)
+	}
+
+	if errors.Is(err, errBoom) {
+		err = nil
+	}
+
+	So(err, ShouldBeNil)
+	So(s.close(ctx), ShouldBeNil)
+}
+
+// startDependent starts dependent, which bbolt writes to its run state, apart
+// from its live record.
+func startDependent(s store, dependent *Job) {
+	dependent.State = JobStateRunning
+	dependent.StartTime = recordTestBase.Add(time.Minute)
+	dependent.Host = recordTestHost
+	So(s.updateJobRunStateDurable(dependent), ShouldBeNil)
+}
+
+// asPhase0Within writes a copy of the recording at path with each
+// reserveRunState call made the call Phase 0 recorded for a reservation,
+// updateJobRunStateDurableWithin, waited for within reserveDurableWait. It
+// returns the copy's path and the number of calls it rewrote. No current
+// recorder records that call, so this is how a test reaches its replay.
+func asPhase0Within(t *testing.T, path string) (string, int) {
+	t.Helper()
+
+	calls := recordedCalls(t, path)
+
+	var rewritten int
+
+	for i, call := range calls {
+		if call.Method != "reserveRunState" {
+			continue
+		}
+
+		var args recJob
+		So(decodeRecorded(call.Args, &args), ShouldBeNil)
+
+		calls[i].Method = "updateJobRunStateDurableWithin"
+		calls[i].Args = encodeRecorded(recWithin{Job: args.Job, Wait: reserveDurableWait()})
+		rewritten++
+	}
+
+	return writeRecording(t, calls...), rewritten
+}
+
+// recordedCalls returns the calls of the recording at path, in order.
+func recordedCalls(t *testing.T, path string) []recordedCall {
+	t.Helper()
+
+	file, err := os.Open(path)
+	So(err, ShouldBeNil)
+
+	defer file.Close()
+
+	var calls []recordedCall
+
+	_, err = wal.Scan(file, func(_ wal.Ref, rec []byte) error {
+		var call recordedCall
+		if errd := decodeRecorded(rec, &call); errd != nil {
+			return errd
+		}
+
+		calls = append(calls, call)
+
+		return nil
+	})
+	So(err, ShouldBeNil)
+
+	return calls
 }
 
 // shouldBeChangeAheadHandle returns the assertion a change-ahead handle that a
@@ -168,6 +442,124 @@ func learnedFold(s store) func() error {
 	}
 
 	return nil
+}
+
+func changeDependentAhead(ctx context.Context, s store, dependent *Job) *Job {
+	delay := func(job *Job) { job.State, job.UntilBuried = JobStateDelayed, 2 }
+
+	ahead := s.prepareJobChange(ctx, dependent, delay)
+	So(ahead, ShouldNotBeNil)
+	s.queueJobChangeAhead(ctx, dependent, ahead, delay)
+
+	return dependent
+}
+
+// undependentStore is a store whose storeNewJobsGuarded answers each live
+// dependent with no dependencies: a store that gets wrong the one field of a
+// dependent a server reads besides its key.
+type undependentStore struct {
+	store
+}
+
+func (u undependentStore) storeNewJobsGuarded(ctx context.Context, jobs []*Job, ignoreAdded bool,
+	guard *rerunGuard) (storedNewJobs, error) {
+	stored, err := u.store.storeNewJobsGuarded(ctx, jobs, ignoreAdded, guard)
+	for _, job := range stored.dependents.jobs {
+		job.Dependencies = nil
+	}
+
+	return stored, err
+}
+
+// startSecondDependent adds and starts a second job depending on dependent's
+// dep group, and on another, so that the add reading dependent also reads a
+// job with other Dependencies.
+func startSecondDependent(ctx context.Context, s store, dependent *Job) *Job {
+	second := testDBJob("echo record second dependent", "record-dependent")
+	second.Dependencies = Dependencies{
+		NewDepGroupDependency(recordTestDepGroup),
+		NewDepGroupDependency(recordTestDepGroup2),
+	}
+	So(second.Dependencies, ShouldNotResemble, dependent.Dependencies)
+
+	_, err := s.storeNewJobsGuarded(ctx, []*Job{second}, false, nil)
+	So(err, ShouldBeNil)
+	startDependent(s, second)
+
+	return dependent
+}
+
+// addAgain adds a job with dependent's key and Dependencies in another
+// RepGroup, ignoring complete jobs if ignoreComplete.
+func addAgain(ctx context.Context, s store, dependent *Job, ignoreComplete bool) storedNewJobs {
+	again := testDBJob(dependent.Cmd, "record-dependent-again")
+	again.Dependencies = dependent.Dependencies
+	So(again.Key(), ShouldEqual, dependent.Key())
+
+	stored, err := s.storeNewJobsGuarded(ctx, []*Job{again}, ignoreComplete, nil)
+	So(err, ShouldBeNil)
+
+	return stored
+}
+
+// addAfresh adds a job with dependent's key and Dependencies in another
+// RepGroup, which bbolt stores, and returns it.
+func addAfresh(ctx context.Context, s store, dependent *Job) *Job {
+	again := testDBJob(dependent.Cmd, "record-dependent-again")
+	again.Dependencies = dependent.Dependencies
+
+	stored, err := s.storeNewJobsGuarded(ctx, []*Job{again}, false, nil)
+	So(err, ShouldBeNil)
+	So(stored.jobsToQueue, ShouldHaveLength, 1)
+
+	return again
+}
+
+// nilMoveStore is a store whose moveJobChangeAhead discards the handle its
+// store moved and returns none: a store that drops a handle it was given, which
+// only prepareJobChange may answer none for (spec, The store interface).
+type nilMoveStore struct {
+	store
+}
+
+func (n nilMoveStore) moveJobChangeAhead(from, to *Job, ahead *jobChangeAhead) *jobChangeAhead {
+	n.discardJobChangeAhead(to, n.store.moveJobChangeAhead(from, to, ahead))
+
+	return nil
+}
+
+// failingDependentsAddStore is a store whose storeNewJobsGuarded, when it
+// answers live dependents, also answers errBoom.
+type failingDependentsAddStore struct {
+	store
+}
+
+func (f failingDependentsAddStore) storeNewJobsGuarded(ctx context.Context, jobs []*Job, ignoreAdded bool,
+	guard *rerunGuard) (storedNewJobs, error) {
+	stored, err := f.store.storeNewJobsGuarded(ctx, jobs, ignoreAdded, guard)
+	if len(stored.dependents.jobs) > 0 {
+		err = errors.Join(err, errBoom)
+	}
+
+	return stored, err
+}
+
+// dependentWrite is a write recordDependentRead makes to its live dependent
+// between the dependent's add and the add that reads it, returning the job
+// under the key that add reads.
+type dependentWrite func(ctx context.Context, s store, dependent *Job) *Job
+
+func archiveDependentKeptLive(_ context.Context, s store, dependent *Job) *Job {
+	dependent.RerunAfterRun = true
+	dependent.ReservedBy = uuid.Must(uuid.NewV4())
+	dependent.State, dependent.Exited = JobStateComplete, true
+	dependent.EndTime = recordTestBase.Add(time.Hour)
+
+	outcome, err := s.archiveCompletion(dependent.Key(), dependent)
+	So(err, ShouldBeNil)
+	So(outcome, ShouldEqual, archiveKeptLive)
+
+	return dependent
 }
 
 // replayedFoldErrors replays the recording at path against a fresh store of
@@ -364,13 +756,43 @@ func TestStoreRecordReplay(t *testing.T) {
 			})
 
 			Convey("replayed against a store whose prepareJobChange answers a handle where the recording "+
-				"has none, or none where it has one, the first mismatch is that call", func() {
+				"has none, the first mismatch is that call; or none where it has one, there is no mismatch, "+
+				"since any store may prepare none", func() {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
 				stats, err := replayRecordingFolding(ctx, path, flippedChangeAheadStore{store: replayTo}, replayTo)
 				So(err, ShouldBeNil)
-				So(stats.mismatches, ShouldNotBeEmpty)
-				So(stats.mismatches[0].Method, ShouldEqual, "prepareJobChange")
+
+				if kind == storeKindLog {
+					So(stats.mismatches, ShouldNotBeEmpty)
+					So(stats.mismatches[0].Method, ShouldEqual, "prepareJobChange")
+				} else {
+					So(stats.mismatches, ShouldBeEmpty)
+				}
+			})
+
+			Convey("replayed against a store whose moveJobChangeAhead answers none where it was given a handle, "+
+				"the first mismatch is that call; given none, there is no mismatch", func() {
+				replayTo, _ := openTestStore(t, ctx, kind)
+
+				stats, err := replayRecordingFolding(ctx, path, nilMoveStore{store: replayTo}, replayTo)
+				So(err, ShouldBeNil)
+
+				if kind == storeKindBolt {
+					So(stats.mismatches, ShouldNotBeEmpty)
+					So(stats.mismatches[0].Method, ShouldEqual, "moveJobChangeAhead")
+				} else {
+					So(stats.mismatches, ShouldBeEmpty)
+				}
+			})
+
+			Convey("replayed against a store whose add answers its live dependent without its dependencies, "+
+				"the mismatch is that call", func() {
+				replayTo, _ := openTestStore(t, ctx, kind)
+
+				stats, err := replayRecordingFolding(ctx, path, undependentStore{store: replayTo}, replayTo)
+				So(err, ShouldBeNil)
+				So(mismatchedMethods(stats), ShouldResemble, []string{"storeNewJobsGuarded"})
 			})
 
 			Convey("replayed against a store whose retrieveRepGroups also returns an error, "+
@@ -583,7 +1005,7 @@ func recordRunToCompletion(s store, job *Job, i int) {
 
 	job.State = JobStateRunning
 	job.StartTime = recordTestBase.Add(time.Duration(i) * time.Second)
-	job.Host = "record-host"
+	job.Host = recordTestHost
 	So(s.updateJobRunStateDurable(job), ShouldBeNil)
 
 	job.State = JobStateComplete
@@ -652,11 +1074,19 @@ func recordChangesAhead(ctx context.Context, s store, kind storeKind, b []*Job) 
 	s.queueJobChangeAhead(ctx, replacement, moved, recordKickChange)
 }
 
-// recordGuardedAdd adds, under a rerun guard, a job depending on parent's two
-// dep groups whose own dep group live dependent depends on, archives dependent
-// while the guard is held, which keeps it live to run again, then resolves the
-// dependencies of the added job and dependent.
+// recordGuardedAdd starts dependent, then adds, under a rerun guard, a job
+// depending on parent's two dep groups whose own dep group the running
+// dependent depends on, archives dependent while the guard is held, which keeps
+// it live to run again, then resolves the dependencies of the added job and
+// dependent. The add's live dependent is running, so bbolt, which answers it as
+// it was added, and the log store, which answers it with its latest state,
+// answer it differently.
 func recordGuardedAdd(ctx context.Context, s store, parent, dependent *Job) {
+	dependent.State = JobStateRunning
+	dependent.StartTime = recordTestBase.Add(time.Minute)
+	dependent.Host = recordTestHost
+	So(s.updateJobRunStateDurable(dependent), ShouldBeNil)
+
 	child := testDBJob("echo record child", recordTestRepGroupChild)
 	child.Dependencies = Dependencies{
 		NewDepGroupDependency(recordTestDepGroup),
@@ -721,24 +1151,12 @@ func recordReqGroupCalls(s store, a []*Job) {
 func recordedMethods(t *testing.T, path string) []string {
 	t.Helper()
 
-	file, err := os.Open(path)
-	So(err, ShouldBeNil)
+	calls := recordedCalls(t, path)
+	methods := make([]string, len(calls))
 
-	defer file.Close()
-
-	var methods []string
-
-	_, err = wal.Scan(file, func(_ wal.Ref, rec []byte) error {
-		var call recordedCall
-		if errd := decodeRecorded(rec, &call); errd != nil {
-			return errd
-		}
-
-		methods = append(methods, call.Method)
-
-		return nil
-	})
-	So(err, ShouldBeNil)
+	for i, call := range calls {
+		methods[i] = call.Method
+	}
 
 	return methods
 }
@@ -1002,6 +1420,34 @@ func TestStoreReplayChangeHandles(t *testing.T) {
 					So(stored.State, ShouldEqual, JobStateDelayed)
 					So(stored.UntilBuried, ShouldEqual, 2)
 				})
+		})
+	})
+}
+
+// TestStoreRecordReplayAcrossStores replays a bbolt recording against the log
+// store, as the A5 gate replays the Phase 0 recording: the log store prepares
+// no change-ahead handle where bbolt prepares one, and answers an add's running
+// live dependent with its latest state where bbolt answers it as it was added,
+// neither of which is a different answer to a server.
+func TestStoreRecordReplayAcrossStores(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given the scripted workload recorded against a bbolt store", t, func() {
+		path := filepath.Join(t.TempDir(), "workload.rec")
+		recordWorkloadTo(t, ctx, storeKindBolt, path)
+
+		Convey("replayed against a fresh log store, every call replays with no skip or mismatch", func() {
+			replayTo, _ := openTestStore(t, ctx, storeKindLog)
+
+			stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
+			So(err, ShouldBeNil)
+			So(stats.calls, ShouldEqual, len(recordedMethods(t, path)))
+			So(stats.skipped, ShouldEqual, 0)
+			So(mismatchedMethods(stats), ShouldBeEmpty)
 		})
 	})
 }
@@ -1752,4 +2198,110 @@ type fixedStampStore struct {
 
 func (fixedStampStore) reqStatChanges() uint32 {
 	return 1
+}
+
+// readdModifiedDependent delays dependent, modifies it to another key with no
+// dependencies, which removes bbolt's live record of it, and then adds it
+// again, which bbolt stores afresh, since it holds no record under its key to
+// keep.
+func readdModifiedDependent(ctx context.Context, s store, dependent *Job) *Job {
+	changeDependentDurably(ctx, s, dependent)
+
+	modified := testDBJob("echo record dependent modified", "record-dependent")
+	So(s.modifyLiveJobs(ctx, []string{dependent.Key()}, []*Job{modified}), ShouldBeNil)
+
+	return addAfresh(ctx, s, dependent)
+}
+
+// readdDeletedDependent delays dependent, deletes it, which removes bbolt's
+// live record of it, and then adds it again, which bbolt stores afresh, since
+// it holds no record under its key to keep.
+func readdDeletedDependent(ctx context.Context, s store, dependent *Job) *Job {
+	changeDependentDurably(ctx, s, dependent)
+	So(s.deleteLiveJobs(ctx, []string{dependent.Key()}), ShouldBeNil)
+
+	return addAfresh(ctx, s, dependent)
+}
+
+// addReservedDependentAgain reserves dependent and then adds it again, which
+// leaves bbolt's live record of it as it was, since the reservation's run state
+// is over it.
+func addReservedDependentAgain(ctx context.Context, s store, dependent *Job) *Job {
+	dependent.State = JobStateReserved
+	So(s.updateJobRunStateDurable(dependent), ShouldBeNil)
+
+	return addDependentAgain(ctx, s, dependent)
+}
+
+// addRunStateReservedDependentAgain reserves dependent through
+// reserveRunState, waiting for the reservation to be durable, and then adds it
+// again, which leaves bbolt's live record of it as it was, since the
+// reservation's run state is over it.
+func addRunStateReservedDependentAgain(ctx context.Context, s store, dependent *Job) *Job {
+	dependent.State = JobStateReserved
+	commit, err := s.reserveRunState(dependent)
+	So(err, ShouldBeNil)
+
+	done, err := commit.WaitWithin(reserveDurableWait())
+	So(err, ShouldBeNil)
+	So(done, ShouldBeTrue)
+
+	return addDependentAgain(ctx, s, dependent)
+}
+
+// addDelayedDependentAgain delays dependent and then adds it again, which
+// leaves bbolt's live record of it as it was, since it is handed out.
+func addDelayedDependentAgain(ctx context.Context, s store, dependent *Job) *Job {
+	return addDependentAgain(ctx, s, changeDependentDurably(ctx, s, dependent))
+}
+
+// readdReservedPutBackDependent reserves dependent, ends its run and puts it
+// back to run again, which rewrites bbolt's live record of it so that the
+// reservation's run state is no longer over it, and then adds it again, which
+// bbolt stores over that record, since it is of a complete job, not one handed
+// out.
+func readdReservedPutBackDependent(ctx context.Context, s store, dependent *Job) *Job {
+	dependent.State = JobStateReserved
+	So(s.updateJobRunStateDurable(dependent), ShouldBeNil)
+
+	return addDependentAgain(ctx, s, putBackDependent(ctx, s, dependent))
+}
+
+// addDependentAgain adds dependent again in another RepGroup, which bbolt
+// stores over its live record.
+func addDependentAgain(ctx context.Context, s store, dependent *Job) *Job {
+	stored := addAgain(ctx, s, dependent, false)
+	So(stored.jobsToQueue, ShouldHaveLength, 1)
+
+	return dependent
+}
+
+// putBackDependent ends dependent's run and puts it back to run again.
+func putBackDependent(_ context.Context, s store, dependent *Job) *Job {
+	dependent.RerunAfterRun = true
+	dependent.ReservedBy = uuid.Must(uuid.NewV4())
+	dependent.State, dependent.Exited = JobStateComplete, true
+	dependent.EndTime = recordTestBase.Add(time.Hour)
+	So(s.storeLiveForRerun([]*Job{dependent}), ShouldBeNil)
+
+	return dependent
+}
+
+func changeDependentDurably(_ context.Context, s store, dependent *Job) *Job {
+	dependent.State, dependent.UntilBuried = JobStateDelayed, 2
+	So(s.updateJobAfterChangeDurable(dependent), ShouldBeNil)
+
+	return dependent
+}
+
+// addArchivedDependentAgain archives dependent, which keeps it live, and then
+// adds it again ignoring complete jobs, which does not store it.
+func addArchivedDependentAgain(ctx context.Context, s store, dependent *Job) *Job {
+	archiveDependentKeptLive(ctx, s, dependent)
+
+	stored := addAgain(ctx, s, dependent, true)
+	So(stored.jobsToQueue, ShouldBeEmpty)
+	So(stored.alreadyAdded.Complete, ShouldEqual, 1)
+
+	return dependent
 }

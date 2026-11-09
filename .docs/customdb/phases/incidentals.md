@@ -320,6 +320,22 @@ called ready, or explicitly deferred with the owner.
   `TestStoreReplayLearned`); the recording now replays with 0 mismatches.
   The error-text and handle digests give bbolt's own answers on a bbolt
   replay, so only a log-store replay can test them: 1g.2 owns that.
+  Done in 1g.2: the first log-store replay of the recording had 534
+  mismatches. No error text mismatched, so errors stay digested by text.
+  526 were `prepareJobChange` calls where the log store, which prepares no
+  change ahead, returned nil and bbolt had returned a handle; replay now
+  accepts a nil change-ahead handle (`prepareJobChange`,
+  `moveJobChangeAhead`) for a recorded one, since any store may prepare
+  none, while a handle where the recording has none, and a nil
+  `*rerunGuard` or `expectJobExitUpdate` func, still mismatch. The other 8
+  were `storeNewJobsGuarded` calls whose one live dependent was running:
+  bbolt answered it as added, the log store with its latest state, and a
+  server reads only its key and `Dependencies`; replay now also accepts
+  the answer with each dependent as the replay noted bbolt's live record
+  of it, keeping the replayed `Dependencies`. Spec A5 says both;
+  `TestStoreRecordReplayAcrossStores` and two `TestStoreRecordReplay`
+  leaves test them. The recording then replays with 0 mismatches
+  ([results/phase1-gate-1g2.md](../results/phase1-gate-1g2.md)).
 - [x] (from 0d.3 review) The 1g.2 replay folds before each
   learned-requirements probe, which hides a folder that stalls or never
   invalidates `reqStatCache`. Spec D1 has no acceptance test that the
@@ -1025,6 +1041,9 @@ called ready, or explicitly deferred with the owner.
   `replayRecordingFolding` sets it to the inner store's `flush`. The
   leaves run on both stores; with no fold, 8 of the 9 fail on the log
   store (the alternating-refresh leaf still finds its mismatch).
+  Done in 1g.2: `TestStoreReplay` replayed the Phase 0 recording against
+  the log store through `replayRecordingFolding`, so with this fold, and
+  no learned-requirements call mismatched.
 
 - [x] (from 1e.5) After damage that truncates the wal before the folder's
   position, a job already folded into `history.bolt` can recover both
@@ -1713,3 +1732,36 @@ called ready, or explicitly deferred with the owner.
   `recoverDamagedCrashCopy` that no key is returned by both
   `recoverIncompleteJobs` and `retrieveCompleteJobsByKeys`, and show it
   kills the `dropFoldedLive` no-op mutant.
+
+- [x] (from 1g.2 review round 2) `gosec` G703 reported
+  `jobqueue/store_convert.go:365` and `:1247` (`os.Stat` of the bbolt file
+  in `checkFreeSpaceFor` and `hasSecondBoltMeta`) in one `make lint` run
+  with a warm `~/.cache/golangci-lint`, and 0 with a fresh HOME. It is the
+  known G703 instability (#584, bugfixes 260906-2): the inter-procedural
+  taint result flips on unrelated edits, so a `//nolint` would be reported
+  unused by `nolintlint` whenever it does not fire. Done in 1g.2 (fix
+  round 2): `store_convert.go` joins the existing G703 path exclusion in
+  `.golangci.yml`, since the conversion uses only the configured dbFile,
+  paths it builds from it with a fixed suffix or infix, and the kept bbolt
+  file SOURCE names, which `resume` refuses if it holds a path separator.
+  A probe `os.Stat(os.Getenv(...))` added to a copy of the file reports
+  G703 without the exclusion and not with it. The warm-cache result did
+  not reproduce on the final tree, or on the review tree in a copy, with
+  a fresh HOME or with copies of the user's lint cache; `make lint` gives
+  0 issues in both cache states.
+
+- [ ] (from 1g.2 review round 3) Three small gaps in the A5 replay
+  harness (`jobqueue/store_record.go`), none able to accept a wrong
+  answer. First, no test replays an add with dependents where the replay
+  errors and the recording did not, so a mutant that also accepts the
+  error-free digest (`acceptDependentsAsStored`, the error branch)
+  survives; record through the plain store, replay through
+  `failingDependentsAddStore` and expect a `storeNewJobsGuarded` mismatch.
+  Second, swapping `noteAdded` and `acceptDependentsAsStored` in the
+  `storeNewJobsGuarded` replay survives; it can only cause a false
+  mismatch, so a comment on the order is enough. Third, the
+  `acceptNoAhead` doc comment, the 1g.2 evidence and spec.md's store
+  interface bullet ("`queueJobChangeAhead` with nil records the change
+  afresh, as it does today") are wrong for bbolt, which writes nothing for
+  a nil handle (`db.go`, `queueJobChangeAhead`); only the log store makes
+  the change afresh. Owner: 2a.1.

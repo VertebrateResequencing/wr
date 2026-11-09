@@ -1,0 +1,98 @@
+Diagnosis probes (a scratch copy of the tree, not committed code).
+
+## 1. The 8 storeNewJobsGuarded mismatches: each add's one live dependent,
+## bbolt replay vs log replay (key:state:sha256 of its persisted fields)
+seq 89492
+  bolt [83ba4b7aa5d1980c3332e9e11a4dbfbb::7eb47ce8470f9d1c7ce93c9261]
+  log  [83ba4b7aa5d1980c3332e9e11a4dbfbb:running:42a22f983b34674f0ae]
+seq 107874
+  bolt [9f6e97b79f96130f947aee79ff723be3::f7895745c582dfdfedc33d567c]
+  log  [9f6e97b79f96130f947aee79ff723be3:running:10a528da2fce5d8d24c]
+seq 131628
+  bolt [eab928722941a37fd65e9f0d43b9f69a::21bfb7a48e850d42501c461a2c]
+  log  [eab928722941a37fd65e9f0d43b9f69a:running:37bb0904b68acfce450]
+seq 229944
+  bolt [ecbf466d6aa276e90df1d116742778a9::15f7a055f48451620ca3ae0c59]
+  log  [ecbf466d6aa276e90df1d116742778a9:running:9aa420d1188aa340ad7]
+seq 250066
+  bolt [314fc03bd02523b1461bdfee737270de::ab9428323d889a2da695faf6d0]
+  log  [314fc03bd02523b1461bdfee737270de:running:4dec925eea14d33bbac]
+seq 364618
+  bolt [5ada8a5518281ee90e6cb294b3a9197c::97178338d2c31891bcb616eb36]
+  log  [5ada8a5518281ee90e6cb294b3a9197c:running:70b855e0e98db7da0d7]
+seq 399762
+  bolt [9ffb05164a6fd007b1948b13e12a38f8::36a2c074d7c0166ff03b0447dc]
+  log  [9ffb05164a6fd007b1948b13e12a38f8:running:597bd71e136eeaaba41]
+seq 521778
+  bolt [00ee6a73a7ce35ffc4b3acf7dd706042::66eda90bbe1e1321bc5353b946]
+  log  [00ee6a73a7ce35ffc4b3acf7dd706042:running:fe6f1c18cba7a4490a5]
+
+## 2. Fields of that dependent that differ at seq 89492 (JSON, < bolt, > log)
+14c14
+<     "Time": 600000000000,
+---
+>     "Time": 91000000000,
+25c25,34
+<    "RequirementsOrig": null,
+---
+>    "RequirementsOrig": {
+>     "RAM": 100,
+>     "Time": 600000000000,
+>     "Cores": 0,
+>     "Disk": 0,
+>     "Other": null,
+>     "CoresSet": false,
+>     "DiskSet": false,
+>     "OtherSet": false
+>    },
+55c64
+<    "ActualCwd": "",
+---
+>    "ActualCwd": "/nfs/hgi/wr/sb10-bigdb/customdb/rec0d3/prodsim-1793222855/work/wr_cwd/8/3/b/a4b7aa5d1980c3332e9e11a4dbfbb-1378ccf6-7219-4fe6-a1be-6995987226a5/cwd",
+59c68
+<    "Exitcode": 0,
+---
+>    "Exitcode": -1,
+62,64c71,73
+<    "Pid": 0,
+<    "RunnerPid": 0,
+<    "Host": "",
+---
+>    "Pid": 456083,
+>    "RunnerPid": 456070,
+>    "Host": "node-14-16",
+66,67c75,76
+<    "HostIP": "",
+<    "StartTime": "0001-01-01T00:00:00Z",
+---
+>    "HostIP": "10.160.64.53",
+>    "StartTime": "2026-10-28T21:33:02.078493606Z",
+75,76c84,85
+<    "State": "",
+<    "Attempts": 0,
+---
+>    "State": "running",
+>    "Attempts": 1,
+81c90
+<    "ReservedBy": "00000000-0000-0000-0000-000000000000",
+---
+>    "ReservedBy": "1a44789b-00fd-40b0-9c30-e25de897e384",
+83c92
+<    "RunnerReservation": 0,
+---
+>    "RunnerReservation": 1793223182051915180,
+88c97
+<    "DelayTime": 0,
+---
+>    "DelayTime": 59969849005,
+
+## 3. Every add answering live dependents: does the recorded digest equal
+## the replayed one (same), or the replayed one with each dependent as
+## the recording last added or modified it, keeping the replayed
+## Dependencies (altsame)?
+bolt:
+     12 PROBE deps=1 found=true same=true altsame=true
+     36 PROBE deps=2 found=true same=true altsame=true
+log:
+     12 PROBE deps=1 found=true same=false altsame=true
+     36 PROBE deps=2 found=true same=true altsame=true

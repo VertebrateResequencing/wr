@@ -1,0 +1,63 @@
+TestStoreReplay, WR_TEST_STORE=log, HEAD 3f1733c4 unchanged (before the fix)
+
+## go test -v lines (store log lines dropped)
+HOME=<scratch>
+=== RUN   TestStoreReplay
+  The recording at /nfs/hgi/wr/sb10-bigdb/customdb/recordings/phase0-prodsim-20261028b.rec replays against a fresh log store with no mismatch 
+✔
+    store_record_test.go:248: replayed 400863 calls, 1 skipped, 534 mismatches
+✔✘
+✔
+Failures:
+  * /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_record_test.go 
+  Line 251:
+4 total assertions
+--- FAIL: TestStoreReplay (329.19s)
+FAIL
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	329.213s
+FAIL
+Command exited with non-zero status 1
+
+## dropped log lines, by message
+      6 msg="db writer" writer=fold
+      6 msg="db writer" writer=log
+      1 msg="recovering: opened database"
+
+## time -v
+	Command being timed: "env WR_STORE_REPLAY=/nfs/hgi/wr/sb10-bigdb/customdb/recordings/phase0-prodsim-20261028b.rec WR_TEST_STORE=log go test -tags netgo -count=1 -timeout 0 -v -run ^TestStoreReplay$ ./jobqueue/"
+	User time (seconds): 450.19
+	System time (seconds): 81.70
+	Percent of CPU this job got: 139%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 6:20.05
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 1549880
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 12319
+	Minor (reclaiming a frame) page faults: 12399107
+	Voluntary context switches: 1629490
+	Involuntary context switches: 499259
+	Swaps: 0
+	File system inputs: 72
+	File system outputs: 10337936
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1
+
+## mismatches by method
+    526 Method:prepareJobChange
+      8 Method:storeNewJobsGuarded
+
+## storeNewJobsGuarded mismatch seqs
+{Seq:89492 Method:storeNewJobsGuarded}
+{Seq:107874 Method:storeNewJobsGuarded}
+{Seq:131628 Method:storeNewJobsGuarded}
+{Seq:229944 Method:storeNewJobsGuarded}
+{Seq:250066 Method:storeNewJobsGuarded}
+{Seq:364618 Method:storeNewJobsGuarded}
+{Seq:399762 Method:storeNewJobsGuarded}
+{Seq:521778 Method:storeNewJobsGuarded}
