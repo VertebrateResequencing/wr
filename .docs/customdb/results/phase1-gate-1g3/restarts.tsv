@@ -1,0 +1,36 @@
+1794267298	start	rc=0	pid=696182	ms=831	db_mb=0	load=1.21	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794268199	stop	rc=crash	pid=696182	ms=107	kind=crash	db_mb=0	load=4.74
+1794268202	start	rc=0	pid=877148	ms=3222	db_mb=0	load=5.08	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794268595	stop	rc=crash	pid=877148	ms=164	kind=crash	manual=relbury-r1	killms=1794268595583	load=3.88
+1794268605	start	rc=0	pid=966231	ms=6282	manual=relbury-r1	load=3.73
+1794269140	stop	rc=killed	pid=966231	ms=37132	kind=clean	db_mb=0	load=3.89	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1794269076->1794269140
+1794269150	start	rc=0	pid=1053078	ms=9699	db_mb=0	load=3.74	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794270051	stop	rc=crash	pid=1053078	ms=137	kind=crash	db_mb=0	load=7.31
+1794270077	start	rc=0	pid=1230686	ms=25053	db_mb=0	load=7.87	freelistAtOpen=unreadable	db=/tmp/wr-soak-fuse-sb10-53312/db
+1794270565	stop	rc=crash	pid=1230686	ms=5	kind=crash	manual=crashon-stall	lsfRUN=3374	load=8.71
+1794270703	start	rc=0	pid=1334507	ms=19415	manual=crashon-stall	load=8.41
+1794270783	stop	rc=crash	pid=1334507	ms=5	kind=crash	manual=crashon-burst	lsfRUN=3098	load=12.35
+1794270817	start	rc=0	pid=1352646	ms=29877	manual=crashon-burst	load=10.12
+1794271043	stop	rc=0	pid=1352646	ms=63998	kind=clean	db_mb=0	load=5.47	aliveAtReturn=n	token=deleted	freelist=unreadable	bkMtime=1794270962->1794271039
+1794271072	start	rc=0	pid=1398786	ms=28941	db_mb=0	load=5.30	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794271210	stop	rc=crash	pid=1398786	ms=198	kind=crash	manual=relbury-r2	killms=1794271210356	load=8.14
+1794271246	start	rc=0	pid=1438421	ms=32979	manual=relbury-r2	load=6.59
+1794271375	stop	rc=crash	pid=1438421	ms=4	kind=crash	manual=crashafter	load=6.94
+1794271416	start	rc=0	pid=1468220	ms=34325	manual=crashafter	load=4.82
+1794271565	stop	rc=crash	pid=1468220	ms=4	kind=crash	manual=crashon-burst	lsfRUN=1990	load=10.28
+1794271610	start	rc=0	pid=1498385	ms=38756	manual=crashon-burst	load=9.77
+1794271974	stop	rc=crash	pid=1498385	ms=116	kind=crash	db_mb=0	load=8.33
+1794272017	start	rc=0	pid=1566386	ms=42883	db_mb=0	load=6.20	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794272920	stop	rc=crash	pid=1566386	ms=152	kind=crash	db_mb=0	load=8.02
+1794272980	start	rc=0	pid=1723268	ms=59832	db_mb=0	load=5.97	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794273941	stop	rc=0	pid=1723268	ms=56999	kind=clean	db_mb=0	load=7.83	aliveAtReturn=n	token=deleted	freelist=unreadable	bkMtime=1794273875->1794273938
+1794274010	start	rc=0	pid=1857850	ms=68663	db_mb=0	load=5.03	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794274913	stop	rc=crash	pid=1857850	ms=208	kind=crash	db_mb=0	load=9.01
+1794275005	start	rc=0	pid=2000828	ms=91993	db_mb=0	load=7.93	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794275973	stop	rc=killed	pid=2000828	ms=62000	kind=clean	db_mb=0	load=5.99	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1794275897->1794275972
+1794276069	start	rc=0	pid=2144307	ms=96228	db_mb=0	load=4.64	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794276973	stop	rc=crash	pid=2144307	ms=131	kind=crash	db_mb=0	load=13.89
+1794277090	start	rc=0	pid=2288008	ms=117754	db_mb=0	load=5.65	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794278082	stop	rc=killed	pid=2288008	ms=87268	kind=clean	db_mb=0	load=5.80	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1794277873->1794278081
+1794278199	start	rc=0	pid=2431187	ms=117003	db_mb=0	load=4.83	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/dbdir/db
+1794278278	stop	rc=killed	pid=2431187	ms=75592	kind=clean	db_mb=0	load=3.46	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1794278140->1794278278

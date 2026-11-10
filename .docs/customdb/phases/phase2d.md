@@ -50,6 +50,9 @@ history key index at prod scale, measured on a segment store converted
 from the prod copy, and the 1f.8 review incidental on regenerating
 dbstart's Phase 1 store fixture ([incidentals.md](incidentals.md)).
 
+Also resolve the 1g.3 incidental on a `managerdbfile` that is a symlink
+([incidentals.md](incidentals.md)).
+
 - [ ] implemented
 - [ ] reviewed
 

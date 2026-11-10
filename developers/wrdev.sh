@@ -4603,7 +4603,11 @@ cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED S
   local dbpath="$PROD_RUN/db"
   if [ -n "${WRDEV_PRODSIM_DBDIR:-}" ]; then
     mkdir -p "$WRDEV_PRODSIM_DBDIR" || die "could not make $WRDEV_PRODSIM_DBDIR"
-    dbpath="$WRDEV_PRODSIM_DBDIR/db"; rm -f "$dbpath"
+    # the default (log) store's db is a directory: remove an earlier run's, and, with no
+    # fixture to copy, make it empty, since wr creates a new store in an empty directory
+    # but not through a dangling symlink (mkdir: file exists)
+    dbpath="$WRDEV_PRODSIM_DBDIR/db"; rm -rf "${dbpath:?}"
+    [ -n "${WRDEV_PRODSIM_DB:-}" ] || mkdir "$dbpath" || die "could not make $dbpath"
     ln -s "$dbpath" "$PROD_RUN/db" || die "could not link $PROD_RUN/db"
   fi
   if [ -n "${WRDEV_PRODSIM_DB:-}" ]; then
@@ -4797,8 +4801,9 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
   done
   echo "  our manager stopped; ${PROD_JOB_PREFIX}* jobs left in LSF: ${left:-0}"
   if [ "${WRDEV_PRODSIM_KEEP_DB:-0}" != "1" ]; then
-    rm -f "$PROD_RUN/db" "$PROD_RUN/db_bk"* 2>/dev/null
-    [ -n "${WRDEV_PRODSIM_DBDIR:-}" ] && rm -f "$WRDEV_PRODSIM_DBDIR/db" 2>/dev/null
+    # the log store's db and its backup are directories
+    rm -rf "$PROD_RUN/db" "$PROD_RUN/db_bk"* 2>/dev/null
+    [ -n "${WRDEV_PRODSIM_DBDIR:-}" ] && rm -rf "${WRDEV_PRODSIM_DBDIR:?}/db" 2>/dev/null
     [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -f "$WRDEV_PROD_BKFILE"* 2>/dev/null
     echo "  removed the working DB; outputs kept in ${PS_OUT:-?}"
   fi

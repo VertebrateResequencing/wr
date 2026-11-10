@@ -1672,6 +1672,9 @@ called ready, or explicitly deferred with the owner.
   history that asserts `archivedDecodeCount`, so it also covers that
   branch. Until then the phase 1 gate's crash soak (1g.3) records
   `wr status -l 1`'s latency just after each injected restart.
+  1g.3 recorded it ([results/phase1-gate-1g3.md](../results/phase1-gate-1g3.md)):
+  at most 23MB of wal was unfolded at a start, and the history-path query
+  was slow for another reason (the 1g.3 entry below).
 
 - [ ] (from 1f.11) `wr manager compact`'s help (`cmd/manager.go`) still
   says a database made by wr 0.37.2 or earlier must be compacted once
@@ -1765,3 +1768,85 @@ called ready, or explicitly deferred with the owner.
   afresh, as it does today") are wrong for bbolt, which writes nothing for
   a nil handle (`db.go`, `queueJobChangeAhead`); only the log store makes
   the change afresh. Owner: 2a.1.
+
+- [x] (from 1g.3) `developers/wrdev.sh prodsim` with `WRDEV_PRODSIM_DBDIR`,
+  which `developers/soak/run.sh` always sets, linked `$PROD_RUN/db` to a
+  `$WRDEV_PRODSIM_DBDIR/db` that did not exist. bbolt created the file
+  through the dangling link, but the log store cannot, so every soak
+  without `FIXTURE` failed at its first manager start (`mkdir ...: file
+  exists`). Done in 1g.3: prodsim removes an earlier run's store with
+  `rm -rf`, makes an empty directory there when there is no fixture, and
+  its cleanup removes the store and the `$PROD_RUN/db_bk*` backup
+  directories with `rm -rf`
+  ([results/phase1-gate-1g3.md](../results/phase1-gate-1g3.md)). It does
+  not cover `$WRDEV_PROD_BKFILE*` or other scenarios (the next entry).
+
+- [ ] (from 1g.3) `developers/wrdev.sh` still runs `rm -f` on paths that
+  are now log-store directories, so with the log store the default they
+  fail silently and leave the directory behind:
+  - `$WRDEV_PROD_BKFILE*`, in prodsim's cleanup (line 4807) and
+    report-storm-lsf's (line 2166);
+  - `$pr/db` and `$pr/db_bk*` (where `pr` is `$PROD_RUN`) in
+    backup-stall-check (lines 391, 416, 456), add-storm-fixture (1186,
+    1262), add-storm-lsf (1544) and its `asl_cleanup` (1814),
+    report-storm-lsf (2110, 2165) and unsuspend-burst (2242, 2263, 2317).
+
+  The setup lines (391, 1186, 1544, 2110, 2242) are followed by
+  `cp -f <fixture> "$pr/db"` (lines 400, 1190, 1548, 2112, 2244), which
+  would copy the fixture into a leftover store directory rather than
+  replace it. dep-granularity-check's `rm -f` at line 3589 is harmless:
+  line 3590 then runs `rm -rf "$PROD_RUN"`, and its `cp` of the fixture
+  at line 3641 follows `rm -rf "$PROD_RUN"` at line 3640. Found by
+  reading, not run. Fix: `rm -rf` on those paths, guarded as prodsim's
+  cleanup is. Owner: 1g.6, which runs every `wrdev.sh` scenario.
+
+- [ ] (from 1g.3) A `managerdbfile` that is a dangling symlink worked on
+  bbolt (the file was created at the link's target) but fails a log-store
+  manager start: `createStoreDir`'s `os.MkdirAll` returns `mkdir <db>: file
+  exists`. Seen in the 1g.3 smoke soak. Code reading (not run) shows a
+  symlinked `managerdbfile` is mishandled elsewhere too:
+  - Conversion of a bbolt file reached through a symlink renames the link
+    itself (`store_convert.go` line 451, `setAside`, and line 476,
+    `publish`), and builds `.converting` beside the link, so the store
+    ends up beside the link instead of at its target, for example outside
+    a soak's `WRDEV_PRODSIM_DBDIR` or a `fusestall` mount.
+  - Restore's rename of the restored store to `dbFile` (`store_open.go`
+    line 686, `replaceWithRestored`) likewise replaces the link.
+  - `undoRestoreLeftovers` calls `os.Lstat(dbFile)` (`store_open.go` line
+    855), so a symlink to a store directory is classified as not a
+    directory.
+  - spec E2's list of what `dbFile` may be at open does not mention
+    symlinks.
+
+  Owner: 2d.1 (E1 open and conversion, which touches
+  `store_open.go`): resolve the link and work at its target, or refuse a
+  symlinked `managerdbfile` with a clear error; say which in spec E2; and
+  add leaves to the open, conversion and restore tests.
+
+- [ ] (from 1g.3) After a manager restart, `wr status -i portal -z --limit 1`
+  took 71.6s after an injected restart and over 120s (client timeout; the
+  manager took 3m18s) after a scheduled crash in the 1g.3 soak, and its
+  warm repeat straight after the 120s one took 75.3s. That fails the
+  gate's 60s bound, which the reviewer and the evidence read as applying
+  to this limit-1 history query. The literal `wr status -l 1`
+  (`--cmdline`) stayed under 0.2s. The overlay decode above is not the
+  cause; the overlay was at most 23MB of wal. `historyRead.offerArchived`
+  and `addStatus` `Get` every matching key's whole record from
+  `jobsComplete`, so the query reads O(history bytes), about 11GB by the
+  end. The warm repeat grew with history size (0.7s, then 2.4-5.7s, then
+  about 10s, then 75.3s), so cold pages are not the whole cause. Cold
+  `history.bolt` page faults after the reopen, the backup tick's
+  concurrent whole-`history.bolt` copy, the web status seeds and the
+  folder make each byte dearer; at the 75.3s start the folder fell
+  behind (backlog 23MB to 46MB in 200s). The bbolt soaks had as many
+  prodsim history-path status calls over 60s, but that comparison is
+  indicative only: it counts prodsim's calls over each whole soak, not
+  calls timed just after restarts, and battery10 started on a 7GB fixture
+  while 1g.3 grew from empty to 11.35GB. Evidence and timings are in
+  [results/phase1-gate-1g3.md](../results/phase1-gate-1g3.md). Proposed
+  owner: 2b (D3), extending the 1f.11 entry above to folded entries:
+  status and control paths read facets from a per-key index or segment
+  index, not whole records, with a test bounding the bytes read (or the
+  time) on a cold multi-GB history. Whether the 60s criterion stays in
+  1g.3, so this fix must land before a rerun, or moves to 2b with that
+  test, is for the owner to rule on.

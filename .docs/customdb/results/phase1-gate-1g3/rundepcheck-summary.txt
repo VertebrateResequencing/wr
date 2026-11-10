@@ -1,0 +1,5 @@
+summary: {'OK': 36, 'CHECK': 3, 'OK-late-add': 1}
+instance 8: CHECK D runs=1 ok=1 B runs=1 A runs=1 B-noend-then-stop-clean
+instance 28: CHECK D runs=1 ok=0 B runs=1 A runs=1 D-noend-then-stop-clean B-noend-then-stop-clean
+instance 36: CHECK D runs=1 ok=1 B runs=1 A runs=1 B-noend-then-stop-clean
+summary: {'OK': 36, 'CHECK': 3, 'OK-late-add': 1}

@@ -1,0 +1,17 @@
+1794270056 db behind fusestall since 1794270051; stall due at 1794270471
+1794270474 STALL START pid=1230686 lsfRUN=3258 load=5.88
+1794270474 stalled 0s goroutines=total 6596 held=1 lsfRUN=3258
+1794270494 stalled 20s goroutines=total 8668 held=2 lsfRUN=3284
+1794270514 stalled 40s goroutines=total 9569 held=2 lsfRUN=3312
+1794270534 stalled 60s goroutines=total 9830 held=2 lsfRUN=3354
+1794270554 stalled 80s goroutines=total 7754 held=2 lsfRUN=3361
+1794270589 stalled 100s goroutines= held=2 lsfRUN=3314
+1794270625 stalled 135s goroutines= held=2 lsfRUN=3302
+1794270660 stalled 171s goroutines= held=2 lsfRUN=3249
+1794270680 STALL END after 206s
+1794270700 post-stall +226s goroutines=total 15
+1794270720 post-stall +246s goroutines=total 2288
+1794270740 post-stall +266s goroutines=total 5451
+1794270760 post-stall +286s goroutines=total 6024
+1794270780 post-stall +306s goroutines=total 6268
+1794270800 post-stall +326s goroutines=total 15

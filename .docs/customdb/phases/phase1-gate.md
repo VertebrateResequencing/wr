@@ -133,6 +133,8 @@ only the small ones a test-scale soak makes
 spec.md section: Implementation Order, Phase 1, Gates
 
 Run wrdev `crash-recovery` and every other `wrdev.sh` scenario; all pass.
+Also resolve the 1g.3 incidental on `wrdev.sh` scenarios that `rm -f`
+what are now store directories ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

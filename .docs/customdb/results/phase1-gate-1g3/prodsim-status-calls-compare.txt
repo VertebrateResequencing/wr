@@ -1,0 +1,15 @@
+== /nfs/hgi/wr/sb10-bigdb/battery10/soak/run/prodsim-1791171218
+manager_status           n=1727 max=6241ms over60s=0
+status_counts            n=857 max=107020ms over60s=1
+status_fofn_z            n=149 max=120628ms over60s=8
+status_portal_summary    n=109 max=120038ms over60s=4
+== /nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g3b/soak-branch/run/prodsim-1793011000
+manager_status           n=1753 max=10314ms over60s=0
+status_counts            n=815 max=120304ms over60s=4
+status_fofn_z            n=176 max=100948ms over60s=1
+status_portal_summary    n=110 max=97382ms over60s=5
+== /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run/prodsim-1794267292
+manager_status           n=1771 max=13301ms over60s=0
+status_counts            n=800 max=114444ms over60s=2
+status_fofn_z            n=172 max=99164ms over60s=1
+status_portal_summary    n=109 max=120133ms over60s=3

@@ -1,0 +1,119 @@
+1794267300030	start	rc=0 	folded=1:3491443	end=1:4184233	backlogBytes=692790	walFiles=1
+1794267300074	status	B	ms=75	rc=0	bytes=10813
+1794267300156	status	A	ms=59	rc=0	bytes=11328
+1794267300221	status	C	ms=55	rc=0	bytes=1
+1794267300282	status	B2	ms=54	rc=0	bytes=10813
+1794267300341	after	rc=0 	folded=1:3491443	end=1:5303050	backlogBytes=1811607	walFiles=1
+1794268199401	stop	rc=crash kind=crash 	folded=3:26237546	end=3:26969608	backlogBytes=732062	walFiles=1
+1794268202700	start	rc=0 	folded=4:28	end=4:110121	backlogBytes=110093	walFiles=2
+1794268202747	status	B	ms=12905	rc=0	bytes=70333
+1794268215659	status	A	ms=79	rc=0	bytes=60349
+1794268215746	status	C	ms=47	rc=0	bytes=1
+1794268215816	status	B2	ms=680	rc=0	bytes=70335
+1794268216503	after	rc=0 	folded=4:18005002	end=4:18013484	backlogBytes=8482	walFiles=2
+1794268596130	stop	rc=crash kind=crash manual=relbury-r1 	folded=5:30487288	end=5:30693507	backlogBytes=206219	walFiles=1
+1794268605348	start	rc=0 manual=relbury-r1 	folded=6:53303	end=6:598377	backlogBytes=545074	walFiles=2
+1794268605397	status	B	ms=20035	rc=0	bytes=70542
+1794268625439	status	A	ms=94	rc=0	bytes=72345
+1794268625539	status	C	ms=44	rc=0	bytes=1
+1794268625589	status	B2	ms=783	rc=0	bytes=70544
+1794268626414	after	rc=0 manual=relbury-r1 	folded=6:1437507	end=6:1564266	backlogBytes=126759	walFiles=2
+1794269140761	stop	rc=killed kind=clean 	folded=7:40837772	end=7:57725379	backlogBytes=16887607	walFiles=1
+1794269150449	start	rc=0 	folded=7:43614172	end=8:644	backlogBytes=14111851	walFiles=2
+1794269151299	status	B	ms=32400	rc=0	bytes=78939
+1794269183708	status	A	ms=165	rc=0	bytes=60437
+1794269183916	status	C	ms=74	rc=0	bytes=1
+1794269183997	status	B2	ms=895	rc=0	bytes=78939
+1794269184900	after	rc=0 	folded=8:391578	end=8:399322	backlogBytes=7744	walFiles=2
+1794270052249	stop	rc=crash kind=crash 	folded=10:67716081	end=11:399245	backlogBytes=3348669	walFiles=2
+1794270077159	start	rc=0 	folded=10:70149587	end=12:647367	backlogBytes=1562530	walFiles=3
+1794270077241	status	B	ms=37876	rc=0	bytes=84501
+1794270115124	status	A	ms=244	rc=0	bytes=83313
+1794270115376	status	C	ms=61	rc=0	bytes=1
+1794270115445	status	B2	ms=3301	rc=0	bytes=95520
+1794270118752	after	rc=0 	folded=12:3188795	end=12:3417141	backlogBytes=228346	walFiles=3
+1794270565728	stop	rc=crash kind=crash manual=crashon-stall 	folded=13:7868786	end=13:7884645	backlogBytes=15859	walFiles=1
+1794270704156	start	rc=0 manual=crashon-stall 	folded=14:6751	end=14:2111996	backlogBytes=2105245	walFiles=2
+1794270704239	status	B	ms=2586	rc=0	bytes=80465
+1794270706831	status	A	ms=284	rc=0	bytes=81171
+1794270707121	status	C	ms=50	rc=0	bytes=1
+1794270707178	status	B2	ms=2426	rc=0	bytes=69501
+1794270709617	after	rc=0 manual=crashon-stall 	folded=14:4205051	end=14:18910196	backlogBytes=14705145	walFiles=2
+1794270784039	stop	rc=crash kind=crash manual=crashon-burst 	folded=14:39742018	end=14:59516972	backlogBytes=19774954	walFiles=2
+1794270818210	start	rc=0 manual=crashon-burst 	folded=14:52456083	end=15:478024	backlogBytes=7538913	walFiles=3
+1794270818279	status	B	ms=71646	rc=0	bytes=91795
+1794270889933	status	A	ms=334	rc=0	bytes=92733
+1794270890274	status	C	ms=43	rc=0	bytes=1
+1794270890324	status	B2	ms=3388	rc=0	bytes=106173
+1794270893719	after	rc=0 manual=crashon-burst 	folded=15:6261754	end=15:6604190	backlogBytes=342436	walFiles=3
+1794271043746	stop	rc=0 kind=clean 	folded=15:68605934	end=15:68605934	backlogBytes=0	walFiles=3
+1794271072597	start	rc=0 	folded=16:28	end=16:28	backlogBytes=0	walFiles=4
+1794271072646	status	B	ms=36708	rc=0	bytes=100003
+1794271109363	status	A	ms=365	rc=0	bytes=91616
+1794271109735	status	C	ms=56	rc=0	bytes=1
+1794271109798	status	B2	ms=2551	rc=0	bytes=103382
+1794271112355	after	rc=0 	folded=16:621712	end=16:631913	backlogBytes=10201	walFiles=4
+1794271210860	stop	rc=crash kind=crash manual=relbury-r2 	folded=16:8698151	end=16:38112279	backlogBytes=29414128	walFiles=4
+1794271247043	start	rc=0 manual=relbury-r2 	folded=16:22648224	end=17:7445484	backlogBytes=22909539	walFiles=5
+1794271249325	status	B	ms=46866	rc=0	bytes=103516
+1794271296200	status	A	ms=503	rc=0	bytes=105018
+1794271296711	status	C	ms=85	rc=0	bytes=1
+1794271296807	status	B2	ms=3533	rc=0	bytes=103569
+1794271300348	after	rc=0 manual=relbury-r2 	folded=17:27269941	end=17:27330140	backlogBytes=60199	walFiles=5
+1794271376858	stop	rc=crash kind=crash manual=crashafter 	folded=17:29900917	end=17:29942902	backlogBytes=41985	walFiles=5
+1794271416367	start	rc=0 manual=crashafter 	folded=18:28	end=18:422882	backlogBytes=422854	walFiles=6
+1794271416428	status	B	ms=30010	rc=0	bytes=114504
+1794271446448	status	A	ms=396	rc=0	bytes=106272
+1794271446851	status	C	ms=42	rc=0	bytes=1
+1794271446899	status	B2	ms=3460	rc=0	bytes=105721
+1794271450366	after	rc=0 manual=crashafter 	folded=18:1796509	end=18:1835998	backlogBytes=39489	walFiles=6
+1794271565725	stop	rc=crash kind=crash manual=crashon-burst 	folded=18:45229304	end=18:67259090	backlogBytes=22029786	walFiles=6
+1794271610603	start	rc=0 manual=crashon-burst 	folded=18:56257126	end=19:874738	backlogBytes=11876702	walFiles=7
+1794271611837	status	B	ms=45835	rc=0	bytes=105614
+1794271657680	status	A	ms=519	rc=0	bytes=106002
+1794271658206	status	C	ms=46	rc=0	bytes=1
+1794271658259	status	B2	ms=3483	rc=0	bytes=116917
+1794271661748	after	rc=0 manual=crashon-burst 	folded=19:2652215	end=19:2685237	backlogBytes=33022	walFiles=7
+1794271974328	stop	rc=crash kind=crash 	folded=20:4326589	end=20:4359553	backlogBytes=32964	walFiles=1
+1794272017221	start	rc=0 	folded=21:28	end=21:286897	backlogBytes=286869	walFiles=2
+1794272017316	status	B	ms=29158	rc=0	bytes=114504
+1794272046484	status	A	ms=539	rc=0	bytes=104646
+1794272047029	status	C	ms=54	rc=0	bytes=1
+1794272047089	status	B2	ms=3439	rc=0	bytes=106297
+1794272050535	after	rc=0 	folded=21:2248708	end=21:2350410	backlogBytes=101702	walFiles=2
+1794272920687	stop	rc=crash kind=crash 	folded=24:2522533	end=24:2728157	backlogBytes=205624	walFiles=2
+1794272980624	start	rc=0 	folded=25:28	end=25:1631183	backlogBytes=1631155	walFiles=3
+1794272980694	status	B	ms=22703	rc=0	bytes=92364
+1794273003403	status	A	ms=777	rc=0	bytes=102179
+1794273004187	status	C	ms=60	rc=0	bytes=1
+1794273004254	status	B2	ms=4664	rc=0	bytes=92419
+1794273008925	after	rc=0 	folded=25:4665320	end=25:31524993	backlogBytes=26859673	walFiles=2
+1794273941743	stop	rc=0 kind=clean 	folded=28:36869162	end=28:59290252	backlogBytes=22421090	walFiles=1
+1794274010983	start	rc=0 	folded=29:28	end=29:2030851	backlogBytes=2030823	walFiles=2
+1794274011077	status	B	ms=24109	rc=0	bytes=95058
+1794274035193	status	A	ms=779	rc=0	bytes=84734
+1794274035977	status	C	ms=43	rc=0	bytes=1
+1794274036026	status	B2	ms=5715	rc=0	bytes=95061
+1794274041747	after	rc=0 	folded=29:6927485	end=29:6928698	backlogBytes=1213	walFiles=2
+1794274913681	stop	rc=crash kind=crash 	folded=31:58571722	end=32:981402	backlogBytes=30779139	walFiles=2
+1794275006227	start	rc=0 	folded=31:82817702	end=33:687549	backlogBytes=7220708	walFiles=3
+1794275007023	status	B	ms=36760	rc=0	bytes=102525
+1794275043792	status	A	ms=946	rc=0	bytes=93771
+1794275044746	status	C	ms=52	rc=0	bytes=1
+1794275044807	status	B2	ms=9974	rc=0	bytes=91513
+1794275054789	after	rc=0 	folded=33:3369273	end=33:3923252	backlogBytes=553979	walFiles=3
+1794275973418	stop	rc=killed kind=clean 	folded=35:80859055	end=35:80859055	backlogBytes=0	walFiles=1
+1794276069807	start	rc=0 	folded=36:28	end=36:1385877	backlogBytes=1385849	walFiles=2
+1794276069885	status	B	ms=29213	rc=0	bytes=95010
+1794276099114	status	A	ms=1271	rc=0	bytes=95943
+1794276100392	status	C	ms=52	rc=0	bytes=1
+1794276100450	status	B2	ms=9558	rc=0	bytes=95070
+1794276110015	after	rc=0 	folded=36:36766375	end=36:60744198	backlogBytes=23977823	walFiles=2
+1794276973085	stop	rc=crash kind=crash 	folded=39:21453206	end=39:64211823	backlogBytes=42758617	walFiles=1
+1794277091388	start	rc=0 	folded=39:41237715	end=40:109919	backlogBytes=23084027	walFiles=2
+1794277092239	status	B	ms=120121	rc=1	bytes=99
+1794277212370	status	A	ms=2852	rc=0	bytes=94824
+1794277215277	status	C	ms=152	rc=0	bytes=1
+1794277215435	status	B2	ms=75263	rc=0	bytes=92587
+1794277290706	after	rc=0 	folded=40:25485846	end=40:71658478	backlogBytes=46172632	walFiles=2
+1794278082566	stop	rc=killed kind=clean 	folded=41:146496624	end=42:13929593	backlogBytes=26748208	walFiles=2

@@ -1,0 +1,29 @@
+== batch r1: D=1794268595000 kill=1794268595583 (D+583ms) jobs with marks=400
+   snapshot +1500: buried=400
+   snapshot +180: buried=400
+   snapshot +600: buried=400
+   snapshot up: buried=400
+   bur ack<1s: 194
+   bur ack>=5s: 6
+   bur final=buried: 200
+   bur not-acked-before-kill: 200
+   bur runs=1: 200
+   rel ack<1s: 309
+   rel ack>=5s: 91
+   rel final=buried: 200
+   rel not-acked-before-kill: 200
+   rel runs=2: 200
+== batch r2: D=1794271208000 kill=1794271210356 (D+2356ms) jobs with marks=400
+   snapshot +1500: buried=400
+   snapshot +180: buried=400
+   snapshot +600: buried=400
+   snapshot up: buried=400
+   bur ack<1s: 176
+   bur acked-before-kill: 176
+   bur final=buried: 200
+   bur not-acked-before-kill: 24
+   bur runs=1: 200
+   rel final=buried: 200
+   rel not-acked-before-kill: 200
+   rel runs=1: 200
+problems: 0

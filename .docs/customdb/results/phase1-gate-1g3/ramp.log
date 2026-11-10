@@ -1,0 +1,6 @@
+1794267298 stage t+0m target=600 results_portal=600 load=1.21
+1794267780 stage t+8m target=1200 results_portal=1200 load=3.10
+1794268261 stage t+16m target=2100 results_portal=2100 load=4.36
+1794268803 stage t+25m target=3000 results_portal=3000 load=4.15
+1794269706 stage t+40m target=3600 results_portal=3600 load=5.51
+1794270900 stage t+60m target=4000 results_portal=4000 load=10.98
