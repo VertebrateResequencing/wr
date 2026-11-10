@@ -1,0 +1,25 @@
+base BenchmarkScenarioDepGranularity 1 324 peak-rss-MB 0.171 recovery-sec 0.499 add-sec
+base BenchmarkScenarioDepGranularity 1 304 peak-rss-MB 0.215 recovery-sec 0.509 add-sec
+base BenchmarkScenarioDepGranularity 1 324 peak-rss-MB 0.192 recovery-sec 0.593 add-sec
+base BenchmarkScenarioDepGranularity 1 323 peak-rss-MB 0.173 recovery-sec 0.553 add-sec
+base BenchmarkScenarioDepGranularity 1 311 peak-rss-MB 0.171 recovery-sec 0.508 add-sec
+base BenchmarkScenarioDepGranularity 1 308 peak-rss-MB 0.173 recovery-sec 0.506 add-sec
+head BenchmarkScenarioDepGranularity 1 296 peak-rss-MB 0.171 recovery-sec 0.392 add-sec
+head BenchmarkScenarioDepGranularity 1 294 peak-rss-MB 0.172 recovery-sec 0.421 add-sec
+head BenchmarkScenarioDepGranularity 1 293 peak-rss-MB 0.172 recovery-sec 0.401 add-sec
+head BenchmarkScenarioDepGranularity 1 266 peak-rss-MB 0.192 recovery-sec 0.390 add-sec
+head BenchmarkScenarioDepGranularity 1 266 peak-rss-MB 0.195 recovery-sec 0.385 add-sec
+head BenchmarkScenarioDepGranularity 1 267 peak-rss-MB 0.171 recovery-sec 0.393 add-sec
+
+base BenchmarkAddDepGroupMember-8   	       3	 393005044 ns/op	107209773 B/op	 1175708 allocs/op
+base BenchmarkAddDepGroupMember-8   	       3	 389589940 ns/op	107228586 B/op	 1175938 allocs/op
+base BenchmarkAddDepGroupMember-8   	       3	 377151208 ns/op	107224648 B/op	 1175669 allocs/op
+base BenchmarkAddDepGroupMember-8   	       3	 382973590 ns/op	107190040 B/op	 1175929 allocs/op
+base BenchmarkAddDepGroupMember-8   	       3	 369239789 ns/op	107181456 B/op	 1175663 allocs/op
+base BenchmarkAddDepGroupMember-8   	       3	 370346846 ns/op	107201930 B/op	 1175674 allocs/op
+head BenchmarkAddDepGroupMember-8   	       3	 342890472 ns/op	178124501 B/op	  798280 allocs/op
+head BenchmarkAddDepGroupMember-8   	       3	 357483482 ns/op	154307496 B/op	  705553 allocs/op
+head BenchmarkAddDepGroupMember-8   	       3	 374582334 ns/op	178110192 B/op	  798344 allocs/op
+head BenchmarkAddDepGroupMember-8   	       3	 335318167 ns/op	178080696 B/op	  798275 allocs/op
+head BenchmarkAddDepGroupMember-8   	       3	 350769007 ns/op	171132562 B/op	  792138 allocs/op
+head BenchmarkAddDepGroupMember-8   	       3	 343761890 ns/op	172291197 B/op	  798275 allocs/op

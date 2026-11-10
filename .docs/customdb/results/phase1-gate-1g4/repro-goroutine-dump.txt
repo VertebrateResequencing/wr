@@ -1,0 +1,48 @@
+SIGQUIT goroutine dump of the hung add (head test binary, BenchmarkAddDepGroupMember alone, ~3 min in); add-handler goroutine:
+goroutine 41 gp=0xa28e4804d20 m=nil [runnable]:
+github.com/VertebrateResequencing/wr/jobqueue/wal.wholePlainFrames({0xa28e938e000?, 0xc54b14?, 0xc56000?})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/wal/scan.go:272 +0x10d fp=0xa28ec4906c0 sp=0xa28ec4906b8 pc=0x11581ad
+github.com/VertebrateResequencing/wr/jobqueue/wal.decodeBlock({0x0?, 0x272000?, 0xa28e53e6000?}, {0xa28e53e6000?, 0x22f516?, 0xa28e53e6000?})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/wal/scan.go:267 +0x70 fp=0xa28ec490720 sp=0xa28ec4906c0 pc=0x1158030
+github.com/VertebrateResequencing/wr/jobqueue/wal.blockRecord({0xa28e53e6000?, 0xa28e5206390?, 0x0?}, {0x1, 0xeea, 0xd5e6})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/wal/scan.go:215 +0x4d fp=0xa28ec4907c8 sp=0xa28ec490720 pc=0x1157a4d
+github.com/VertebrateResequencing/wr/jobqueue/wal.ReadAt({0x2ec16b0, 0xa28fae915a0}, {0x1, 0xeea, 0xd5e6})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/wal/scan.go:121 +0x2d6 fp=0xa28ec4908a0 sp=0xa28ec4907c8 pc=0x1156f96
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).readRecord(0x1?, {0xd5e7?, 0xcea302db7010803f?, 0x2275a797?})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:1603 +0x58 fp=0xa28ec4908e8 sp=0xa28ec4908a0 pc=0x1288b58
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).readRecordBody(0x0?, {0x1, 0xeea, 0xd5e6}, 0x2)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:1631 +0x45 fp=0xa28ec490aa0 sp=0xa28ec4908e8 pc=0x1288e05
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).decodeJob(0xa28e4650e08, {0x49075f?, 0x40867c?, 0xed7a2770?}, {0xed7a27ff?, 0xa28ec490b68?, 0xec490b68?}, 0x2)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:1656 +0x6a fp=0xa28ec490b10 sp=0xa28ec490aa0 pc=0x128912a
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).liveJobOf(0xa28e4650e08, {0x3f, 0x80, 0x10, 0x70, 0xdb, 0x2, 0xa3, 0xce, 0x97, ...})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:1035 +0x18f fp=0xa28ec490bd0 sp=0xa28ec490b10 pc=0x12862af
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).dependentJob(0xa28e4650e08, {0x3f, 0x80, 0x10, 0x70, 0xdb, 0x2, 0xa3, 0xce, 0x97, ...}, ...)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:2572 +0x2a fp=0xa28ec490c30 sp=0xa28ec490bd0 pc=0x129066a
+github.com/VertebrateResequencing/wr/jobqueue.(*logDependentsScan).group(0xa28ec490da8, {0xa28f67d1e00?, 0xf?})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:2739 +0x11b fp=0xa28ec490d38 sp=0xa28ec490c30 pc=0x12912bb
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).dependentJobs(0xa28e4650e08, 0xa28ec690720, 0xa28ec690750)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:2543 +0x1ec fp=0xa28ec490e40 sp=0xa28ec490d38 pc=0x129030c
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).planDependents(0xa28e4650e08, 0xa28ec490f10)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:2415 +0x5a fp=0xa28ec490e90 sp=0xa28ec490e40 pc=0x128eeba
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).planAdd(_, {_, _, _}, _, _)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:2308 +0x2a5 fp=0xa28ec491088 sp=0xa28ec490e90 pc=0x128e3c5
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).planClaimedAdd(_, {_, _, _}, {_, _, _}, _)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log_claims.go:140 +0x1d5 fp=0xa28ec491488 sp=0xa28ec491088 pc=0x1292015
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).storeNewJobsGuarded(0xa28e4650e08, {0xa28ec694540?, 0xb5ebf4?}, {0xa28eb36b848, 0x1, 0x1}, 0x1, 0xa28e45ff0e0)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_log.go:2254 +0x11d fp=0xa28ec491900 sp=0xa28ec491488 pc=0x128db9d
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).createJobs(0xa28e4421008, {0x2ecad00, 0x2fa4ac0}, {0xa28eb36b840?, 0xa28faa3dcc8?, 0xb5e4fb?}, {0xa28ec694540, 0x20}, 0x1)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/server.go:7140 +0x289 fp=0xa28ec491c48 sp=0xa28ec491900 pc=0x1221e09
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).handleAdd(0xa28e4421008, {0x2ecad00, 0x2fa4ac0}, 0xa28e4804f00)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/serverCLI.go:1004 +0x138 fp=0xa28ec491db8 sp=0xa28ec491c48 pc=0x1232bb8
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).dispatchMethod(0x7f268e3f24e8?, {0x2ecad00, 0x2fa4ac0}, 0x4226df?, 0x20?)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/serverCLI.go:2526 +0x67 fp=0xa28ec491e28 sp=0xa28ec491db8 pc=0x123b327
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).handleRequest(0xa28e4421008, {0x2ecad00, 0x2fa4ac0}, 0xa28f7d56100)
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/serverCLI.go:746 +0x198 fp=0xa28ec491f08 sp=0xa28ec491e28 pc=0x1231638
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).dispatchClientRequest(0xa28e4421008, {0x2ecad00, 0x2fa4ac0}, 0xe2e0ff?, 0xa28e423e3c0?, {0xa28e42882a0?, 0xa28f7d56080?})
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/server.go:5871 +0x96 fp=0xa28ec491f98 sp=0xa28ec491f08 pc=0x121ac76
+github.com/VertebrateResequencing/wr/jobqueue.(*Server).serveClientsReader.gowrap3()
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/server.go:2759 +0x2f fp=0xa28ec491fe0 sp=0xa28ec491f98 pc=0x14319cf
+runtime.goexit({})
+	/software/hgi/installs/go/src/runtime/asm_amd64.s:1264 +0x1 fp=0xa28ec491fe8 sp=0xa28ec491fe0 pc=0x49a541
+created by github.com/VertebrateResequencing/wr/jobqueue.(*Server).serveClientsReader in goroutine 39
+	/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/server.go:2759 +0x1c8

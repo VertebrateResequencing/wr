@@ -49,6 +49,48 @@ const (
 // ErrBadRef is the error of ReadAt given a Ref that names no undamaged record.
 var ErrBadRef = errors.New("wal: ref names no undamaged record")
 
+// FrameBuffers is storage ReadFrameInto reads a frame's payload into and
+// decompresses a block into, growing each as it needs to. Its zero value is
+// ready to use.
+type FrameBuffers struct {
+	payload, plain []byte
+}
+
+// Size is the bytes of storage b holds.
+func (b *FrameBuffers) Size() int {
+	return cap(b.payload) + cap(b.plain)
+}
+
+// ReadFrameInto is ReadFrame reading into bufs, which the caller must not use
+// for anything else until it returns. rec is only valid until fn returns, and
+// only while bufs is not reused.
+func ReadFrameInto(f io.ReaderAt, off uint64, bufs *FrameBuffers, fn func(ref Ref, rec []byte) error) error {
+	if off > math.MaxInt64-FrameHeader-MaxFrameLen {
+		return fmt.Errorf("%w: offset %d", ErrBadRef, off)
+	}
+
+	payload, isBlock, ok, err := readFrame(io.NewSectionReader(f, int64(off), FrameHeader+MaxFrameLen), bufs.payload)
+	bufs.payload = payload
+
+	if err != nil {
+		return fmt.Errorf("wal: read frame at %d: %w", off, err)
+	}
+
+	if ok {
+		bufs.plain, ok, err = giveRecords(payload, isBlock, bufs.plain, Ref{Off: off}, fn)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return fmt.Errorf("%w: offset %d", ErrBadRef, off)
+	}
+
+	return nil
+}
+
 // Scan reads frames from r, calling fn with each record and its Ref, until the
 // first damage: a short header or payload, a CRC mismatch, or a length of 0 or
 // over 1GiB. A block is all or nothing: its records are given only once it has
@@ -125,30 +167,10 @@ func ReadAt(f io.ReaderAt, ref Ref) ([]byte, error) {
 // plain frame's record, or each of a block's records, decompressing the block
 // once, with its Ref (File 0, as for Scan). It returns ErrBadRef if there is no
 // undamaged frame at off, the error of reading f, or the first error fn
-// returns, which stops it. rec is only valid until fn returns.
+// returns, which stops it. rec is only valid until fn returns. It reads into
+// new buffers; ReadFrameInto reuses the caller's.
 func ReadFrame(f io.ReaderAt, off uint64, fn func(ref Ref, rec []byte) error) error {
-	if off > math.MaxInt64-FrameHeader-MaxFrameLen {
-		return fmt.Errorf("%w: offset %d", ErrBadRef, off)
-	}
-
-	payload, isBlock, ok, err := readFrame(io.NewSectionReader(f, int64(off), FrameHeader+MaxFrameLen), nil)
-	if err != nil {
-		return fmt.Errorf("wal: read frame at %d: %w", off, err)
-	}
-
-	if ok {
-		_, ok, err = giveRecords(payload, isBlock, nil, Ref{Off: off}, fn)
-	}
-
-	if err != nil {
-		return err
-	}
-
-	if !ok {
-		return fmt.Errorf("%w: offset %d", ErrBadRef, off)
-	}
-
-	return nil
+	return ReadFrameInto(f, off, new(FrameBuffers), fn)
 }
 
 // readFrame reads the next frame from r, returning its payload in buf, whether

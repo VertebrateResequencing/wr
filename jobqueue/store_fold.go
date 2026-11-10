@@ -37,6 +37,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
+	"maps"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -302,7 +304,7 @@ func (r *foldRead) fold(to historyPos) (*historyFold, error) {
 
 	callHook(&logFoldSpecsHook)
 
-	bodies, err := r.s.readRecordBodies(specRefs)
+	bodies, err := r.s.readRecordBodies(maps.Values(specRefs))
 
 	r.s.releaseRefs(gen)
 
@@ -372,6 +374,26 @@ func callHook(h *atomic.Pointer[func()]) {
 	if fn := h.Load(); fn != nil {
 		(*fn)()
 	}
+}
+
+// frameIdxs returns the index of each of refs' records by the Ref of its frame
+// (its Idx 0), and how many refs there are.
+func frameIdxs(refs iter.Seq[wal.Ref]) (map[wal.Ref]map[uint32]bool, int) {
+	frames := make(map[wal.Ref]map[uint32]bool)
+	n := 0
+
+	for ref := range refs {
+		n++
+
+		frame := wal.Ref{File: ref.File, Off: ref.Off}
+		if frames[frame] == nil {
+			frames[frame] = make(map[uint32]bool)
+		}
+
+		frames[frame][ref.Idx] = true
+	}
+
+	return frames, n
 }
 
 // foldLimit returns where a fold reads wal file files[i] to: durEnd, if it is
@@ -548,22 +570,24 @@ func (s *logStore) readFold(to historyPos) (*historyFold, error) {
 
 // readRecordBodies returns the body after the key of each record refs name,
 // reading each frame once, so a block holding several is decompressed once.
-func (s *logStore) readRecordBodies(refs map[int]wal.Ref) (map[wal.Ref][]byte, error) {
-	frames := make(map[wal.Ref]map[uint32]bool)
+// The caller holds refs (see holdRefs).
+func (s *logStore) readRecordBodies(refs iter.Seq[wal.Ref]) (map[wal.Ref][]byte, error) {
+	frames, n := frameIdxs(refs)
+	bodies := make(map[wal.Ref][]byte, n)
 
-	for _, ref := range refs {
-		frame := wal.Ref{File: ref.File, Off: ref.Off}
-		if frames[frame] == nil {
-			frames[frame] = make(map[uint32]bool)
+	keep := func(ref wal.Ref, rec []byte) error {
+		parsed, err := parseLogRecord(rec)
+		if err != nil {
+			return err
 		}
 
-		frames[frame][ref.Idx] = true
+		bodies[ref] = append([]byte(nil), parsed.body...)
+
+		return nil
 	}
 
-	bodies := make(map[wal.Ref][]byte, len(refs))
-
 	for frame, idxs := range frames {
-		if err := s.readFrameBodies(frame, idxs, bodies); err != nil {
+		if err := s.readFrameRecords(frame, idxs, keep); err != nil {
 			return nil, err
 		}
 	}
@@ -571,29 +595,28 @@ func (s *logStore) readRecordBodies(refs map[int]wal.Ref) (map[wal.Ref][]byte, e
 	return bodies, nil
 }
 
-// readFrameBodies adds to bodies the body after the key of each record of the
-// frame at frame whose index is in idxs.
-func (s *logStore) readFrameBodies(frame wal.Ref, idxs map[uint32]bool, bodies map[wal.Ref][]byte) error {
+// readFrameRecords calls keep with each record of the frame at frame whose
+// index is in idxs, and its Ref, reading the frame once. rec is only valid
+// until keep returns.
+func (s *logStore) readFrameRecords(frame wal.Ref, idxs map[uint32]bool,
+	keep func(ref wal.Ref, rec []byte) error,
+) error {
 	f, err := s.segmentFile(frame.File)
 	if err != nil {
 		return err
 	}
 
-	return wal.ReadFrame(f, frame.Off, func(ref wal.Ref, rec []byte) error {
+	bufs := s.takeReadBufs()
+	defer s.putReadBufs(bufs)
+
+	return wal.ReadFrameInto(f, frame.Off, bufs, func(ref wal.Ref, rec []byte) error {
 		if !idxs[ref.Idx] {
 			return nil
 		}
 
-		parsed, errp := parseLogRecord(rec)
-		if errp != nil {
-			return errp
-		}
-
 		ref.File = frame.File
 
-		bodies[ref] = append([]byte(nil), parsed.body...)
-
-		return nil
+		return keep(ref, rec)
 	})
 }
 

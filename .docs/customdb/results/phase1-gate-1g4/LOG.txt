@@ -1,0 +1,21 @@
+Tue 10 Nov 03:19:11 UTC 2026
+1g4impl start
+ 03:19:11 up 413 days, 10:59, 22 users,  load average: 1.38, 1.27, 2.01
+27c10a45f55115aa7c8fb1cbff5b3fba4a609a9a
+Tue 10 Nov 03:19:23 UTC 2026 run1: make speed-full SPEED_BASE=/tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/base-d1a4b6d7 SPEED_DIR=/nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed HOME=/tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/home1;  03:19:23 up 413 days, 10:59, 22 users,  load average: 1.24, 1.24, 1.99
+Tue 10 Nov 03:35:57 UTC 2026 run1 finished;  03:35:57 up 413 days, 11:15, 22 users,  load average: 1.98, 2.61, 2.81
+Tue 10 Nov 03:36:17 UTC 2026 run1 FAILED: head BenchmarkAddDepGroupMember receive time out (add of 1 member took 13m23s); reproducing
+Tue 10 Nov 03:43:57 UTC 2026 scaling (scratch copy, waiters 1000/2000/4000): 2.67s/7.07s/20.45s per add -> quadratic
+Tue 10 Nov 03:43:57 UTC 2026 run2: as run1 plus SPEED_BENCH='^Benchmark(AddJobs|UpdateJobState|ArchiveJobs|ArchiveSpacedArrivals|ReadyBacklogSnapshot|BuildSchedulerGroupsBacklog|RACCycleCounted|RepGroupStatusDetails|JobKey|ModifyLiveJobsReverseLookup|JobCleanup|JobCleanupDepth1|JobCleanupDepth8|QueueLifecycle|Limiter.*)$' (AddDepGroupMember excluded), HOME=/tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/home1;  03:43:57 up 413 days, 11:23, 22 users,  load average: 1.74, 2.27, 2.59
+Tue 10 Nov 03:44:31 UTC 2026 base round1 BenchmarkAddDepGroupMember 361ms/op (30000 waiters); head did not finish one op in 13m23s
+Tue 10 Nov 03:58:37 UTC 2026 run2: head dep-granularity-check FAIL addSec=3.995 (thr 2) vs base 0.546; converted fixture in 64KiB checkpoint blocks -> same per-record block decode
+Tue 10 Nov 04:29:46 UTC 2026 run2 finished;  04:29:46 up 413 days, 12:09, 22 users,  load average: 2.35, 2.12, 2.18
+Tue 10 Nov 04:30:07 UTC 2026 run3: SPEED_COUNT=0 SPEED_SCENARIOS='report-storm dep-granularity-check' SPEED_SCENARIO_COUNT=6 make speed-full;  04:30:07 up 413 days, 12:10, 22 users,  load average: 1.84, 2.02, 2.15
+Tue 10 Nov 04:31:32 UTC 2026 finding: on HEAD add-storm (withBoltStore), archive-rate/archive-ceiling (initDB) and db_bench_test benchmarks run on bbolt; only report-storm, dep-granularity-check, AddDepGroupMember use the log store
+Tue 10 Nov 04:39:12 UTC 2026 run3 finished;  04:39:12 up 413 days, 12:19, 22 users,  load average: 2.78, 2.79, 2.47
+Tue 10 Nov 04:40:13 UTC 2026 prehwm A/B start;  04:40:13 up 413 days, 12:20, 22 users,  load average: 1.74, 2.48, 2.39
+Tue 10 Nov 04:43:23 UTC 2026 prehwm done;  04:43:23 up 413 days, 12:23, 22 users,  load average: 2.21, 2.45, 2.40
+Tue 10 Nov 04:43:42 UTC 2026 prehwm: pre-add HWM base 221/223/222 head 186/191/185; final base 327/324/321 head 380/393/380 -> RSS growth is in the add
+Tue 10 Nov 04:43:42 UTC 2026 run4: SPEED_COUNT=0 SPEED_SCENARIOS=add-storm SPEED_SCENARIO_COUNT=4;  04:43:42 up 413 days, 12:23, 22 users,  load average: 1.70, 2.32, 2.36
+Tue 10 Nov 05:26:56 UTC 2026 run4 finished;  05:26:56 up 413 days, 13:06, 22 users,  load average: 3.56, 4.12, 3.70
+Tue 10 Nov 05:28:40 UTC 2026 cleanup: removed scratch base/head copies, temp HOMEs, test binaries and /nfs/hgi/wr/sb10-bigdb/customdb/1g4/prehwm; kept speed/ run dirs (7.9M). Heavy load finished 05:27, before 10:00.  05:28:40 up 413 days, 13:08, 22 users,  load average: 1.54, 3.20, 3.41

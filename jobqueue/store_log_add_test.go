@@ -677,6 +677,48 @@ func TestLogStoreAdd(t *testing.T) {
 			})
 		})
 
+		Convey("a complete dependent added again with a new member of its dep group is stored once, as added, "+
+			"not also put back", func() {
+			dependent := func() *Job {
+				d := testDBJob("echo c2 readded dependent", "c2")
+				d.Dependencies = Dependencies{NewDepGroupDependency("g")}
+
+				return d
+			}
+
+			d := dependent()
+			_, err := s.storeNewJobsGuarded(ctx, []*Job{d}, false, nil)
+			So(err, ShouldBeNil)
+
+			d.State = JobStateComplete
+			_, err = s.archiveCompletion(d.Key(), d)
+			So(err, ShouldBeNil)
+
+			m := testDBJob("echo c2 readded member", "c2")
+			m.DepGroups = []string{"g"}
+
+			stored, err := s.storeNewJobsGuarded(ctx, []*Job{m, dependent()}, false, nil)
+			So(err, ShouldBeNil)
+			So(jobKeys(stored.jobsToQueue), ShouldHaveLength, 2)
+			So(jobKeys(stored.jobsToQueue), ShouldContain, m.Key())
+			So(jobKeys(stored.jobsToQueue), ShouldContain, d.Key())
+			So(stored.dependents.jobs, ShouldBeEmpty)
+		})
+
+		Convey("a member of two dep groups finds a job waiting on both once", func() {
+			w := testDBJob("echo c2 two groups waiter", "c2")
+			w.Dependencies = Dependencies{NewDepGroupDependency("g1"), NewDepGroupDependency("g2")}
+			_, err := s.storeNewJobsGuarded(ctx, []*Job{w}, false, nil)
+			So(err, ShouldBeNil)
+
+			m := testDBJob("echo c2 two groups member", "c2")
+			m.DepGroups = []string{"g1", "g2"}
+
+			stored, err := s.storeNewJobsGuarded(ctx, []*Job{m}, false, nil)
+			So(err, ShouldBeNil)
+			So(jobKeys(stored.dependents.jobs), ShouldResemble, []string{w.Key()})
+		})
+
 		Convey("an add whose records exceed the block limit is split into s2 blocks in one batch", func() {
 			old := logBlockMaxFrames
 			logBlockMaxFrames = 4096

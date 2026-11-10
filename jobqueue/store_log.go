@@ -33,6 +33,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -75,6 +76,12 @@ const (
 // more is split into several blocks. Half the frame limit leaves room for s2's
 // worst-case expansion. A var so tests can shrink it.
 var logBlockMaxFrames = wal.MaxFrameLen / 2 //nolint:gochecknoglobals // tuning knob, varied by tests
+
+// readBufsMax is the most storage the store keeps in its read buffers for
+// reuse (see putReadBufs): those grown past it to read a bigger frame are
+// dropped, so that one huge frame does not pin its size for good. A var so
+// tests can shrink it.
+var readBufsMax = 64 << 20 //nolint:gochecknoglobals // tuning knob, varied by tests
 
 // walSegmentSize is the size log segments rotate at. A var so tests can shrink
 // it.
@@ -132,6 +139,9 @@ var (
 )
 
 var _ store = (*logStore)(nil)
+
+// jobRecordTypes are the types of the records a jobRecord's which names.
+var jobRecordTypes = [2]logRecordType{logRecSpec, logRecState} //nolint:gochecknoglobals // a constant table
 
 // logModify is one job of a modify: its old and new keys, the job and the old
 // key's std.
@@ -199,6 +209,40 @@ func (a *logAdd) keep(job *Job, key string) string {
 	}
 
 	return job.RepGroup
+}
+
+// jobRecord is a record readJobBodies reads: the spec (which 0) or state
+// (which 1) record of its job'th job, at ref.
+type jobRecord struct {
+	ref   wal.Ref
+	job   int
+	which int
+}
+
+// undone returns, sorted, the keys of the jobs depending on depGroup not
+// already done, marking them done.
+func (d *logDependentsScan) undone(depGroup string) []logKey {
+	keys := slices.DeleteFunc(d.s.reverseDepKeys(depGroup), func(k logKey) bool { return d.done[k] })
+
+	for _, k := range keys {
+		d.done[k] = true
+	}
+
+	return keys
+}
+
+// notLive returns those of keys whose job in live is nil, but for those in
+// newKeys.
+func (d *logDependentsScan) notLive(keys []logKey, live []*Job) []logKey {
+	var others []logKey
+
+	for i, k := range keys {
+		if live[i] == nil && !d.newKeys[k.String()] {
+			others = append(others, k)
+		}
+	}
+
+	return others
 }
 
 // openBackedLogStore is openLogStore with inc, if not nil, making the store's
@@ -307,6 +351,178 @@ func (s *logStore) startRecovery() error {
 	}
 
 	return err
+}
+
+// liveJobsOf returns the job of each of keys, as its latest durable spec and
+// state, or nil for one that is not live. It reads each frame holding their
+// records once (see readJobBodies), since a block's records can only be read
+// by decompressing the whole block: reading each through its Ref would cost a
+// block per record, quadratic in the jobs one add stored in one block.
+func (s *logStore) liveJobsOf(keys []logKey) ([]*Job, error) {
+	refs, live, gen := s.liveRefsOf(keys)
+	defer s.releaseRefs(gen)
+
+	bodies, err := s.readJobBodies(refs, live)
+	if err != nil {
+		return nil, err
+	}
+
+	jobs := make([]*Job, len(keys))
+
+	for i := range keys {
+		if !live[i] {
+			continue
+		}
+
+		b := bodies[i]
+		if b[0] == nil || b[1] == nil {
+			return nil, fmt.Errorf("%w: live job %s has no record", errStoreCorrupt, keys[i])
+		}
+
+		if jobs[i], err = s.jobOf(b[0], b[1]); err != nil {
+			return nil, err
+		}
+	}
+
+	return jobs, nil
+}
+
+// liveRefsOf returns the Refs of the spec and state records of each of keys,
+// and whether it is live (its Refs are zero if not), with the hold (see
+// holdRefs) the caller releases once it has read them.
+func (s *logStore) liveRefsOf(keys []logKey) ([][2]wal.Ref, []bool, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	refs := make([][2]wal.Ref, len(keys))
+	live := make([]bool, len(keys))
+
+	for i, k := range keys {
+		if e := s.state.live[k]; e != nil {
+			refs[i], live[i] = [2]wal.Ref{e.spec, e.state}, true
+		}
+	}
+
+	return refs, live, s.holdRefs()
+}
+
+// readJobBodies returns a copy of the body after the key of the spec and state
+// records at each of refs whose live is true, nil for one not read. It reads
+// the frames holding them in file and offset order, each once.
+func (s *logStore) readJobBodies(refs [][2]wal.Ref, live []bool) ([][2][]byte, error) {
+	recs := make([]jobRecord, 0, 2*len(refs)) //nolint:mnd // a spec and a state each
+
+	for i, r := range refs {
+		if live[i] {
+			recs = append(recs, jobRecord{ref: r[0], job: i}, jobRecord{ref: r[1], job: i, which: 1})
+		}
+	}
+
+	slices.SortFunc(recs, func(a, b jobRecord) int {
+		return cmp.Or(cmp.Compare(a.ref.File, b.ref.File), cmp.Compare(a.ref.Off, b.ref.Off),
+			cmp.Compare(a.ref.Idx, b.ref.Idx))
+	})
+
+	bodies := make([][2][]byte, len(refs))
+
+	for len(recs) > 0 {
+		n := frameRun(recs)
+		if err := s.readFrameJobBodies(recs[:n], bodies); err != nil {
+			return nil, err
+		}
+
+		recs = recs[n:]
+	}
+
+	return bodies, nil
+}
+
+// frameRun returns how many of recs, sorted by Ref, from the first are of the
+// first's frame.
+func frameRun(recs []jobRecord) int {
+	n := 1
+	for n < len(recs) && recs[n].ref.File == recs[0].ref.File && recs[n].ref.Off == recs[0].ref.Off {
+		n++
+	}
+
+	return n
+}
+
+// readFrameJobBodies sets in bodies a copy of the body after the key of each
+// of recs, records of one frame in index order, reading the frame once. One
+// the frame does not hold is left nil.
+func (s *logStore) readFrameJobBodies(recs []jobRecord, bodies [][2][]byte) error {
+	f, err := s.segmentFile(recs[0].ref.File)
+	if err != nil {
+		return err
+	}
+
+	bufs := s.takeReadBufs()
+	defer s.putReadBufs(bufs)
+
+	return wal.ReadFrameInto(f, recs[0].ref.Off, bufs, func(ref wal.Ref, rec []byte) error {
+		var errt error
+
+		recs, errt = takeJobBodies(recs, ref.Idx, rec, bodies)
+
+		return errt
+	})
+}
+
+// takeJobBodies sets in bodies a copy of the body after the key of rec, the
+// record at index idx of its frame, for each of recs, in index order, at idx,
+// and returns those after idx: those before it the frame does not hold, so they
+// are left nil. A copy, as rec is only valid until wal.ReadFrame's fn returns.
+func takeJobBodies(recs []jobRecord, idx uint32, rec []byte, bodies [][2][]byte) ([]jobRecord, error) {
+	for ; len(recs) > 0 && recs[0].ref.Idx <= idx; recs = recs[1:] {
+		if recs[0].ref.Idx < idx {
+			continue
+		}
+
+		body, err := keyedBody(rec, recs[0].ref, jobRecordTypes[recs[0].which])
+		if err != nil {
+			return recs, err
+		}
+
+		bodies[recs[0].job][recs[0].which] = slices.Clone(body)
+	}
+
+	return recs, nil
+}
+
+// takeReadBufs returns the store's kept read buffers, for the caller alone
+// until it gives them back with putReadBufs, or new ones if another reader has
+// them. Reading a frame into kept buffers saves allocating storage as big as
+// the frame and its decompressed block on every read, which for an add's
+// dependents is a block holding all of them.
+func (s *logStore) takeReadBufs() *wal.FrameBuffers {
+	s.readBufsMu.Lock()
+	defer s.readBufsMu.Unlock()
+
+	bufs := s.readBufs
+	s.readBufs = nil
+
+	if bufs == nil {
+		bufs = new(wal.FrameBuffers)
+	}
+
+	return bufs
+}
+
+// putReadBufs keeps bufs, which takeReadBufs returned and the caller no longer
+// uses, for the next reader, unless the store already keeps some, or they have
+// grown past readBufsMax, when they are dropped.
+func (s *logStore) putReadBufs(bufs *wal.FrameBuffers) {
+	if bufs.Size() > readBufsMax {
+		return
+	}
+
+	s.readBufsMu.Lock()
+	defer s.readBufsMu.Unlock()
+
+	if s.readBufs == nil {
+		s.readBufs = bufs
+	}
 }
 
 // logStateCommit is the durability of a state record appendState appends:
@@ -1012,31 +1228,6 @@ func (s *logStore) addExitRecords(f *logFrames, k logKey, seq uint64, rs *logRun
 	}
 }
 
-// liveJobOf returns k's job, as its latest durable spec and state, and true,
-// or false if k is not live.
-func (s *logStore) liveJobOf(k logKey) (*Job, bool, error) {
-	s.mu.RLock()
-	e := s.state.live[k]
-
-	var spec, state wal.Ref
-	if e != nil {
-		spec, state = e.spec, e.state
-	}
-
-	gen := s.holdRefs()
-	s.mu.RUnlock()
-
-	defer s.releaseRefs(gen)
-
-	if e == nil {
-		return nil, false, nil
-	}
-
-	job, err := s.decodeJob(spec, state, logRecState)
-
-	return job, true, err
-}
-
 // reserveRunState appends job's state record, as a reservation of it, and
 // returns the record's durability without waiting for it. If a write in flight
 // is making job's key live (see reviving), the record is appended on a
@@ -1393,6 +1584,11 @@ type logStore struct {
 	// it under closeMu, so none joins once close has set closed.
 	backups sync.WaitGroup
 
+	// readBufs, guarded by readBufsMu, are the read buffers kept for the
+	// next reader to take (see takeReadBufs), or nil while one has them.
+	readBufsMu sync.Mutex
+	readBufs   *wal.FrameBuffers
+
 	// refGen, guarded by mu, is the generation of reader holds (see
 	// holdRefs), and refHeld how many readers hold each of the last two.
 	refGen  uint64
@@ -1643,22 +1839,6 @@ func (s *logStore) readRecordBody(ref wal.Ref, typ logRecordType) ([]byte, error
 	}
 
 	return r.body, nil
-}
-
-// decodeJob returns the job made of the spec record at spec and the run state
-// record (state or complete) at state.
-func (s *logStore) decodeJob(spec, state wal.Ref, stateType logRecordType) (*Job, error) {
-	specBody, err := s.readRecordBody(spec, logRecSpec)
-	if err != nil {
-		return nil, err
-	}
-
-	stateBody, err := s.readRecordBody(state, stateType)
-	if err != nil {
-		return nil, err
-	}
-
-	return s.jobOf(specBody, stateBody)
 }
 
 // jobOf returns the job made of a flat spec and flat run state.
@@ -2566,23 +2746,6 @@ func (s *logStore) reverseDepKeys(depGroup string) []logKey {
 	return keys
 }
 
-// dependentJob returns the keyed job and true if it is live, else its history
-// entry's job unless its key is in newKeys, else nil.
-func (s *logStore) dependentJob(k logKey, newKeys map[string]bool) (*Job, bool, error) {
-	job, live, err := s.liveJobOf(k)
-	if live {
-		return job, true, err
-	}
-
-	if newKeys[k.String()] {
-		return nil, false, nil
-	}
-
-	job, _, err = s.historyJob(k)
-
-	return job, false, err
-}
-
 // appendAdd appends an add's records. If atRisk is not nil, it first adds
 // records putting back each dependent atRisk reports that is no longer live but
 // complete, once no archive of one is unsettled, and appends under guardMu,
@@ -2725,24 +2888,29 @@ type logDependentsScan struct {
 }
 
 // group classifies each job depending on depGroup not already done, returning
-// the dep groups of those jobs not seen before.
+// the dep groups of those jobs not seen before. It reads the live ones
+// together (see liveJobsOf), then the history entries of the others whose keys
+// are not in newKeys (see historyJobs).
 func (d *logDependentsScan) group(depGroup string) ([]string, error) {
+	keys := d.undone(depGroup)
+
+	live, err := d.s.liveJobsOf(keys)
+	if err != nil {
+		return nil, err
+	}
+
+	archived, err := d.s.historyJobs(d.notLive(keys, live))
+	if err != nil {
+		return nil, err
+	}
+
 	var found []string
 
-	for _, k := range d.s.reverseDepKeys(depGroup) {
-		if d.done[k] {
-			continue
-		}
-
-		d.done[k] = true
-
-		job, live, err := d.s.dependentJob(k, d.newKeys)
-		if err != nil {
-			return nil, err
-		}
-
-		if job != nil {
-			found = append(found, d.take(job, live)...)
+	for i, k := range keys {
+		if live[i] != nil {
+			found = append(found, d.take(live[i], true)...)
+		} else if job := archived[k]; job != nil {
+			found = append(found, d.take(job, false)...)
 		}
 	}
 
@@ -2773,4 +2941,15 @@ func newDepGroups(depGroups []string, seen map[string]bool) []string {
 	}
 
 	return found
+}
+
+// keyedBody returns the body after the key of rec, the record at ref, which
+// must be of type typ, a type whose body follows its key (a spec, state or
+// complete record), without parsing the rest of it as parseLogRecord does.
+func keyedBody(rec []byte, ref wal.Ref, typ logRecordType) ([]byte, error) {
+	if len(rec) < logRecordHeader+logKeyLen || logRecordType(rec[0]) != typ {
+		return nil, fmt.Errorf("%w: %+v is not a whole record of type %d", errLogRecordMalformed, ref, typ)
+	}
+
+	return rec[logRecordHeader+logKeyLen:], nil
 }

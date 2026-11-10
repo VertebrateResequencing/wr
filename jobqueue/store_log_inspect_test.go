@@ -144,9 +144,12 @@ func (s *logStore) liveJob(key string) (*Job, bool, error) {
 		return nil, false, err
 	}
 
-	job, live, err := s.liveJobOf(k)
+	jobs, err := s.liveJobsOf([]logKey{k})
+	if err != nil {
+		return nil, false, err
+	}
 
-	return job, live && err == nil, err
+	return jobs[0], jobs[0] != nil, nil
 }
 
 // completeJob returns the keyed job as its history entry holds it, and whether

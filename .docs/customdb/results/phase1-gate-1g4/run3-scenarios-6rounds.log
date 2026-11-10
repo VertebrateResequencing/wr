@@ -1,0 +1,96 @@
+speed (full): results in /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007
+  base: /tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/base-d1a4b6d7 (/tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/base-d1a4b6d7)
+  head: v0.39.0-109-g27c10a45 (/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr)
+scenario: report-storm round 1/6, base
+  BenchmarkScenarioReportStorm 1 1156.7 jobs/s 224.000 max-archive-ms 17.29 wall-sec
+scenario: report-storm round 1/6, head
+  BenchmarkScenarioReportStorm 1 1709.4 jobs/s 121.000 max-archive-ms 11.70 wall-sec
+scenario: dep-granularity-check round 1/6, base
+  BenchmarkScenarioDepGranularity 1 320 peak-rss-MB 0.192 recovery-sec 0.518 add-sec
+scenario: dep-granularity-check round 1/6, head
+  BenchmarkScenarioDepGranularity 1 381 peak-rss-MB 0.216 recovery-sec 4.269 add-sec
+  head FAILED dep-granularity-check (exit 1); see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.1.out
+scenario: report-storm round 2/6, base
+  BenchmarkScenarioReportStorm 1 1142.9 jobs/s 186.000 max-archive-ms 17.50 wall-sec
+scenario: report-storm round 2/6, head
+  BenchmarkScenarioReportStorm 1 1774.6 jobs/s 111.000 max-archive-ms 11.27 wall-sec
+scenario: dep-granularity-check round 2/6, base
+  BenchmarkScenarioDepGranularity 1 326 peak-rss-MB 0.201 recovery-sec 0.622 add-sec
+scenario: dep-granularity-check round 2/6, head
+  BenchmarkScenarioDepGranularity 1 379 peak-rss-MB 0.214 recovery-sec 4.112 add-sec
+  head FAILED dep-granularity-check (exit 1); see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.2.out
+scenario: report-storm round 3/6, base
+  BenchmarkScenarioReportStorm 1 1148.8 jobs/s 203.000 max-archive-ms 17.41 wall-sec
+scenario: report-storm round 3/6, head
+  BenchmarkScenarioReportStorm 1 1751.3 jobs/s 135.000 max-archive-ms 11.42 wall-sec
+scenario: dep-granularity-check round 3/6, base
+  BenchmarkScenarioDepGranularity 1 321 peak-rss-MB 0.214 recovery-sec 0.571 add-sec
+scenario: dep-granularity-check round 3/6, head
+  BenchmarkScenarioDepGranularity 1 387 peak-rss-MB 0.179 recovery-sec 4.057 add-sec
+  head FAILED dep-granularity-check (exit 1); see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.3.out
+scenario: report-storm round 4/6, base
+  BenchmarkScenarioReportStorm 1 3110.4 jobs/s 85.000 max-archive-ms 6.43 wall-sec
+scenario: report-storm round 4/6, head
+  BenchmarkScenarioReportStorm 1 3305.8 jobs/s 77.000 max-archive-ms 6.05 wall-sec
+scenario: dep-granularity-check round 4/6, base
+  BenchmarkScenarioDepGranularity 1 321 peak-rss-MB 0.195 recovery-sec 0.627 add-sec
+scenario: dep-granularity-check round 4/6, head
+  BenchmarkScenarioDepGranularity 1 376 peak-rss-MB 0.214 recovery-sec 3.998 add-sec
+  head FAILED dep-granularity-check (exit 1); see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.4.out
+scenario: report-storm round 5/6, base
+  BenchmarkScenarioReportStorm 1 3091.2 jobs/s 159.000 max-archive-ms 6.47 wall-sec
+scenario: report-storm round 5/6, head
+  BenchmarkScenarioReportStorm 1 3311.3 jobs/s 105.000 max-archive-ms 6.04 wall-sec
+scenario: dep-granularity-check round 5/6, base
+  BenchmarkScenarioDepGranularity 1 328 peak-rss-MB 0.174 recovery-sec 0.540 add-sec
+scenario: dep-granularity-check round 5/6, head
+  BenchmarkScenarioDepGranularity 1 374 peak-rss-MB 0.193 recovery-sec 4.069 add-sec
+  head FAILED dep-granularity-check (exit 1); see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.5.out
+scenario: report-storm round 6/6, base
+  BenchmarkScenarioReportStorm 1 3134.8 jobs/s 163.000 max-archive-ms 6.38 wall-sec
+scenario: report-storm round 6/6, head
+  BenchmarkScenarioReportStorm 1 3105.6 jobs/s 85.000 max-archive-ms 6.44 wall-sec
+scenario: dep-granularity-check round 6/6, base
+  BenchmarkScenarioDepGranularity 1 307 peak-rss-MB 0.194 recovery-sec 0.564 add-sec
+scenario: dep-granularity-check round 6/6, head
+  BenchmarkScenarioDepGranularity 1 389 peak-rss-MB 0.215 recovery-sec 4.214 add-sec
+  head FAILED dep-granularity-check (exit 1); see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.6.out
+
+================ benchstat ================
+                    │     base     │             head              │
+                    │    jobs/s    │    jobs/s     vs base         │
+ScenarioReportStorm   2.124k ± 48%   2.440k ± 36%  ~ (p=0.310 n=6)
+
+                    │      base      │                 head                  │
+                    │ max-archive-ms │ max-archive-ms  vs base               │
+ScenarioReportStorm      174.5 ± 51%      108.0 ± 29%  -38.11% (p=0.028 n=6)
+
+                    │     base     │             head             │
+                    │   wall-sec   │  wall-sec    vs base         │
+ScenarioReportStorm   11.880 ± 47%   8.855 ± 32%  ~ (p=0.310 n=6)
+
+                       │     base     │                head                 │
+                       │  peak-rss-B  │  peak-rss-B   vs base               │
+ScenarioDepGranularity   306.1Mi ± 4%   362.4Mi ± 2%  +18.38% (p=0.002 n=6)
+
+                       │     base     │             head              │
+                       │ recovery-sec │ recovery-sec  vs base         │
+ScenarioDepGranularity   194.5m ± 11%   214.0m ± 16%  ~ (p=0.236 n=6)
+
+                       │     base     │                 head                 │
+                       │   add-sec    │   add-sec     vs base                │
+ScenarioDepGranularity   567.5m ± 10%   4090.5m ± 4%  +620.79% (p=0.002 n=6)
+
+================ verdict ================
+results: /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007 (benchstat.txt, *.txt raw, *.out scenario logs)
+  scenario dep-granularity-check failed on head (exit 1, see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.1.out)
+  scenario dep-granularity-check failed on head (exit 1, see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.2.out)
+  scenario dep-granularity-check failed on head (exit 1, see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.3.out)
+  scenario dep-granularity-check failed on head (exit 1, see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.4.out)
+  scenario dep-granularity-check failed on head (exit 1, see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.5.out)
+  scenario dep-granularity-check failed on head (exit 1, see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794285007/head.dep-granularity-check.6.out)
+  REGRESSION ScenarioDepGranularity peak-rss-B: +18.38% (p=0.002)
+  REGRESSION ScenarioDepGranularity add-sec: +620.79% (p=0.002)
+FAIL: make speed found 8 problem(s) (threshold 10% at p<0.05)
+make: *** [Makefile:112: speed-full] Error 1
+exit 2

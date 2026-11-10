@@ -826,7 +826,7 @@ func foldOnly(s *logStore, job *Job) {
 	h := *s.state.overlay[k]
 	s.mu.RUnlock()
 
-	decoded, err := s.decodeJob(h.spec, h.complete, logRecComplete)
+	decoded, err := (&historyRead{s: s, overlay: map[logKey]logHistory{k: h}}).overlayJob(h)
 	So(err, ShouldBeNil)
 	So(s.foldHistory(&historyFold{complete: []historyFolded{{key: k, seq: h.seq, job: decoded}}}), ShouldBeNil)
 }
@@ -944,9 +944,10 @@ func foldConcurrently(s *logStore, to historyPos) {
 	s.mu.RUnlock()
 
 	f := historyFold{to: to}
+	r := &historyRead{s: s, overlay: entries}
 
 	for k, h := range entries {
-		job, err := s.decodeJob(h.spec, h.complete, logRecComplete)
+		job, err := r.overlayJob(h)
 		if err != nil {
 			return
 		}

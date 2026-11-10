@@ -1,0 +1,56 @@
+base dep-granularity-check: dep-granularity scale gate: 30000 waiters on a 3000-member dep group, 6300 groups in total
+base dep-granularity-check:   gate: peakRssMb <= 700, recoverySec <= 1, addSec <= 2,
+base dep-granularity-check: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=318 recoverySec=0.192 statusInWindow=starting addSec=0.546 errors=-
+base dep-granularity-check: PASS: peakRssMb=318, recovery in 192ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 546ms
+base add-storm: add-path latency gate: 20 then 700 clients each adding ONE job per 2000ms,
+base add-storm:   gate: overSlow == 0, highP50 <= 5000ms, throughputFactor >= 10x,
+base add-storm:     reliable4_addstorm_test.go:301: ADDSTORM-SUMMARY lowClients=20 lowRate=9.59 highClients=700 highRate=175.41 concurrencyFactor=35.0 throughputFactor=18.29 lowP50Ms=10 highP50Ms=539 highP99Ms=8849 highMaxMs=9417 overSlow=0 overFloor=0 timedOut=0 errors=0 adds=22200 txnsPerAdd=0.08 maxBatchParked=0 maxBeginRWTx=0 queueSize=141114 cmdBytes=256 backupCopies=4 backupMb=19250 backupMbPerSec=76.0
+base add-storm: PASS
+base add-storm: ## VERDICT: low=20@9.59/s high=700@175.41/s throughputFactor=18.29x (min 10x) lowP50=10ms highP50=539ms (max 5000ms) highP99=8849ms highMax=9417ms overSlow=0 overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.08 (max 1.00) maxBatchParked=0 maxBeginRWTx=0 adds=22200 addErrors=0 backupMb=19250 goExit=0
+base add-storm: PASS: 700 clients reached 175.41/s against 20 clients' 9.59/s
+base archive-rate: reliable4 FINDING 2 archive-rate gate: 660 archivers, 3800ms think time, 180s window
+base archive-rate:   gate: mean <= 5000ms, p99 <= 60000ms, 0 archives over the 60s client floor
+base archive-rate:     reliable4_archive_rate_test.go:156: ARCHRATE-SUMMARY archivers=660 archives=30054 errors=0 rate=167.0/s meanMs=160 p50Ms=3 p99Ms=1373 maxMs=1913 meanDepth=24 maxDepth=240 overFloor=0
+base archive-rate: PASS
+base archive-rate: ## VERDICT: archives=30054 rate=167.0/s meanLatency=160ms p99=1373ms max=1913ms queueDepth mean=24 max=240 overClientFloor=0 archiveErrors=0 goExit=0
+base archive-rate: PASS: a sustained 660-archiver rate on a 4GB-class DB stays at 160ms mean / 1373ms p99 with the queue never deeper than 240
+base archive-ceiling: reliable4 throughput-ceiling gate: 20 then 1143 archivers, 2300ms think time,
+base archive-ceiling:   gate: throughputFactor >= 10x, no archive over 30000ms, 0 at/over the floor.
+base archive-ceiling:     reliable4_archive_ceiling_test.go:182: ARCHCEIL-SUMMARY lowArchivers=20 lowRate=8.71 highArchivers=1143 highRate=369.23 concurrencyFactor=57.1 throughputFactor=42.41 lowMaxMs=417 highMaxMs=1863 lowP99Ms=118 highP99Ms=1623 overFloor=0 errors=0 archives=68028 cmdBytes=256 backupCopies=9 backupMb=27270 backupMbPerSec=75.5
+base archive-ceiling: PASS
+base archive-ceiling: ## VERDICT: low=20@8.71/s high=1143@369.23/s throughputFactor=42.41x (min 10x) lowMax=417ms highMax=1863ms (max 30000ms) overClientFloor=0 archives=68028 archiveErrors=0 backupMb=27270 goExit=0
+base archive-ceiling: PASS: 1143 archivers reached 369.23/s against 20 archivers' 8.71/s
+base report-storm:     reliable4_reportstorm_test.go:988: REPORTSTORM VERDICT: completed=20000/20000 live=0[ready=0 run=0 delay=0 bury=0] reserves=20000 reconnects=0
+base report-storm:     reliable4_reportstorm_test.go:991: REPORTSTORM VERDICT: started[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+base report-storm:     reliable4_reportstorm_test.go:992: REPORTSTORM VERDICT: archive[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+base report-storm:     reliable4_reportstorm_test.go:993: REPORTSTORM VERDICT: touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+base report-storm:     reliable4_reportstorm_test.go:994: REPORTSTORM VERDICT: archive latency max=99ms p50=<=50ms p99=<=100ms; max in-flight report RPC=99ms
+base report-storm: PASS
+head dep-granularity-check: dep-granularity scale gate: 30000 waiters on a 3000-member dep group, 6300 groups in total
+head dep-granularity-check:   gate: peakRssMb <= 700, recoverySec <= 1, addSec <= 2,
+head dep-granularity-check: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=379 recoverySec=0.191 statusInWindow=starting addSec=3.995 errors=-
+head dep-granularity-check: FAIL: a threshold was exceeded (peakRssMb=379/700, recoveryMs=191/1000, addMs=3995/2000)
+head add-storm: add-path latency gate: 20 then 700 clients each adding ONE job per 2000ms,
+head add-storm:   gate: overSlow == 0, highP50 <= 5000ms, throughputFactor >= 10x,
+head add-storm:     reliable4_addstorm_test.go:302: ADDSTORM-SUMMARY lowClients=20 lowRate=10.15 highClients=700 highRate=270.82 concurrencyFactor=35.0 throughputFactor=26.68 lowP50Ms=5 highP50Ms=155 highP99Ms=2907 highMaxMs=3474 overSlow=0 overFloor=0 timedOut=0 errors=0 adds=33717 txnsPerAdd=0.21 maxBatchParked=0 maxBeginRWTx=1 queueSize=151937 cmdBytes=256 backupCopies=5 backupMb=29303 backupMbPerSec=118.6
+head add-storm: PASS
+head add-storm: ## VERDICT: low=20@10.15/s high=700@270.82/s throughputFactor=26.68x (min 10x) lowP50=5ms highP50=155ms (max 5000ms) highP99=2907ms highMax=3474ms overSlow=0 overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.21 (max 1.00) maxBatchParked=0 maxBeginRWTx=1 adds=33717 addErrors=0 backupMb=29303 goExit=0
+head add-storm: PASS: 700 clients reached 270.82/s against 20 clients' 10.15/s
+head archive-rate: reliable4 FINDING 2 archive-rate gate: 660 archivers, 3800ms think time, 180s window
+head archive-rate:   gate: mean <= 5000ms, p99 <= 60000ms, 0 archives over the 60s client floor
+head archive-rate:     reliable4_archive_rate_test.go:156: ARCHRATE-SUMMARY archivers=660 archives=30336 errors=0 rate=168.5/s meanMs=125 p50Ms=3 p99Ms=1153 maxMs=1591 meanDepth=20 maxDepth=234 overFloor=0
+head archive-rate: PASS
+head archive-rate: ## VERDICT: archives=30336 rate=168.5/s meanLatency=125ms p99=1153ms max=1591ms queueDepth mean=20 max=234 overClientFloor=0 archiveErrors=0 goExit=0
+head archive-rate: PASS: a sustained 660-archiver rate on a 4GB-class DB stays at 125ms mean / 1153ms p99 with the queue never deeper than 234
+head archive-ceiling: reliable4 throughput-ceiling gate: 20 then 1143 archivers, 2300ms think time,
+head archive-ceiling:   gate: throughputFactor >= 10x, no archive over 30000ms, 0 at/over the floor.
+head archive-ceiling:     reliable4_archive_ceiling_test.go:182: ARCHCEIL-SUMMARY lowArchivers=20 lowRate=8.69 highArchivers=1143 highRate=357.94 concurrencyFactor=57.1 throughputFactor=41.20 lowMaxMs=491 highMaxMs=1832 lowP99Ms=131 highP99Ms=1640 overFloor=0 errors=0 archives=65993 cmdBytes=256 backupCopies=9 backupMb=28058 backupMbPerSec=76.9
+head archive-ceiling: PASS
+head archive-ceiling: ## VERDICT: low=20@8.69/s high=1143@357.94/s throughputFactor=41.20x (min 10x) lowMax=491ms highMax=1832ms (max 30000ms) overClientFloor=0 archives=65993 archiveErrors=0 backupMb=28058 goExit=0
+head archive-ceiling: PASS: 1143 archivers reached 357.94/s against 20 archivers' 8.69/s
+head report-storm:     reliable4_reportstorm_test.go:1007: REPORTSTORM VERDICT: completed=20000/20000 live=0[ready=0 run=0 delay=0 bury=0] reserves=20000 reconnects=0
+head report-storm:     reliable4_reportstorm_test.go:1010: REPORTSTORM VERDICT: started[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+head report-storm:     reliable4_reportstorm_test.go:1011: REPORTSTORM VERDICT: archive[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+head report-storm:     reliable4_reportstorm_test.go:1012: REPORTSTORM VERDICT: touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+head report-storm:     reliable4_reportstorm_test.go:1013: REPORTSTORM VERDICT: archive latency max=175ms p50=<=50ms p99=<=100ms; max in-flight report RPC=72ms
+head report-storm: PASS

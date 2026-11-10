@@ -1,0 +1,7 @@
+dep-granularity-check via a scratch copy of developers/wrdev.sh with one added line before the add: echo "PRE-ADD peakRssMb=$((peakkb / 1024))" (the manager's VmHWM after recovery, before 'wr add'); alternating base d1a4b6d7 / head 27c10a45, WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/customdb/1g4/prehwm/<tree>
+base 1 PRE-ADD peakRssMb=221 DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=327 recoverySec=0.176 statusInWindow=starting addSec=0.532 errors=- 
+head 1 PRE-ADD peakRssMb=186 DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=380 recoverySec=0.177 statusInWindow=starting addSec=4.237 errors=- 
+base 2 PRE-ADD peakRssMb=223 DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=324 recoverySec=0.179 statusInWindow=starting addSec=0.559 errors=- 
+head 2 PRE-ADD peakRssMb=191 DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=393 recoverySec=0.192 statusInWindow=starting addSec=3.998 errors=- 
+base 3 PRE-ADD peakRssMb=222 DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=321 recoverySec=0.216 statusInWindow=starting addSec=0.567 errors=- 
+head 3 PRE-ADD peakRssMb=185 DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=380 recoverySec=0.193 statusInWindow=starting addSec=4.006 errors=- 

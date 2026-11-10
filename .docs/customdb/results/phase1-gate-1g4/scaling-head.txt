@@ -1,0 +1,4 @@
+BenchmarkAddDepGroupMember on a scratch copy of HEAD 27c10a45 with benchDepGroupWaiters set by WR_BENCH_WAITERS, -benchtime 3x; base d1a4b6d7 at 30000 waiters: see run2 / phase0
+waiters=1000 BenchmarkAddDepGroupMember-8   	       3	2674492896 ns/op
+waiters=2000 BenchmarkAddDepGroupMember-8   	       3	7072703109 ns/op
+waiters=4000 BenchmarkAddDepGroupMember-8   	       3	20451871931 ns/op

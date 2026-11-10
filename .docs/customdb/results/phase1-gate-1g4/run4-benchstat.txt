@@ -1,0 +1,24 @@
+                 │    base     │             head             │
+                 │   adds/s    │   adds/s     vs base         │
+ScenarioAddStorm   232.5 ± ∞ ¹   233.0 ± ∞ ¹  ~ (p=1.000 n=4)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                 │    base     │             head             │
+                 │   p50-ms    │   p50-ms     vs base         │
+ScenarioAddStorm   513.5 ± ∞ ¹   359.5 ± ∞ ¹  ~ (p=0.486 n=4)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                 │     base     │             head              │
+                 │    p99-ms    │    p99-ms     vs base         │
+ScenarioAddStorm   3.486k ± ∞ ¹   3.762k ± ∞ ¹  ~ (p=0.343 n=4)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                 │     base     │             head              │
+                 │    max-ms    │    max-ms     vs base         │
+ScenarioAddStorm   3.990k ± ∞ ¹   4.184k ± ∞ ¹  ~ (p=0.886 n=4)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                 │     base     │             head              │
+                 │   txns/add   │   txns/add    vs base         │
+ScenarioAddStorm   130.0m ± ∞ ¹   150.0m ± ∞ ¹  ~ (p=0.257 n=4)
+¹ need >= 6 samples for confidence interval at level 0.95

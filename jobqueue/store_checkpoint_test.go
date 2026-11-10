@@ -440,10 +440,10 @@ func checkpointTestReaders(ctx context.Context, s *logStore) []checkpointTestRea
 
 			return err
 		}},
-		{"liveJobOf", false, func() error {
-			job, live, err := s.liveJobOf(k)
-			if err == nil && (!live || job.State != JobStateBuried) {
-				err = fmt.Errorf("%w: live %t", errCkptTestRead, live)
+		{"liveJobsOf", false, func() error {
+			jobs, err := s.liveJobsOf([]logKey{k})
+			if err == nil && (jobs[0] == nil || jobs[0].State != JobStateBuried) {
+				err = fmt.Errorf("%w: live %t", errCkptTestRead, jobs[0] != nil)
 			}
 
 			return err

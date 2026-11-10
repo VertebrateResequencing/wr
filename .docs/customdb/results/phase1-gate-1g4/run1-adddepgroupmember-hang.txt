@@ -1,0 +1,40 @@
+speed (full): results in /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794280764
+  base: /tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/base-d1a4b6d7 (/tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/base-d1a4b6d7)
+  head: v0.39.0-109-g27c10a45 (/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr)
+benchmarks: round 1/6, base
+benchmarks: round 1/6, head
+speed: head's jobqueue benchmarks failed; see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794280764/head.bench and /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794280764/head.bench.stderr
+make: *** [Makefile:112: speed-full] Error 1
+exit 2
+
+== head.bench (round 1)
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkJobCleanup-8                    	    3308	    329958 ns/op	    9271 B/op	     175 allocs/op
+BenchmarkJobCleanupDepth1-8              	     373	   3227013 ns/op	   22402 B/op	     792 allocs/op
+BenchmarkJobCleanupDepth8-8              	     333	   3580995 ns/op	   29950 B/op	     960 allocs/op
+BenchmarkAddJobs-8                       	      14	 126019656 ns/op	         1.434 bolt_pages/job	         1.436 bolt_writes/job	29452504 B/op	  157734 allocs/op
+BenchmarkUpdateJobState-8                	      19	  55664625 ns/op	         0.8241 bolt_pages/job	         0.8255 bolt_writes/job	14085921 B/op	  120421 allocs/op
+BenchmarkArchiveJobs-8                   	       4	 261566161 ns/op	         3.173 bolt_pages/job	         0.03167 bolt_txns/job	         3.205 bolt_writes/job	36849482 B/op	  329018 allocs/op
+BenchmarkArchiveSpacedArrivals-8         	       1	2484117865 ns/op	         6.000 archives/biggest_txn	         3.135 bolt_pages/job	         0.2000 bolt_txns/job	         3.335 bolt_writes/job	 2427056 B/op	   19793 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-8   	      86	  11645142 ns/op	   99721 B/op	     608 allocs/op
+--- FAIL: BenchmarkAddDepGroupMember
+    dep_group_add_bench_test.go:100: receive time out
+BenchmarkJobKey-8                        	41283675	        29.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=1-8         	      12	  90599082 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=4-8         	       7	 146322380 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkRACCycleCounted/leavers=0-8                        	      12	  93684648 ns/op	 8843362 B/op	      58 allocs/op
+BenchmarkRACCycleCounted/leavers=100-8                      	      12	 105067808 ns/op	 8863261 B/op	      77 allocs/op
+BenchmarkReadyBacklogSnapshot-8                             	     764	   1445491 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRepGroupStatusDetails/1000-8                       	     354	   3230879 ns/op	         0 decodes/op	  298322 B/op	   17041 allocs/op
+BenchmarkRepGroupStatusDetails/10000-8                      	      28	  39722885 ns/op	         0 decodes/op	 3209884 B/op	  200989 allocs/op
+FAIL
+
+== head.bench.stderr, last lines
+t=2026-11-10T03:22:56+0000 lvl=warn msg="add wait" n=1 p50=403.631ms p99=403.631ms max=403.631ms caller=clog.go:338
+WaitGroup currently waiting on these Add() calls to be Done():
+ /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/server.go:2758 (1 not Done)
+t=2026-11-10T03:35:21+0000 lvl=warn msg="reply to client failed" err="object closed" caller=clog.go:338
+t=2026-11-10T03:35:21+0000 lvl=warn msg="slow request" method=add selector="jobs=1" duration=13m23.655557923s clientWait=0s replyBytes=337 replyJobs=0 replyErr="failed to use database" caller=clog.go:338

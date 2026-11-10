@@ -1,0 +1,30 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkAddDepGroupMember-8   	       4	 306754324 ns/op	116273916 B/op	  602514 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkAddDepGroupMember-8   	       4	 296980958 ns/op	116275964 B/op	  602495 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkAddDepGroupMember-8   	       4	 283970214 ns/op	116287756 B/op	  602492 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkAddDepGroupMember-8   	       4	 293448788 ns/op	116286216 B/op	  602497 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkAddDepGroupMember-8   	       4	 283779708 ns/op	116274412 B/op	  602497 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkAddDepGroupMember-8   	       4	 294911186 ns/op	116295324 B/op	  602518 allocs/op

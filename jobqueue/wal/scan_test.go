@@ -779,3 +779,51 @@ func TestReadAt(t *testing.T) {
 		})
 	})
 }
+
+func TestReadFrameInto(t *testing.T) {
+	Convey("Given a log of a small s2 block, a plain frame and a larger zstd block", t, func() {
+		log, err := AppendBlock(nil, CodecS2, appendFrames("b", "cc"))
+		So(err, ShouldBeNil)
+
+		plainOff := uint64(len(log))
+		log = AppendFrame(log, []byte("plain"))
+
+		bigOff := uint64(len(log))
+		big := []string{string(bytes.Repeat([]byte("x"), 10000)), string(bytes.Repeat([]byte("y"), 20000))}
+
+		log, err = AppendBlock(log, CodecZstd, appendFrames(big...))
+		So(err, ShouldBeNil)
+
+		f := bytes.NewReader(log)
+
+		Convey("one FrameBuffers reused across them reads each frame's records, growing to hold the largest", func() {
+			bufs := new(FrameBuffers)
+			So(bufs.Size(), ShouldEqual, 0)
+
+			read := func(off uint64) []string {
+				var recs []string
+
+				So(ReadFrameInto(f, off, bufs, func(_ Ref, rec []byte) error {
+					recs = append(recs, string(rec))
+
+					return nil
+				}), ShouldBeNil)
+
+				return recs
+			}
+
+			So(read(0), ShouldResemble, []string{"b", "cc"})
+
+			small := bufs.Size()
+			So(small, ShouldBeGreaterThan, 0)
+
+			So(read(plainOff), ShouldResemble, []string{"plain"})
+			So(bufs.Size(), ShouldBeGreaterThanOrEqualTo, small)
+
+			So(read(bigOff), ShouldResemble, big)
+			So(bufs.Size(), ShouldBeGreaterThanOrEqualTo, len(big[0])+len(big[1]))
+
+			So(read(0), ShouldResemble, []string{"b", "cc"})
+		})
+	})
+}

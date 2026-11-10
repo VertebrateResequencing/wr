@@ -86,6 +86,10 @@ func BenchmarkAddDepGroupMember(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	// the log store folds the setup's jobs in the background, a second or
+	// so later, which would land in the timed loop; bbolt has no such work
+	settleStore(b, server)
+
 	b.ResetTimer()
 
 	for i := range b.N {
@@ -98,6 +102,20 @@ func BenchmarkAddDepGroupMember(b *testing.B) {
 
 		if _, _, err = jq.Add([]*Job{member}, envVars, true); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// settleStore waits until s's store has done the background work it has
+// pending for what has been stored so far: the log store's folder has folded
+// all of it into its history database. bbolt does no such work, so for it
+// this does nothing.
+func settleStore(tb testing.TB, s *Server) {
+	tb.Helper()
+
+	if ls, ok := s.db.(*logStore); ok {
+		if err := ls.foldNow(); err != nil {
+			tb.Fatal(err)
 		}
 	}
 }

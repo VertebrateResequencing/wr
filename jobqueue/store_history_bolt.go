@@ -651,6 +651,12 @@ type historyRead struct {
 	lookups  map[logKey]uint64
 	unlooked map[logKey]uint64
 	tx       *bolt.Tx
+
+	// records holds the records of overlay entries the read has read, by Ref,
+	// and unread the index of each of the others by its frame's Ref (see
+	// overlayRecord).
+	records map[wal.Ref][]byte
+	unread  map[wal.Ref]map[uint32]bool
 }
 
 // view calls fn with r in a history.bolt read transaction.
@@ -699,7 +705,7 @@ func (r *historyRead) job(k logKey) (*Job, error) {
 	if h, ok := r.overlay[k]; ok {
 		r.s.archivedDecodes.Add(1)
 
-		return r.s.decodeJob(h.spec, h.complete, logRecComplete)
+		return r.overlayJob(h)
 	}
 
 	encoded := r.folded(k)
@@ -924,14 +930,93 @@ func (r *historyRead) archivedBytes(k logKey) (int, error) {
 		return len(r.folded(k)), nil
 	}
 
-	spec, err := r.s.readRecord(h.spec)
+	spec, err := r.overlayRecord(h.spec)
 	if err != nil {
 		return 0, err
 	}
 
-	complete, err := r.s.readRecord(h.complete)
+	complete, err := r.overlayRecord(h.complete)
 
 	return len(spec) + len(complete), err
+}
+
+// overlayJob returns the job made of overlay entry h's spec and complete
+// records.
+func (r *historyRead) overlayJob(h logHistory) (*Job, error) {
+	spec, err := r.overlayRecord(h.spec)
+	if err != nil {
+		return nil, err
+	}
+
+	complete, err := r.overlayRecord(h.complete)
+	if err != nil {
+		return nil, err
+	}
+
+	specBody, err := keyedBody(spec, h.spec, logRecSpec)
+	if err != nil {
+		return nil, err
+	}
+
+	completeBody, err := keyedBody(complete, h.complete, logRecComplete)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.s.jobOf(specBody, completeBody)
+}
+
+// overlayRecord returns the record at ref, the spec or complete record of one
+// of r's overlay entries. The first time it needs one of a frame's records, it
+// reads the frame once for all the overlay entries' records it holds, since a
+// block's records can only be read by decompressing the whole block: reading
+// each through its Ref would cost a block per record, quadratic in the jobs
+// one add stored in one block when a query reads many of them. It keeps a copy
+// of every overlay entry's record in each frame it reads, whether or not the
+// query asks for it, for as long as r lives, so a query's memory grows with
+// the overlay records sharing frames with those it reads, at most the whole
+// overlay.
+func (r *historyRead) overlayRecord(ref wal.Ref) ([]byte, error) {
+	if rec, ok := r.records[ref]; ok {
+		return rec, nil
+	}
+
+	if r.records == nil {
+		r.indexOverlay()
+	}
+
+	frame := wal.Ref{File: ref.File, Off: ref.Off}
+	idxs := r.unread[frame]
+	delete(r.unread, frame)
+
+	err := r.s.readFrameRecords(frame, idxs, func(got wal.Ref, rec []byte) error {
+		r.records[got] = slices.Clone(rec)
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	rec, ok := r.records[ref]
+	if !ok {
+		return nil, fmt.Errorf("%w: %+v", wal.ErrBadRef, ref)
+	}
+
+	return rec, nil
+}
+
+// indexOverlay notes, as unread, the index of the spec and complete records of
+// each of r's overlay entries by its frame's Ref.
+func (r *historyRead) indexOverlay() {
+	r.records = make(map[wal.Ref][]byte)
+	r.unread, _ = frameIdxs(func(yield func(wal.Ref) bool) {
+		for _, h := range r.overlay {
+			if !yield(h.spec) || !yield(h.complete) {
+				return
+			}
+		}
+	})
 }
 
 // completedElsewhere is the bbolt store's checkIfCompleteUnderRepGroupTx for
@@ -966,18 +1051,35 @@ func (r *historyRead) completedUnder(k logKey, repGroup string) bool {
 	return ok && h.repGroup == repGroup
 }
 
+// historyJobs returns the history entry's job of each of keys that has one, by
+// key, in one read, so that the overlay entries' frames are each read once (see
+// overlayRecord).
+func (s *logStore) historyJobs(keys []logKey) (map[logKey]*Job, error) {
+	jobs := make(map[logKey]*Job, len(keys))
+
+	err := s.viewHistoryKeys(keys, func(r *historyRead) error {
+		for _, k := range keys {
+			job, err := r.job(k)
+			if err != nil {
+				return err
+			}
+
+			if job != nil {
+				jobs[k] = job
+			}
+		}
+
+		return nil
+	})
+
+	return jobs, err
+}
+
 // historyJob returns the keyed job's history entry's job and true, or false if
 // it has none.
 func (s *logStore) historyJob(k logKey) (*Job, bool, error) {
-	var job *Job
-
-	err := s.viewHistoryKeys([]logKey{k}, func(r *historyRead) error {
-		var err error
-
-		job, err = r.job(k)
-
-		return err
-	})
+	jobs, err := s.historyJobs([]logKey{k})
+	job := jobs[k]
 
 	return job, job != nil, err
 }

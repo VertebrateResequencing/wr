@@ -1,0 +1,290 @@
+speed (full): results in /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794282237
+  base: /tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/base-d1a4b6d7 (/tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/1g4impl/base-d1a4b6d7)
+  head: v0.39.0-109-g27c10a45 (/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr)
+benchmarks: round 1/6, base
+benchmarks: round 1/6, head
+benchmarks: round 2/6, base
+benchmarks: round 2/6, head
+benchmarks: round 3/6, base
+benchmarks: round 3/6, head
+benchmarks: round 4/6, base
+benchmarks: round 4/6, head
+benchmarks: round 5/6, base
+benchmarks: round 5/6, head
+benchmarks: round 6/6, base
+benchmarks: round 6/6, head
+scenario: report-storm round 1/1, base
+  BenchmarkScenarioReportStorm 1 3159.6 jobs/s 99.000 max-archive-ms 6.33 wall-sec
+scenario: report-storm round 1/1, head
+  BenchmarkScenarioReportStorm 1 3361.3 jobs/s 175.000 max-archive-ms 5.95 wall-sec
+scenario: dep-granularity-check round 1/1, base
+  BenchmarkScenarioDepGranularity 1 318 peak-rss-MB 0.192 recovery-sec 0.546 add-sec
+scenario: dep-granularity-check round 1/1, head
+  BenchmarkScenarioDepGranularity 1 379 peak-rss-MB 0.191 recovery-sec 3.995 add-sec
+  head FAILED dep-granularity-check (exit 1); see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794282237/head.dep-granularity-check.1.out
+scenario: add-storm round 1/1, base
+  BenchmarkScenarioAddStorm 1 175.41 adds/s 539 p50-ms 8849 p99-ms 9417 max-ms 0.08 txns/add
+scenario: add-storm round 1/1, head
+  BenchmarkScenarioAddStorm 1 270.82 adds/s 155 p50-ms 2907 p99-ms 3474 max-ms 0.21 txns/add
+scenario: archive-rate round 1/1, base
+  BenchmarkScenarioArchiveRate 1 167.0 archives/s 160 mean-ms 1373 p99-ms 1913 max-ms
+scenario: archive-rate round 1/1, head
+  BenchmarkScenarioArchiveRate 1 168.5 archives/s 125 mean-ms 1153 p99-ms 1591 max-ms
+scenario: archive-ceiling round 1/1, base
+  BenchmarkScenarioArchiveCeiling 1 369.23 archives/s 42.41 throughput-factor 1623 p99-ms 1863 max-ms
+scenario: archive-ceiling round 1/1, head
+  BenchmarkScenarioArchiveCeiling 1 357.94 archives/s 41.20 throughput-factor 1640 p99-ms 1832 max-ms
+
+================ benchstat ================
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                                           │     base     │                head                 │
+                                           │    sec/op    │    sec/op      vs base              │
+JobCleanup-8                                 336.2µ ±  9%    332.6µ ±  6%       ~ (p=0.937 n=6)
+JobCleanupDepth1-8                           3.340m ±  5%    3.223m ±  5%       ~ (p=0.699 n=6)
+JobCleanupDepth8-8                           3.526m ±  4%    3.516m ±  5%       ~ (p=0.818 n=6)
+AddJobs-8                                    131.3m ±  6%    130.1m ±  3%       ~ (p=0.310 n=6)
+UpdateJobState-8                             55.73m ±  2%    55.87m ±  3%       ~ (p=0.589 n=6)
+ArchiveJobs-8                                262.3m ±  2%    260.6m ±  5%       ~ (p=0.589 n=6)
+ArchiveSpacedArrivals-8                       2.474 ±  0%     2.472 ±  0%       ~ (p=0.132 n=6)
+ModifyLiveJobsReverseLookup-8                11.68m ±  1%    11.71m ±  1%       ~ (p=0.589 n=6)
+JobKey-8                                     28.91n ±  2%    28.86n ±  3%       ~ (p=0.818 n=6)
+BuildSchedulerGroupsBacklog/priorities=1-8   99.22m ±  9%   100.01m ± 12%       ~ (p=0.699 n=6)
+BuildSchedulerGroupsBacklog/priorities=4-8   148.0m ± 10%    153.6m ± 11%       ~ (p=0.394 n=6)
+RACCycleCounted/leavers=0-8                  92.73m ± 12%    95.17m ± 13%       ~ (p=0.310 n=6)
+RACCycleCounted/leavers=100-8                100.3m ±  9%    101.0m ±  6%       ~ (p=0.240 n=6)
+ReadyBacklogSnapshot-8                       1.462m ±  5%    1.427m ±  8%       ~ (p=0.818 n=6)
+RepGroupStatusDetails/1000-8                 3.230m ±  4%    3.232m ±  3%       ~ (p=0.937 n=6)
+RepGroupStatusDetails/10000-8                40.56m ±  6%    39.78m ±  3%       ~ (p=0.093 n=6)
+geomean                                      11.92m          11.90m        -0.17%
+
+                                           │      base      │                 head                 │
+                                           │      B/op      │     B/op      vs base                │
+JobCleanup-8                                 9.068Ki ± 0%     9.036Ki ± 0%  -0.36% (p=0.009 n=6)
+JobCleanupDepth1-8                           21.99Ki ± 1%     21.92Ki ± 1%       ~ (p=0.699 n=6)
+JobCleanupDepth8-8                           29.36Ki ± 1%     29.22Ki ± 1%       ~ (p=0.132 n=6)
+AddJobs-8                                    28.96Mi ± 3%     28.76Mi ± 2%       ~ (p=0.310 n=6)
+UpdateJobState-8                             14.08Mi ± 2%     13.72Mi ± 3%  -2.52% (p=0.026 n=6)
+ArchiveJobs-8                                34.46Mi ± 3%     34.69Mi ± 2%       ~ (p=0.818 n=6)
+ArchiveSpacedArrivals-8                      2.318Mi ± 1%     2.320Mi ± 1%       ~ (p=0.394 n=6)
+ModifyLiveJobsReverseLookup-8                97.20Ki ± 0%     97.36Ki ± 0%       ~ (p=0.240 n=6)
+JobKey-8                                       0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+BuildSchedulerGroupsBacklog/priorities=1-8   13.74Mi ± 0%     13.74Mi ± 0%       ~ (p=0.545 n=6)
+BuildSchedulerGroupsBacklog/priorities=4-8   13.74Mi ± 0%     13.74Mi ± 0%       ~ (p=1.000 n=6) ¹
+RACCycleCounted/leavers=0-8                  8.434Mi ± 0%     8.434Mi ± 0%       ~ (p=0.323 n=6)
+RACCycleCounted/leavers=100-8                8.453Mi ± 0%     8.453Mi ± 0%  -0.00% (p=0.028 n=6)
+ReadyBacklogSnapshot-8                         0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+RepGroupStatusDetails/1000-8                 289.7Ki ± 8%     291.3Ki ± 0%  +0.55% (p=0.002 n=6)
+RepGroupStatusDetails/10000-8                3.060Mi ± 7%     3.061Mi ± 0%       ~ (p=0.056 n=6)
+geomean                                                   ²                 -0.18%               ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                                           │      base      │                head                 │
+                                           │   allocs/op    │  allocs/op   vs base                │
+JobCleanup-8                                  175.0 ±  0%      175.0 ± 0%       ~ (p=1.000 n=6) ¹
+JobCleanupDepth1-8                            792.0 ±  0%      792.0 ± 0%       ~ (p=1.000 n=6) ¹
+JobCleanupDepth8-8                            960.0 ±  0%      960.0 ± 0%       ~ (p=1.000 n=6) ¹
+AddJobs-8                                    159.8k ±  1%     159.7k ± 1%       ~ (p=0.485 n=6)
+UpdateJobState-8                             120.3k ±  0%     120.4k ± 0%       ~ (p=0.589 n=6)
+ArchiveJobs-8                                327.0k ±  1%     327.4k ± 1%       ~ (p=0.589 n=6)
+ArchiveSpacedArrivals-8                      19.76k ±  0%     19.79k ± 0%  +0.15% (p=0.041 n=6)
+ModifyLiveJobsReverseLookup-8                 606.5 ±  1%      608.5 ± 0%       ~ (p=0.093 n=6)
+JobKey-8                                      0.000 ±  0%      0.000 ± 0%       ~ (p=1.000 n=6) ¹
+BuildSchedulerGroupsBacklog/priorities=1-8    106.0 ±  0%      106.0 ± 0%       ~ (p=1.000 n=6) ¹
+BuildSchedulerGroupsBacklog/priorities=4-8    106.0 ±  0%      106.0 ± 0%       ~ (p=1.000 n=6) ¹
+RACCycleCounted/leavers=0-8                   58.00 ±  2%      58.00 ± 2%       ~ (p=1.000 n=6)
+RACCycleCounted/leavers=100-8                 77.00 ±  1%      77.00 ± 1%       ~ (p=1.000 n=6)
+ReadyBacklogSnapshot-8                        0.000 ±  0%      0.000 ± 0%       ~ (p=1.000 n=6) ¹
+RepGroupStatusDetails/1000-8                 16.83k ± 17%     17.04k ± 0%  +1.22% (p=0.002 n=6)
+RepGroupStatusDetails/10000-8                200.8k ± 15%     201.0k ± 0%  +0.07% (p=0.041 n=6)
+geomean                                                   ²                +0.12%               ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                        │      base      │                 head                 │
+                        │ bolt_pages/job │ bolt_pages/job  vs base              │
+AddJobs-8                     1.474 ± 3%       1.474 ± 3%       ~ (p=0.706 n=6)
+UpdateJobState-8             819.0m ± 1%      821.8m ± 1%       ~ (p=0.589 n=6)
+ArchiveJobs-8                 3.133 ± 2%       3.139 ± 2%       ~ (p=0.818 n=6)
+ArchiveSpacedArrivals-8       3.132 ± 1%       3.125 ± 1%       ~ (p=0.747 n=6)
+geomean                       1.855            1.857       +0.08%
+
+                        │      base       │                 head                  │
+                        │ bolt_writes/job │ bolt_writes/job  vs base              │
+AddJobs-8                      1.476 ± 3%        1.476 ± 3%       ~ (p=0.706 n=6)
+UpdateJobState-8              820.3m ± 1%       823.1m ± 1%       ~ (p=0.589 n=6)
+ArchiveJobs-8                  3.164 ± 2%        3.171 ± 2%       ~ (p=0.818 n=6)
+ArchiveSpacedArrivals-8        3.333 ± 1%        3.325 ± 1%       ~ (p=0.747 n=6)
+geomean                        1.890             1.892       +0.08%
+
+                        │     base      │                 head                  │
+                        │ bolt_txns/job │ bolt_txns/job  vs base                │
+ArchiveJobs-8               31.42m ± 0%     31.38m ± 1%       ~ (p=1.000 n=6)
+ArchiveSpacedArrivals-8     200.0m ± 0%     200.0m ± 0%       ~ (p=1.000 n=6) ¹
+geomean                     79.27m          79.21m       -0.07%
+¹ all samples are equal
+
+                        │         base         │                  head                   │
+                        │ archives/biggest_txn │ archives/biggest_txn  vs base           │
+ArchiveSpacedArrivals-8             6.000 ± 0%             6.000 ± 0%  ~ (p=1.000 n=6) ¹
+¹ all samples are equal
+
+                              │     base     │                head                │
+                              │  decodes/op  │ decodes/op  vs base                │
+RepGroupStatusDetails/1000-8    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+RepGroupStatusDetails/10000-8   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+geomean                                    ²               +0.00%               ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+pkg: github.com/VertebrateResequencing/wr/limiter
+                         │    base     │                head                │
+                         │   sec/op    │    sec/op     vs base              │
+LimiterIncDecUnlimited-8   2.019µ ± 8%   2.029µ ±  4%       ~ (p=0.900 n=6)
+LimiterIncDec-8            2.208µ ± 4%   2.150µ ±  9%       ~ (p=0.485 n=6)
+LimiterCapacity-8          1.896µ ± 5%   1.885µ ± 10%       ~ (p=0.937 n=6)
+geomean                    2.037µ        2.018µ        -0.91%
+
+                         │    base    │                head                │
+                         │    B/op    │    B/op     vs base                │
+LimiterIncDecUnlimited-8   640.0 ± 0%   640.0 ± 0%       ~ (p=1.000 n=6) ¹
+LimiterIncDec-8            552.0 ± 0%   552.0 ± 0%       ~ (p=1.000 n=6) ¹
+LimiterCapacity-8          640.0 ± 0%   640.0 ± 0%       ~ (p=1.000 n=6) ¹
+geomean                    609.2        609.2       +0.00%
+¹ all samples are equal
+
+                         │    base    │                head                │
+                         │ allocs/op  │ allocs/op   vs base                │
+LimiterIncDecUnlimited-8   11.00 ± 0%   11.00 ± 0%       ~ (p=1.000 n=6) ¹
+LimiterIncDec-8            9.000 ± 0%   9.000 ± 0%       ~ (p=1.000 n=6) ¹
+LimiterCapacity-8          11.00 ± 0%   11.00 ± 0%       ~ (p=1.000 n=6) ¹
+geomean                    10.29        10.29       +0.00%
+¹ all samples are equal
+
+                    │     base     │              head               │
+                    │    jobs/s    │    jobs/s     vs base           │
+ScenarioReportStorm   3.160k ± ∞ ¹   3.361k ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                    │      base      │               head                │
+                    │ max-archive-ms │ max-archive-ms  vs base           │
+ScenarioReportStorm      99.00 ± ∞ ¹     175.00 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                    │    base     │              head              │
+                    │  wall-sec   │  wall-sec    vs base           │
+ScenarioReportStorm   6.330 ± ∞ ¹   5.950 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │     base      │               head               │
+                       │  peak-rss-B   │  peak-rss-B    vs base           │
+ScenarioDepGranularity   303.3Mi ± ∞ ¹   361.4Mi ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │     base     │              head               │
+                       │ recovery-sec │ recovery-sec  vs base           │
+ScenarioDepGranularity   192.0m ± ∞ ¹   191.0m ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │     base     │               head               │
+                       │   add-sec    │    add-sec     vs base           │
+ScenarioDepGranularity   546.0m ± ∞ ¹   3995.0m ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                 │    base     │              head              │
+                 │   adds/s    │   adds/s     vs base           │
+ScenarioAddStorm   175.4 ± ∞ ¹   270.8 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                 │    base     │              head              │
+                 │   p50-ms    │   p50-ms     vs base           │
+ScenarioAddStorm   539.0 ± ∞ ¹   155.0 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │     base     │                 head                  │
+                       │    p99-ms    │    p99-ms     vs base                 │
+ScenarioAddStorm         8.849k ± ∞ ¹   2.907k ± ∞ ¹        ~ (p=1.000 n=1) ²
+ScenarioArchiveRate      1.373k ± ∞ ¹   1.153k ± ∞ ¹        ~ (p=1.000 n=1) ²
+ScenarioArchiveCeiling   1.623k ± ∞ ¹   1.640k ± ∞ ¹        ~ (p=1.000 n=1) ²
+geomean                  2.702k         1.765k        -34.68%
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │     base     │                 head                  │
+                       │    max-ms    │    max-ms     vs base                 │
+ScenarioAddStorm         9.417k ± ∞ ¹   3.474k ± ∞ ¹        ~ (p=1.000 n=1) ²
+ScenarioArchiveRate      1.913k ± ∞ ¹   1.591k ± ∞ ¹        ~ (p=1.000 n=1) ²
+ScenarioArchiveCeiling   1.863k ± ∞ ¹   1.832k ± ∞ ¹        ~ (p=1.000 n=1) ²
+geomean                  3.226k         2.163k        -32.93%
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                 │     base     │               head               │
+                 │   txns/add   │   txns/add     vs base           │
+ScenarioAddStorm   80.00m ± ∞ ¹   210.00m ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │    base     │                head                 │
+                       │ archives/s  │ archives/s   vs base                │
+ScenarioArchiveRate      167.0 ± ∞ ¹   168.5 ± ∞ ¹       ~ (p=1.000 n=1) ²
+ScenarioArchiveCeiling   369.2 ± ∞ ¹   357.9 ± ∞ ¹       ~ (p=1.000 n=1) ²
+geomean                  248.3         245.6        -1.10%
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                    │    base     │              head              │
+                    │   mean-ms   │   mean-ms    vs base           │
+ScenarioArchiveRate   160.0 ± ∞ ¹   125.0 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │       base        │                 head                 │
+                       │ throughput-factor │ throughput-factor  vs base           │
+ScenarioArchiveCeiling         42.41 ± ∞ ¹         41.20 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+pkg: github.com/VertebrateResequencing/wr/queue
+                                             │    base     │               head                │
+                                             │   sec/op    │   sec/op     vs base              │
+QueueLifecycle/groups=1-8                      2.760m ± 6%   2.757m ± 2%       ~ (p=0.589 n=6)
+QueueLifecycle/groups=100-8                    1.966m ± 5%   1.961m ± 3%       ~ (p=1.000 n=6)
+QueueLifecycle/groups=1,callback=running-8     2.922m ± 4%   2.849m ± 4%       ~ (p=0.132 n=6)
+QueueLifecycle/groups=100,callback=running-8   2.088m ± 3%   2.044m ± 6%       ~ (p=0.699 n=6)
+geomean                                        2.399m        2.369m       -1.26%
+
+                                             │     base     │                head                │
+                                             │     B/op     │     B/op      vs base              │
+QueueLifecycle/groups=1-8                      413.7Ki ± 0%   413.7Ki ± 0%       ~ (p=0.589 n=6)
+QueueLifecycle/groups=100-8                    430.7Ki ± 0%   430.7Ki ± 0%       ~ (p=0.132 n=6)
+QueueLifecycle/groups=1,callback=running-8     449.8Ki ± 0%   449.8Ki ± 0%       ~ (p=0.093 n=6)
+QueueLifecycle/groups=100,callback=running-8   467.0Ki ± 0%   467.0Ki ± 0%       ~ (p=0.394 n=6)
+geomean                                        439.8Ki        439.9Ki       +0.00%
+
+                                             │    base     │                head                 │
+                                             │  allocs/op  │  allocs/op   vs base                │
+QueueLifecycle/groups=1-8                      1.814k ± 0%   1.813k ± 0%       ~ (p=0.545 n=6)
+QueueLifecycle/groups=100-8                    2.309k ± 0%   2.309k ± 0%       ~ (p=1.000 n=6)
+QueueLifecycle/groups=1,callback=running-8     1.862k ± 0%   1.862k ± 0%       ~ (p=0.545 n=6)
+QueueLifecycle/groups=100,callback=running-8   2.358k ± 0%   2.358k ± 0%       ~ (p=1.000 n=6) ¹
+geomean                                        2.071k        2.071k       -0.01%
+¹ all samples are equal
+
+================ verdict ================
+results: /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794282237 (benchstat.txt, *.txt raw, *.out scenario logs)
+  scenario dep-granularity-check failed on head (exit 1, see /nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed/run-1794282237/head.dep-granularity-check.1.out)
+FAIL: make speed found 1 problem(s) (threshold 10% at p<0.05)
+make: *** [Makefile:112: speed-full] Error 1
+exit 2

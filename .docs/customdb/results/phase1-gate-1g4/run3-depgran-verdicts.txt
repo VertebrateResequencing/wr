@@ -1,0 +1,36 @@
+base r1:   'wr manager status' was fired inside the window and took 44ms to answer 'starting'
+base r1: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=320 recoverySec=0.192 statusInWindow=starting addSec=0.518 errors=-
+base r1: PASS: peakRssMb=320, recovery in 192ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 518ms
+head r1:   'wr manager status' was fired inside the window and took 64ms to answer 'starting'
+head r1: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=381 recoverySec=0.216 statusInWindow=starting addSec=4.269 errors=-
+head r1: FAIL: a threshold was exceeded (peakRssMb=381/700, recoveryMs=216/1000, addMs=4269/2000)
+base r2:   'wr manager status' was fired inside the window and took 44ms to answer 'starting'
+base r2: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=326 recoverySec=0.201 statusInWindow=starting addSec=0.622 errors=-
+base r2: PASS: peakRssMb=326, recovery in 201ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 622ms
+head r2:   'wr manager status' was fired inside the window and took 44ms to answer 'starting'
+head r2: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=379 recoverySec=0.214 statusInWindow=starting addSec=4.112 errors=-
+head r2: FAIL: a threshold was exceeded (peakRssMb=379/700, recoveryMs=214/1000, addMs=4112/2000)
+base r3:   'wr manager status' was fired inside the window and took 44ms to answer 'starting'
+base r3: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=321 recoverySec=0.214 statusInWindow=starting addSec=0.571 errors=-
+base r3: PASS: peakRssMb=321, recovery in 214ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 571ms
+head r3:   'wr manager status' was fired inside the window and took 43ms to answer 'starting'
+head r3: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=387 recoverySec=0.179 statusInWindow=starting addSec=4.057 errors=-
+head r3: FAIL: a threshold was exceeded (peakRssMb=387/700, recoveryMs=179/1000, addMs=4057/2000)
+base r4:   'wr manager status' was fired inside the window and took 45ms to answer 'starting'
+base r4: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=321 recoverySec=0.195 statusInWindow=starting addSec=0.627 errors=-
+base r4: PASS: peakRssMb=321, recovery in 195ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 627ms
+head r4:   'wr manager status' was fired inside the window and took 44ms to answer 'starting'
+head r4: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=376 recoverySec=0.214 statusInWindow=starting addSec=3.998 errors=-
+head r4: FAIL: a threshold was exceeded (peakRssMb=376/700, recoveryMs=214/1000, addMs=3998/2000)
+base r5:   'wr manager status' was fired inside the window and took 44ms to answer 'starting'
+base r5: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=328 recoverySec=0.174 statusInWindow=starting addSec=0.540 errors=-
+base r5: PASS: peakRssMb=328, recovery in 174ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 540ms
+head r5:   'wr manager status' was fired inside the window and took 44ms to answer 'starting'
+head r5: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=374 recoverySec=0.193 statusInWindow=starting addSec=4.069 errors=-
+head r5: FAIL: a threshold was exceeded (peakRssMb=374/700, recoveryMs=193/1000, addMs=4069/2000)
+base r6:   'wr manager status' was fired inside the window and took 44ms to answer 'starting'
+base r6: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=307 recoverySec=0.194 statusInWindow=starting addSec=0.564 errors=-
+base r6: PASS: peakRssMb=307, recovery in 194ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 564ms
+head r6:   'wr manager status' was fired inside the window and took 43ms to answer 'starting'
+head r6: DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=389 recoverySec=0.215 statusInWindow=starting addSec=4.214 errors=-
+head r6: FAIL: a threshold was exceeded (peakRssMb=389/700, recoveryMs=215/1000, addMs=4214/2000)

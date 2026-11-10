@@ -1,0 +1,27 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                    │     base     │                head                │
+                    │    sec/op    │   sec/op     vs base               │
+AddDepGroupMember-8   383.2m ± 10%   313.2m ± 7%  -18.27% (p=0.002 n=6)
+
+                    │     base     │                 head                 │
+                    │     B/op     │     B/op       vs base               │
+AddDepGroupMember-8   102.2Mi ± 0%   142.0Mi ± 16%  +38.90% (p=0.002 n=6)
+
+                    │     base     │                head                 │
+                    │  allocs/op   │  allocs/op    vs base               │
+AddDepGroupMember-8   1175.7k ± 0%   696.4k ± 13%  -40.77% (p=0.002 n=6)
+
+                       │     base     │                head                 │
+                       │  peak-rss-B  │  peak-rss-B   vs base               │
+ScenarioDepGranularity   308.0Mi ± 2%   249.4Mi ± 4%  -19.04% (p=0.002 n=6)
+
+                       │     base     │             head              │
+                       │ recovery-sec │ recovery-sec  vs base         │
+ScenarioDepGranularity   192.0m ± 12%   191.5m ± 11%  ~ (p=0.900 n=6)
+
+                       │    base     │                head                 │
+                       │   add-sec   │   add-sec     vs base               │
+ScenarioDepGranularity   529.5m ± 9%   327.0m ± 13%  -38.24% (p=0.002 n=6)
