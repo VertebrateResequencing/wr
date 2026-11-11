@@ -1,0 +1,16 @@
+runs=280956 keys=278190 by kind: {'portal_dedupe': 175336, 'portal_compress': 101133, 'stat': 1444, 'tidy': 12, 'pipeline': 125, 'fofnput': 2838, 'put': 30, 'walk': 24, 'build': 1, 'combine': 12, 'publish': 1}
+runs with no end marker (SIGKILLed, lost, or still running at the end): 2218
+  by nearest event: {'stop-clean': 2218}
+runs ended by a signal: 0 {}
+  by nearest event: {}
+exit codes: {'0': 275881, '3': 2857}
+
+DOUBLE RUNS (non-put key run again after a run that exited 0): 0
+
+true overlaps (a second run began before an earlier one ended): 0
+
+re-runs after a run that did not exit 0 (killed, failed or lost; retries/wr retry are expected): 2746
+    2192  previous run rc3    near none
+     554  previous run rc3    near stop-clean
+
+ctrdep: runs=0 dependency-done-file missing at start=0 started before dependency finished=0

@@ -1,0 +1,12 @@
+2.9	portal	burst 20261111T100019 jobs=6618 x2 cmdKB=10 target=600
+302.8	portal	burst 20261111T100519 jobs=6618 x2 cmdKB=10 target=600
+602.6	portal	burst 20261111T101019 jobs=6618 x2 cmdKB=10 target=600
+905.3	portal	burst 20261111T101519 jobs=13237 x2 cmdKB=10 target=1200
+1205.1	portal	burst 20261111T102019 jobs=13237 x2 cmdKB=10 target=1200
+1508.5	portal	burst 20261111T102519 jobs=23165 x2 cmdKB=10 target=2100
+1808.6	portal	burst 20261111T103019 jobs=23165 x2 cmdKB=10 target=2100
+2109.2	portal	burst 20261111T103519 jobs=23165 x2 cmdKB=10 target=2100
+2415.6	portal	burst 20261111T104019 jobs=33093 x2 cmdKB=10 target=3000
+2716.0	portal	burst 20261111T104519 jobs=33093 x2 cmdKB=10 target=3000
+3017.7	portal	burst 20261111T105019 jobs=33093 x2 cmdKB=10 target=3000
+3313.9	portal	burst 20261111T105519 jobs=33093 x2 cmdKB=10 target=3000

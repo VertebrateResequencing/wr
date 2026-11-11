@@ -1,0 +1,40 @@
+== client calls over 1.0 h (ms; q1 = first quarter of the run, q4 = last)
+(slow = calls, failed or not, that took at least the Go clients' Timeout of 2m0s, as one waiting through a manager outage does; slow_s = seconds spent in them; 0 for ops slow by design, such as submit_and_wait)
+actor/op                                    n  errs  slow  slow_s      p50      p95       max     q1p95     q4p95     meanN
+fofn/add_fofn                              40     0     0       0        7       48        60        30        35       163
+fofn/connect                                1     0     0       0       17       17        17        17        -1         0
+fofn/find_incomplete_prefix               120     0     0       0       91      218       293        32       253      2425
+fofn/getlct_prefix                        120     0     0       0        0        1         4         0         1         7
+fofn/remove_buried                         38     0     0       0        1       50       109         1        50         1
+ibserver/add_put                          600     0     0       0        2        5        43         4         6        10
+ibserver/connect                            1     0     0       0       16       16        16        16        -1         0
+main/connect                                1     0     0       0       11       11        11        11        -1         0
+main/setlimit                               3     0     0       0        1        1         2         1        -1       233
+operator/kill_fofn                          1     1     0       0       -1       -1        -1        -1        -1        54
+operator/limit_list                         5     0     0       0       35       37       180        29        37        47
+operator/retry_portal                       1     1     0       0       -1       -1        -1        -1        -1        54
+portal/add_portal_compress                257     0     0       0      142      262       545       190       324       966
+portal/add_portal_dedupe                  257     0     0       0      176      312       546       256       357       966
+portal/connect                              1     0     0       0       16       16        16        16        -1         0
+sampler/connect                             1     0     0       0       24       24        24        24        -1         0
+status/manager_status                     577     0     0       0       31      276       605        44       372       272
+status/status_buried                       29     0     0       0       81      364       418        46       364       576
+status/status_counts                      300     0     0       0       89      386       568        53       504       108
+status/status_fofn_z                       60     0     0       0       55      361       538        49       432      3076
+status/status_portal_summary               39     0     0       0      617     2080      2512       197      2177      3601
+waiter/connect                              1     0     0       0       17       17        17        17        -1         0
+waiter/submit_and_wait                     25     0     0       0    28384    30513     32269     30255     30513         5
+web*/ws_details_first                     116     0     0       0        1      144      6420        35       119         0
+web*/ws_dial                               58     0     0       0        4       25       152        12         5         0
+web*/ws_seed                               58     0     0       0      152      513       584        58       552        69
+web*/ws_session_deltas                     58     0     0       0        0        0         0         0         0     57148
+wrstat/add_combine                          2     0     0       0        4        4        15        15        -1        12
+wrstat/add_tidy                             2     0     0       0        2        2         5         5        -1        12
+wrstat/add_walk                             2     0     0       0        2        2        12        12        -1        12
+wrstat/connect                              1     0     0       0       18       18        18        18        -1         0
+wrstat/find_dependent_prefix               24     0     0       0        0        1         2         1        -1         0
+wrstatui/add_0                              8     8     0       0       -1       -1        -1        -1        -1         0
+wrstatui/add_2                              1     0     0       0        3        3         3        -1        -1         2
+wrstatui/connect                            1     0     0       0       16       16        16        16        -1         0
+
+== last error per op

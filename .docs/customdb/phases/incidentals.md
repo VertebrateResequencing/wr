@@ -860,6 +860,22 @@ called ready, or explicitly deferred with the owner.
   `.ckpt` of 40MB or more) is written on the NFS work directory, such as
   with checkpoints forced while the soak runs against a store seeded with
   that many live jobs.
+  Measured in 1g.5 ([phase1-gate-1g5.md](../results/phase1-gate-1g5.md),
+  "Checkpoint incidental"), still open for the owner to rule on. A
+  45-minute soak on NFS at f7006373, with 250,000 seeded live jobs that
+  never run and portal bursts moved off the checkpoints, wrote `.ckpt`
+  files of 88MB to 133MB in 2.4s to 7.5s each. The seven
+  `"reservation wait"` lines covering a checkpoint and no portal burst
+  have p99 26.7ms to 49.3ms, within a few ms of their neighbours, and max
+  at most 128.5ms. Two covering lines are over 50ms: 146.8ms, whose minute
+  also holds a portal burst (bursts alone give 124ms to 180ms), and
+  55.6ms, the partial line at the final clean stop. In the stall-free gate
+  soak every checkpoint shared its minute with a burst, so it cannot
+  separate them. The rule above is met literally, but the measurement does
+  not show the unpaced write delaying reservations at these sizes. The
+  owner should rule whether to close this or to pace the write anyway.
+  Pacing would not fix 1g.5's failing soak, whose lines over 50ms are
+  mostly in minutes with no checkpoint.
 
 - [x] (from 1d.2 review round 6) Recovery step 1 deletes every `*.tmp`
   (`removeTmpFiles`, `jobqueue/store_checkpoint.go`), but only a

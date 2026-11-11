@@ -1,0 +1,2 @@
+1794391219	start	rc=0	pid=1879068	ms=863	db_mb=0	load=1.77	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g5/soak/run/dbdir/db
+1794394898	stop	rc=killed	pid=1879068	ms=40765	kind=clean	db_mb=0	load=4.70	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1794394842->1794394897

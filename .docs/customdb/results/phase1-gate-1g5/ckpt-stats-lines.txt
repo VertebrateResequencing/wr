@@ -1,0 +1,183 @@
+t=2026-11-11T11:07:53+0000 lvl=warn msg="db writer" writer=log batches=3418 records=64079 bytes=13797138 meanSync=840µs maxSync=13.156ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:07:53+0000 lvl=warn msg="db writer" writer=fold txs=63 items=20516 meanLock=129µs maxLock=2.09ms meanHold=32.711ms maxHold=66.336ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:07:54+0000 lvl=warn msg="add wait" n=43 p50=2.163ms p99=134.89ms max=134.89ms caller=clog.go:338
+t=2026-11-11T11:07:54+0000 lvl=warn msg="reservation wait" n=1713 p50=868µs p99=25.69ms max=30.862ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:08:53+0000 lvl=warn msg="db writer" writer=log batches=4241 records=6775 bytes=912443 meanSync=794µs maxSync=12.414ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:08:53+0000 lvl=warn msg="db writer" writer=fold txs=56 items=1743 meanLock=138µs maxLock=932µs meanHold=53.417ms maxHold=78.527ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:08:54+0000 lvl=warn msg="add wait" n=14 p50=7µs p99=1.933ms max=1.963ms caller=clog.go:338
+t=2026-11-11T11:08:54+0000 lvl=warn msg="reservation wait" n=1459 p50=1.343ms p99=4.325ms max=11.06ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:09:53+0000 lvl=warn msg="db writer" writer=log batches=4175 records=5773 bytes=873787 meanSync=849µs maxSync=19.716ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:09:53+0000 lvl=warn msg="db writer" writer=fold txs=56 items=1440 meanLock=130µs maxLock=327µs meanHold=63.106ms maxHold=84.824ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:09:54+0000 lvl=warn msg="add wait" n=10 p50=8µs p99=1.445ms max=1.445ms caller=clog.go:338
+t=2026-11-11T11:09:54+0000 lvl=warn msg="reservation wait" n=1434 p50=1.409ms p99=5.374ms max=33.027ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:10:53+0000 lvl=warn msg="db writer" writer=log batches=3998 records=5979 bytes=848960 meanSync=828µs maxSync=18.081ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:10:53+0000 lvl=warn msg="db writer" writer=fold txs=55 items=1528 meanLock=130µs maxLock=280µs meanHold=72.585ms maxHold=117.448ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:10:54+0000 lvl=warn msg="add wait" n=12 p50=7µs p99=1.995ms max=1.995ms caller=clog.go:338
+t=2026-11-11T11:10:54+0000 lvl=warn msg="reservation wait" n=1366 p50=1.475ms p99=5.112ms max=29.254ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:11:53+0000 lvl=warn msg="db writer" writer=log batches=3993 records=755668 bytes=150747849 meanSync=1.65ms maxSync=143.71ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:11:53+0000 lvl=warn msg="db writer" writer=fold txs=62 items=251404 meanLock=954µs maxLock=6.343ms meanHold=345.316ms maxHold=1.356713s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:11:54+0000 lvl=warn msg="add wait" n=36 p50=188.744ms p99=327.156ms max=333.083ms caller=clog.go:338
+t=2026-11-11T11:11:54+0000 lvl=warn msg="reservation wait" n=1403 p50=1.475ms p99=59.769ms max=192.96ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:12:53+0000 lvl=warn msg="db writer" writer=log batches=4037 records=6177 bytes=867679 meanSync=991µs maxSync=35.114ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:12:53+0000 lvl=warn msg="db writer" writer=fold txs=52 items=1563 meanLock=282µs maxLock=1.577ms meanHold=153.019ms maxHold=394.957ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:12:54+0000 lvl=warn msg="add wait" n=11 p50=836µs p99=2.643ms max=2.643ms caller=clog.go:338
+t=2026-11-11T11:12:54+0000 lvl=warn msg="reservation wait" n=1385 p50=1.475ms p99=26.739ms max=53.612ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:13:53+0000 lvl=warn msg="db writer" writer=log batches=3616 records=5623 bytes=804863 meanSync=1.126ms maxSync=38.463ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:13:53+0000 lvl=warn msg="db writer" writer=fold txs=52 items=1493 meanLock=250µs maxLock=484µs meanHold=168.14ms maxHold=336.459ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:13:54+0000 lvl=warn msg="add wait" n=12 p50=6µs p99=1.986ms max=1.986ms caller=clog.go:338
+t=2026-11-11T11:13:54+0000 lvl=warn msg="reservation wait" n=1267 p50=1.606ms p99=45.089ms max=54.273ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:14:53+0000 lvl=warn msg="db writer" writer=log batches=3936 records=63038 bytes=13637037 meanSync=1.424ms maxSync=134.465ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:14:53+0000 lvl=warn msg="db writer" writer=fold txs=50 items=20469 meanLock=383µs maxLock=1.46ms meanHold=348.839ms maxHold=1.134177s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:14:54+0000 lvl=warn msg="add wait" n=32 p50=38.797ms p99=155.189ms max=158.095ms caller=clog.go:338
+t=2026-11-11T11:14:54+0000 lvl=warn msg="reservation wait" n=1408 p50=868µs p99=40.894ms max=160.503ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:15:53+0000 lvl=warn msg="db writer" writer=log batches=4179 records=5670 bytes=860689 meanSync=976µs maxSync=27.813ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:15:53+0000 lvl=warn msg="db writer" writer=fold txs=52 items=1415 meanLock=265µs maxLock=685µs meanHold=147.253ms maxHold=227.615ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:15:54+0000 lvl=warn msg="add wait" n=10 p50=6µs p99=1.343ms max=1.345ms caller=clog.go:338
+t=2026-11-11T11:15:54+0000 lvl=warn msg="reservation wait" n=1411 p50=803µs p99=21.496ms max=43.536ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:16:53+0000 lvl=warn msg="db writer" writer=log batches=4137 records=8415 bytes=929405 meanSync=990µs maxSync=42.502ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:16:53+0000 lvl=warn msg="db writer" writer=fold txs=51 items=2324 meanLock=253µs maxLock=628µs meanHold=155.691ms maxHold=671.452ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:16:54+0000 lvl=warn msg="add wait" n=12 p50=8µs p99=10.748ms max=10.873ms caller=clog.go:338
+t=2026-11-11T11:16:54+0000 lvl=warn msg="reservation wait" n=1385 p50=803µs p99=15.466ms max=32.981ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:17:53+0000 lvl=warn msg="db writer" writer=log batches=7195 records=11283 bytes=1706560 meanSync=990µs maxSync=29.501ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:17:53+0000 lvl=warn msg="db writer" writer=fold txs=50 items=2525 meanLock=325µs maxLock=450µs meanHold=213.043ms maxHold=416.639ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:17:54+0000 lvl=warn msg="add wait" n=12 p50=5µs p99=2.237ms max=2.237ms caller=clog.go:338
+t=2026-11-11T11:17:54+0000 lvl=warn msg="reservation wait" n=2989 p50=836µs p99=27.787ms max=38.809ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:18:53+0000 lvl=warn msg="db writer" writer=log batches=8188 records=12233 bytes=1735673 meanSync=933µs maxSync=54.064ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:18:53+0000 lvl=warn msg="db writer" writer=fold txs=47 items=3094 meanLock=412µs maxLock=735µs meanHold=262.698ms maxHold=528.236ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:18:54+0000 lvl=warn msg="add wait" n=11 p50=5µs p99=3.342ms max=3.37ms caller=clog.go:338
+t=2026-11-11T11:18:54+0000 lvl=warn msg="reservation wait" n=2792 p50=770µs p99=30.933ms max=54.355ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:19:53+0000 lvl=warn msg="db writer" writer=log batches=7911 records=10901 bytes=1654182 meanSync=955µs maxSync=30.318ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:19:53+0000 lvl=warn msg="db writer" writer=fold txs=48 items=2745 meanLock=415µs maxLock=1.835ms meanHold=260.737ms maxHold=322.103ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:19:54+0000 lvl=warn msg="add wait" n=10 p50=6µs p99=966µs max=966µs caller=clog.go:338
+t=2026-11-11T11:19:54+0000 lvl=warn msg="reservation wait" n=2712 p50=770µs p99=30.933ms max=46.984ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:20:53+0000 lvl=warn msg="db writer" writer=log batches=7684 records=10836 bytes=1642388 meanSync=952µs maxSync=51.426ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:20:53+0000 lvl=warn msg="db writer" writer=fold txs=47 items=2669 meanLock=398µs maxLock=625µs meanHold=257.325ms maxHold=305.897ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:20:54+0000 lvl=warn msg="add wait" n=11 p50=6µs p99=31.982ms max=32.175ms caller=clog.go:338
+t=2026-11-11T11:20:54+0000 lvl=warn msg="reservation wait" n=2692 p50=1.278ms p99=31.982ms max=52.115ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:21:53+0000 lvl=warn msg="db writer" writer=log batches=7255 records=122794 bytes=27092182 meanSync=1.3ms maxSync=167.354ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:21:53+0000 lvl=warn msg="db writer" writer=fold txs=49 items=40009 meanLock=648µs maxLock=2.065ms meanHold=598.806ms maxHold=1.155218s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:21:54+0000 lvl=warn msg="add wait" n=49 p50=42.992ms p99=205.521ms max=206.682ms caller=clog.go:338
+t=2026-11-11T11:21:54+0000 lvl=warn msg="reservation wait" n=2641 p50=1.409ms p99=38.797ms max=168.164ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:22:53+0000 lvl=warn msg="db writer" writer=log batches=7572 records=11643 bytes=1676209 meanSync=1.07ms maxSync=44.232ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:22:53+0000 lvl=warn msg="db writer" writer=fold txs=47 items=2946 meanLock=392µs maxLock=764µs meanHold=282.582ms maxHold=537.031ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:22:54+0000 lvl=warn msg="add wait" n=12 p50=6µs p99=3.053ms max=3.053ms caller=clog.go:338
+t=2026-11-11T11:22:54+0000 lvl=warn msg="reservation wait" n=2705 p50=1.409ms p99=36.7ms max=44.042ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:23:53+0000 lvl=warn msg="db writer" writer=log batches=7582 records=11304 bytes=1670227 meanSync=1.057ms maxSync=48.856ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:23:53+0000 lvl=warn msg="db writer" writer=fold txs=46 items=2829 meanLock=400µs maxLock=663µs meanHold=300.853ms maxHold=432.439ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:23:54+0000 lvl=warn msg="add wait" n=11 p50=5µs p99=1.802ms max=1.825ms caller=clog.go:338
+t=2026-11-11T11:23:54+0000 lvl=warn msg="reservation wait" n=2708 p50=1.409ms p99=36.7ms max=47.717ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:24:53+0000 lvl=warn msg="db writer" writer=log batches=7664 records=13105 bytes=1756777 meanSync=1.104ms maxSync=41.392ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:24:53+0000 lvl=warn msg="db writer" writer=fold txs=45 items=3438 meanLock=464µs maxLock=1.612ms meanHold=338.416ms maxHold=808.985ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:24:54+0000 lvl=warn msg="add wait" n=11 p50=6µs p99=11.796ms max=11.948ms caller=clog.go:338
+t=2026-11-11T11:24:54+0000 lvl=warn msg="reservation wait" n=2788 p50=1.475ms p99=42.992ms max=62.82ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:25:53+0000 lvl=warn msg="db writer" writer=log batches=7445 records=10858 bytes=1646971 meanSync=1.214ms maxSync=53.364ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:25:53+0000 lvl=warn msg="db writer" writer=fold txs=45 items=2671 meanLock=415µs maxLock=812µs meanHold=317.348ms maxHold=409.558ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:25:54+0000 lvl=warn msg="add wait" n=11 p50=5µs p99=999µs max=1.009ms caller=clog.go:338
+t=2026-11-11T11:25:54+0000 lvl=warn msg="reservation wait" n=2703 p50=1.475ms p99=42.992ms max=58.182ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:26:53+0000 lvl=warn msg="db writer" writer=log batches=6955 records=11339 bytes=1649892 meanSync=1.268ms maxSync=63.947ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:26:53+0000 lvl=warn msg="db writer" writer=fold txs=45 items=2930 meanLock=418µs maxLock=841µs meanHold=341.276ms maxHold=547.809ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:26:54+0000 lvl=warn msg="add wait" n=11 p50=6µs p99=34.246ms max=34.246ms caller=clog.go:338
+t=2026-11-11T11:26:54+0000 lvl=warn msg="reservation wait" n=2664 p50=1.475ms p99=42.992ms max=54.951ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:27:53+0000 lvl=warn msg="db writer" writer=log batches=10976 records=17449 bytes=2722641 meanSync=1.185ms maxSync=71.463ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:27:53+0000 lvl=warn msg="db writer" writer=fold txs=42 items=3773 meanLock=529µs maxLock=1.27ms meanHold=420.44ms maxHold=569.944ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:27:54+0000 lvl=warn msg="add wait" n=10 p50=6µs p99=11µs max=11µs caller=clog.go:338
+t=2026-11-11T11:27:54+0000 lvl=warn msg="reservation wait" n=4804 p50=967µs p99=40.894ms max=47.669ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:28:53+0000 lvl=warn msg="db writer" writer=log batches=11063 records=214822 bytes=47376710 meanSync=1.616ms maxSync=195.726ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:28:53+0000 lvl=warn msg="db writer" writer=fold txs=40 items=69819 meanLock=1.254ms maxLock=4.383ms meanHold=1.337229s maxHold=1.777505s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:28:54+0000 lvl=warn msg="add wait" n=78 p50=42.992ms p99=171.966ms max=173.183ms caller=clog.go:338
+t=2026-11-11T11:28:54+0000 lvl=warn msg="reservation wait" n=4706 p50=1.54ms p99=127.926ms max=196.516ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:29:53+0000 lvl=warn msg="db writer" writer=log batches=11582 records=18827 bytes=2856137 meanSync=1.25ms maxSync=58.658ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:29:53+0000 lvl=warn msg="db writer" writer=fold txs=37 items=4743 meanLock=775µs maxLock=3.609ms meanHold=607.574ms maxHold=854.816ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:29:54+0000 lvl=warn msg="add wait" n=10 p50=6µs p99=8µs max=8µs caller=clog.go:338
+t=2026-11-11T11:29:54+0000 lvl=warn msg="reservation wait" n=4689 p50=1.475ms p99=47.186ms max=64.982ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:30:53+0000 lvl=warn msg="db writer" writer=log batches=11631 records=19289 bytes=2824347 meanSync=1.159ms maxSync=88.689ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:30:53+0000 lvl=warn msg="db writer" writer=fold txs=37 items=4847 meanLock=682µs maxLock=1.659ms meanHold=605.057ms maxHold=1.094205s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:30:54+0000 lvl=warn msg="add wait" n=12 p50=5µs p99=3.211ms max=3.225ms caller=clog.go:338
+t=2026-11-11T11:30:54+0000 lvl=warn msg="reservation wait" n=4597 p50=1.475ms p99=47.186ms max=109.764ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:31:53+0000 lvl=warn msg="db writer" writer=log batches=11689 records=21128 bytes=2955705 meanSync=1.282ms maxSync=66.162ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:31:53+0000 lvl=warn msg="db writer" writer=fold txs=36 items=5510 meanLock=700µs maxLock=1.743ms meanHold=674.725ms maxHold=1.100943s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:31:54+0000 lvl=warn msg="add wait" n=21 p50=934µs p99=3.587ms max=3.587ms caller=clog.go:338
+t=2026-11-11T11:31:54+0000 lvl=warn msg="reservation wait" n=4756 p50=1.54ms p99=49.283ms max=90.598ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:32:53+0000 lvl=warn msg="db writer" writer=log batches=11522 records=20237 bytes=2894043 meanSync=1.33ms maxSync=59.947ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:32:53+0000 lvl=warn msg="db writer" writer=fold txs=37 items=5078 meanLock=695µs maxLock=2.393ms meanHold=624.438ms maxHold=940.453ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:32:54+0000 lvl=warn msg="add wait" n=16 p50=8µs p99=69.206ms max=69.724ms caller=clog.go:338
+t=2026-11-11T11:32:54+0000 lvl=warn msg="reservation wait" n=4671 p50=1.54ms p99=42.992ms max=68.949ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:33:53+0000 lvl=warn msg="db writer" writer=log batches=11464 records=19032 bytes=2886411 meanSync=1.481ms maxSync=89.798ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:33:53+0000 lvl=warn msg="db writer" writer=fold txs=36 items=4763 meanLock=668µs maxLock=1.826ms meanHold=664.399ms maxHold=866.193ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:33:54+0000 lvl=warn msg="add wait" n=11 p50=6µs p99=1.671ms max=1.676ms caller=clog.go:338
+t=2026-11-11T11:33:54+0000 lvl=warn msg="reservation wait" n=4736 p50=1.606ms p99=49.283ms max=106.781ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:34:53+0000 lvl=warn msg="db writer" writer=log batches=11503 records=18894 bytes=2866479 meanSync=1.29ms maxSync=90.28ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:34:53+0000 lvl=warn msg="db writer" writer=fold txs=38 items=4752 meanLock=675µs maxLock=1.378ms meanHold=586.041ms maxHold=758.835ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:34:54+0000 lvl=warn msg="add wait" n=10 p50=9µs p99=21.496ms max=21.816ms caller=clog.go:338
+t=2026-11-11T11:34:54+0000 lvl=warn msg="reservation wait" n=4697 p50=1.409ms p99=40.894ms max=101.243ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:35:53+0000 lvl=warn msg="db writer" writer=log batches=11118 records=214475 bytes=47368625 meanSync=1.451ms maxSync=196.298ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:35:53+0000 lvl=warn msg="db writer" writer=fold txs=36 items=66930 meanLock=1.032ms maxLock=1.898ms meanHold=1.539878s maxHold=1.975201s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:35:54+0000 lvl=warn msg="add wait" n=78 p50=40.894ms p99=161.779ms max=161.779ms caller=clog.go:338
+t=2026-11-11T11:35:54+0000 lvl=warn msg="reservation wait" n=4658 p50=1.475ms p99=123.732ms max=181.437ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:36:53+0000 lvl=warn msg="db writer" writer=log batches=11364 records=18780 bytes=2844860 meanSync=1.342ms maxSync=213.665ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:36:53+0000 lvl=warn msg="db writer" writer=fold txs=36 items=7528 meanLock=1.065ms maxLock=7.209ms meanHold=729.402ms maxHold=1.990419s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:36:54+0000 lvl=warn msg="add wait" n=10 p50=6µs p99=7µs max=7µs caller=clog.go:338
+t=2026-11-11T11:36:54+0000 lvl=warn msg="reservation wait" n=4658 p50=1.475ms p99=40.894ms max=190.273ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:37:53+0000 lvl=warn msg="db writer" writer=log batches=11548 records=19794 bytes=2906119 meanSync=1.302ms maxSync=109.556ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:37:53+0000 lvl=warn msg="db writer" writer=fold txs=39 items=5005 meanLock=673µs maxLock=1.6ms meanHold=571.316ms maxHold=707.669ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:37:54+0000 lvl=warn msg="add wait" n=11 p50=5µs p99=2.818ms max=2.873ms caller=clog.go:338
+t=2026-11-11T11:37:54+0000 lvl=warn msg="reservation wait" n=4727 p50=1.409ms p99=38.797ms max=128.499ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:38:53+0000 lvl=warn msg="db writer" writer=log batches=11442 records=19756 bytes=2863805 meanSync=1.273ms maxSync=55.562ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:38:53+0000 lvl=warn msg="db writer" writer=fold txs=38 items=4952 meanLock=680µs maxLock=1.605ms meanHold=547.703ms maxHold=843.117ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:38:54+0000 lvl=warn msg="add wait" n=12 p50=6µs p99=21.496ms max=21.588ms caller=clog.go:338
+t=2026-11-11T11:38:54+0000 lvl=warn msg="reservation wait" n=4652 p50=1.409ms p99=36.7ms max=84.316ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:39:53+0000 lvl=warn msg="db writer" writer=log batches=11822 records=18743 bytes=2840983 meanSync=1.083ms maxSync=52.537ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:39:53+0000 lvl=warn msg="db writer" writer=fold txs=40 items=4755 meanLock=631µs maxLock=1.402ms meanHold=518.433ms maxHold=657.55ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:39:54+0000 lvl=warn msg="add wait" n=10 p50=5µs p99=9µs max=9µs caller=clog.go:338
+t=2026-11-11T11:39:54+0000 lvl=warn msg="reservation wait" n=4667 p50=1.409ms p99=34.603ms max=53.564ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:40:53+0000 lvl=warn msg="db writer" writer=log batches=11663 records=19315 bytes=2899091 meanSync=1.296ms maxSync=112.193ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:40:53+0000 lvl=warn msg="db writer" writer=fold txs=38 items=4770 meanLock=645µs maxLock=1.878ms meanHold=556.471ms maxHold=730.337ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:40:54+0000 lvl=warn msg="add wait" n=11 p50=5µs p99=2.493ms max=2.493ms caller=clog.go:338
+t=2026-11-11T11:40:54+0000 lvl=warn msg="reservation wait" n=4731 p50=1.409ms p99=36.7ms max=141.738ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:41:53+0000 lvl=warn msg="db writer" writer=log batches=11348 records=19928 bytes=2879450 meanSync=1.403ms maxSync=102.224ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:41:53+0000 lvl=warn msg="db writer" writer=fold txs=37 items=4996 meanLock=636µs maxLock=2.027ms meanHold=591.572ms maxHold=1.026736s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:41:54+0000 lvl=warn msg="add wait" n=12 p50=6µs p99=10.211ms max=10.211ms caller=clog.go:338
+t=2026-11-11T11:41:54+0000 lvl=warn msg="reservation wait" n=4667 p50=1.475ms p99=38.797ms max=122.843ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:42:53+0000 lvl=warn msg="db writer" writer=log batches=12711 records=220887 bytes=48484988 meanSync=1.8ms maxSync=195.222ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:42:53+0000 lvl=warn msg="db writer" writer=fold txs=54 items=70889 meanLock=1.125ms maxLock=4.05ms meanHold=723.981ms maxHold=1.736989s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:42:54+0000 lvl=warn msg="add wait" n=77 p50=42.992ms p99=264.241ms max=264.268ms caller=clog.go:338
+t=2026-11-11T11:42:54+0000 lvl=warn msg="reservation wait" n=6846 p50=1.54ms p99=146.801ms max=233.86ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:43:53+0000 lvl=warn msg="db writer" writer=log batches=15236 records=26513 bytes=4022260 meanSync=1.167ms maxSync=170.815ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:43:53+0000 lvl=warn msg="db writer" writer=fold txs=32 items=6651 meanLock=1.2ms maxLock=3.148ms meanHold=882.754ms maxHold=1.08511s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:43:54+0000 lvl=warn msg="add wait" n=11 p50=5µs p99=5.769ms max=5.769ms caller=clog.go:338
+t=2026-11-11T11:43:54+0000 lvl=warn msg="reservation wait" n=6586 p50=1.475ms p99=45.089ms max=200.185ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:44:53+0000 lvl=warn msg="db writer" writer=log batches=14711 records=26792 bytes=4062031 meanSync=1.391ms maxSync=133.61ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:44:53+0000 lvl=warn msg="db writer" writer=fold txs=31 items=6497 meanLock=1.246ms maxLock=5.317ms meanHold=878.838ms maxHold=1.083494s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:44:54+0000 lvl=warn msg="add wait" n=11 p50=6µs p99=932µs max=932µs caller=clog.go:338
+t=2026-11-11T11:44:54+0000 lvl=warn msg="reservation wait" n=6666 p50=1.475ms p99=42.992ms max=159.836ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:45:53+0000 lvl=warn msg="db writer" writer=log batches=14207 records=26798 bytes=4061708 meanSync=1.527ms maxSync=91.832ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:45:53+0000 lvl=warn msg="db writer" writer=fold txs=31 items=6889 meanLock=1.111ms maxLock=3.174ms meanHold=962.291ms maxHold=1.886283s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:45:54+0000 lvl=warn msg="add wait" n=11 p50=6µs p99=925µs max=925µs caller=clog.go:338
+t=2026-11-11T11:45:54+0000 lvl=warn msg="reservation wait" n=6643 p50=1.54ms p99=47.186ms max=123.49ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:46:53+0000 lvl=warn msg="db writer" writer=log batches=15535 records=27323 bytes=4087871 meanSync=1.138ms maxSync=101.178ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:46:53+0000 lvl=warn msg="db writer" writer=fold txs=29 items=6702 meanLock=1.126ms maxLock=2.6ms meanHold=1.047591s maxHold=1.353518s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:46:54+0000 lvl=warn msg="add wait" n=13 p50=6µs p99=1.868ms max=1.898ms caller=clog.go:338
+t=2026-11-11T11:46:54+0000 lvl=warn msg="reservation wait" n=6693 p50=1.409ms p99=42.992ms max=75.425ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:47:53+0000 lvl=warn msg="db writer" writer=log batches=14156 records=26522 bytes=4025415 meanSync=1.531ms maxSync=134.807ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:47:53+0000 lvl=warn msg="db writer" writer=fold txs=30 items=6596 meanLock=5.772ms maxLock=142.4ms meanHold=1.026208s maxHold=1.319539s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:47:54+0000 lvl=warn msg="add wait" n=10 p50=5µs p99=19µs max=19µs caller=clog.go:338
+t=2026-11-11T11:47:54+0000 lvl=warn msg="reservation wait" n=6590 p50=1.475ms p99=49.283ms max=116.778ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:48:53+0000 lvl=warn msg="db writer" writer=log batches=15080 records=26903 bytes=4083489 meanSync=1.311ms maxSync=129.177ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:48:53+0000 lvl=warn msg="db writer" writer=fold txs=29 items=6582 meanLock=1.328ms maxLock=3.204ms meanHold=1.022578s maxHold=1.21756s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:48:54+0000 lvl=warn msg="add wait" n=10 p50=5µs p99=7µs max=7µs caller=clog.go:338
+t=2026-11-11T11:48:54+0000 lvl=warn msg="reservation wait" n=6698 p50=1.409ms p99=45.089ms max=104.18ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:49:53+0000 lvl=warn msg="db writer" writer=log batches=12383 records=305021 bytes=67575958 meanSync=2.125ms maxSync=258.474ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:49:53+0000 lvl=warn msg="db writer" writer=fold txs=52 items=95977 meanLock=1.618ms maxLock=21.805ms meanHold=1.028613s maxHold=2.425547s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:49:54+0000 lvl=warn msg="add wait" n=105 p50=45.089ms p99=293.601ms max=379.565ms caller=clog.go:338
+t=2026-11-11T11:49:54+0000 lvl=warn msg="reservation wait" n=6593 p50=1.54ms p99=180.355ms max=275.48ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:50:53+0000 lvl=warn msg="db writer" writer=log batches=13656 records=27177 bytes=4016243 meanSync=1.717ms maxSync=221.925ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:50:53+0000 lvl=warn msg="db writer" writer=fold txs=28 items=10175 meanLock=1.882ms maxLock=8.018ms meanHold=1.242432s maxHold=3.195341s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:50:54+0000 lvl=warn msg="add wait" n=12 p50=5µs p99=33.002ms max=33.002ms caller=clog.go:338
+t=2026-11-11T11:50:54+0000 lvl=warn msg="reservation wait" n=6566 p50=1.54ms p99=59.769ms max=300.731ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:51:53+0000 lvl=warn msg="db writer" writer=log batches=14891 records=28093 bytes=4053356 meanSync=1.266ms maxSync=142.439ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:51:53+0000 lvl=warn msg="db writer" writer=fold txs=30 items=7123 meanLock=1.332ms maxLock=3.449ms meanHold=965.765ms maxHold=1.265083s interval=1m0s caller=clog.go:338
+t=2026-11-11T11:51:54+0000 lvl=warn msg="add wait" n=12 p50=5µs p99=13.894ms max=13.918ms caller=clog.go:338
+t=2026-11-11T11:51:54+0000 lvl=warn msg="reservation wait" n=6561 p50=1.475ms p99=45.089ms max=143.355ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:52:31+0000 lvl=warn msg="reservation wait" n=4010 p50=1.475ms p99=55.575ms max=112.411ms notDurable=0 abandoned=0 caller=clog.go:338
+t=2026-11-11T11:52:53+0000 lvl=warn msg="db writer" writer=log batches=10344 records=27015 bytes=3359463 meanSync=1.806ms maxSync=97.598ms interval=1m0s caller=clog.go:338
+t=2026-11-11T11:52:53+0000 lvl=warn msg="db writer" writer=fold txs=32 items=7410 meanLock=1.08ms maxLock=4.51ms meanHold=737.019ms maxHold=1.186709s interval=1m0s caller=clog.go:338

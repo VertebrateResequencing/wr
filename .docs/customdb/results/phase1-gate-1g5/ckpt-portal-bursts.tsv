@@ -1,0 +1,7 @@
+4.0	portal	burst 20261111T110654 jobs=9266 x2 cmdKB=10 target=600
+423.6	portal	burst 20261111T111354 jobs=9266 x2 cmdKB=10 target=600
+847.8	portal	burst 20261111T112054 jobs=18532 x2 cmdKB=10 target=1200
+1272.8	portal	burst 20261111T112754 jobs=32431 x2 cmdKB=10 target=2100
+1692.5	portal	burst 20261111T113454 jobs=32431 x2 cmdKB=10 target=2100
+2113.6	portal	burst 20261111T114154 jobs=32431 x2 cmdKB=10 target=2100
+2540.2	portal	burst 20261111T114854 jobs=46331 x2 cmdKB=10 target=3000
