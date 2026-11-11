@@ -1,0 +1,4 @@
+================ verdict ================
+results: /nfs/hgi/wr/sb10-bigdb/customdb/1g4/rl-speed/run-1794338151 (benchstat.txt, *.txt raw, *.out scenario logs)
+  REGRESSION AddManyUnderReserveLoad/norc-8 reserve-p99-us: +10.29% (p=0.009)
+FAIL: make speed found 1 problem(s) (threshold 10% at p<0.05)

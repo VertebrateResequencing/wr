@@ -318,9 +318,11 @@ func durationPercentileMicros(ds []time.Duration, p int) float64 {
 }
 
 // kickResumeBenchServer starts a server holding kickResumeBenchTargets target
-// jobs, parked by prepare, and kickResumeBenchFillers ready filler jobs. It
-// returns the server, the targets' server-side jobs and keys, and a function
-// that stops the server.
+// jobs, parked by prepare, and kickResumeBenchFillers ready filler jobs, once
+// its store has done the background work their adds and prepare's changes left
+// it (see settleStore), so that work is not timed as the op's. It returns the
+// server, the targets' server-side jobs and keys, and a function that stops the
+// server.
 func kickResumeBenchServer(ctx context.Context, b *testing.B,
 	prepare kickResumeBenchPrepare,
 ) (*Server, []*Job, []string, func()) {
@@ -334,6 +336,7 @@ func kickResumeBenchServer(ctx context.Context, b *testing.B,
 	jobs, keys := prepare(ctx, b, s, len(targets))
 
 	kickResumeBenchAdd(b, jq, kickResumeBenchFillerJobs(standardReqs))
+	settleStore(b, s)
 
 	return s, jobs, keys, stop
 }
@@ -485,7 +488,8 @@ func BenchmarkAddManyUnderReserveLoad(b *testing.B) {
 }
 
 // benchAddManyUnderReserveLoad runs b.N rounds of BenchmarkAddManyUnderReserveLoad
-// with runner command rc, each on a fresh server holding the fillers.
+// with runner command rc, each on a fresh server holding the fillers, settled
+// as kickResumeBenchServer's are.
 func benchAddManyUnderReserveLoad(b *testing.B, rc string) {
 	b.Helper()
 
@@ -503,6 +507,7 @@ func benchAddManyUnderReserveLoad(b *testing.B, rc string) {
 
 		fillers := kickResumeBenchFillerJobs(reqs)
 		kickResumeBenchAdd(b, jq, fillers)
+		settleStore(b, s)
 
 		item, err := s.q.Get(fillers[0].Key())
 		if err != nil {

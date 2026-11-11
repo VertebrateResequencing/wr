@@ -525,3 +525,441 @@ On round 4's code, `make lint` reports 0 issues, and `make test`,
 `WR_TEST_STORE=all make test` and `make race` each pass with 1,274 tests
 (scratch `HOME`, every `OS_*` variable unset). Review round 2 passed the
 fix.
+
+## Reserve latency fix
+
+Fix round 4's A/B failed `speed.sh` on the reserve latency of the
+`serve()`-based `*UnderReserveLoad` benchmarks, and on Kick's allocs/op. The
+bugfix checklist is
+[261110-reserve-latency-304bdcfa.md](../../bugfixes/261110-reserve-latency-304bdcfa.md).
+
+### Root cause
+
+Profiles and an instrumented copy of the queue (time from taking the
+queue's lock to releasing it, per resumed item, and time in the store's
+callback under it) on both trees, 1,000 resumes of 130KB-command jobs:
+
+| Tree, load | op | hold per item | store callback | lock held | reserve p50 |
+| --- | --- | --- | --- | --- | --- |
+| base, no reservers | 68-85ms | 4.5-5.2us | 0.6us | 6-7% | |
+| 09c38065, no reservers | 7-10ms | 6.0-7.5us | 3.9-5.0us | 71-82% | |
+| base, 8 reservers | 75-97ms | 5.3-6.7us | 0.9-1.2us | 7% | 9-11us |
+| 09c38065, 8 reservers | 10-19ms | 6.5-11.8us | 4.3-7.9us | 62-68% | 34-85us |
+
+The mutex profile puts the contention on the queue's lock, between the
+resume loop and the reserves; the log store's own locks contribute under
+0.1ms in all. No lock is held across I/O: the wal writer holds its mutex
+only to queue a frame. A runtime trace (`go tool trace -pprof=sched`) shows
+the reserves are not left runnable for long; they wait inside
+`sync.Mutex.Lock`. HEAD's reserve-p99 (1.05 to 1.35ms) sits just above Go's
+1ms mutex starvation threshold.
+
+Variants of the instrumented 09c38065 copy separate the causes:
+
+| Variant | op | reserve p50 |
+| --- | --- | --- |
+| a 70us spin per item outside the lock (bbolt's pacing) | 105-112ms | 17-26us |
+| that, and no store write in the callback | 88-96ms | 10-15us |
+| no store write in the callback, no spin | 5-7ms | 29-49us |
+| no store write, a 15us spin (lock held 13% of the time) | 25-29ms | 36-39us |
+| a yield after each item | 35-91ms | 10-43us |
+| no store write, a 5us spin, a yield after each item | 28-31ms | 3-5us |
+
+So:
+
+1. **The bulk loops starve reserves.** `kickJobs`, `resumeJobs` and
+   `suspendJobs` take the queue's lock once per job and go straight on to
+   the next job. Unlocking wakes one waiting reserve, which must then be
+   scheduled before it can take the lock; the loop takes it again sooner,
+   every time, until the reserve has waited 1ms and Go's mutex hands the
+   lock over. bbolt's 70us encode per job, outside the lock, left a gap
+   long enough for a waiter to get in. The log store has no such encode, so
+   the gap fell to a few microseconds. Even with the lock held only 13% of
+   the time, p50 stayed at 36-39us; a yield after each item brought it to
+   3-5us.
+2. **The log store writes under the queue's lock.** Its
+   `queueJobChangeAhead`, which the server calls inside the queue's
+   callback, encoded the state record and appended it to the wal: about
+   3us per call uncontended, all allocation and encoding, and 8 to 13us
+   with reserves running, against bbolt's 0.6us (bbolt encodes ahead, in
+   `prepareJobChange`). Paced like bbolt, this alone doubled reserve-p50.
+3. **AddManyUnderReserveLoad's p99 is a sampling artefact.** One add of
+   10,000 jobs, 8 rounds per tree, twice, counting the reserves slower than
+   each threshold per op:
+
+   | Tree | reserves per op | over 200us | over 500us | over 1ms | p99 |
+   | --- | --- | --- | --- | --- | --- |
+   | base | 8,270-15,509 | 13-69 | 10-43 | 8-29 | 74-145us |
+   | 09c38065 | 5,770-10,176 | 30-54 | 17-37 | 8-28 | 111-168us |
+
+   The slow reserves per op are about as many as base's. The add takes half
+   base's time, so it has fewer reserves in all, and the same slow reserves
+   make a higher percentile. The add's own hold of the queue's lock
+   (`AddMany`) causes 0.46s of contention over 3 rounds on HEAD against
+   0.51s on base.
+4. **Kick's allocs/op came from setup.** Kick's own allocations, measured
+   around the op alone, are 52-63k on base, 53.5k on 09c38065 and 54.6k
+   with this fix once the store has settled. Without settling they were
+   67-145k: the log store's folder was still folding the 21,000 jobs the
+   benchmark had just added, inside the timed window. That is the setup
+   cost fix round 3 removed from `BenchmarkAddDepGroupMember`.
+
+### Fix
+
+- `kickJobs`, `resumeJobs` and `suspendJobs` call `yieldQueueTurn`
+  (`runtime.Gosched`) after each job, so a reserve woken by the loop's
+  unlock runs on that processor before the loop takes the lock again.
+- The log store's `queueJobChangeAhead` now makes the change and takes its
+  state record's seq and run state (under the job's read lock and
+  `stateMu`, as before) and queues them. One goroutine at a time, started
+  by the push that finds none running (`logChangeQueue`), encodes and
+  appends the queued records. Seqs rank a key's records, so appending later
+  changes nothing about what recovery or the store's state see. A queued
+  record counts in the store's `writing`, so `flush` waits for it, and
+  `close` waits for the queue to drain before it closes the writer. Every
+  other write appends the changes queued before it first (`write`, under the
+  queue's `appendMu`), so a write made after a change is durable no earlier
+  than the change (added in review round 1, below). The spec's "Write path"
+  says so.
+- The `*UnderReserveLoad` benchmarks call `settleStore` before timing, as
+  `BenchmarkAddDepGroupMember` does since fix round 3. It does nothing on
+  bbolt; base's benchmarks are unchanged.
+
+Structural tests, red on 09c38065's code:
+
+- `TestBulkQueueOpsLetReservesIn` runs each bulk op over 200 jobs on one
+  processor with GC off and begins a reserve after the first job. It
+  requires the reserve to get a job before the op handles a third job.
+  Before the fix the reserve ran only after all 200.
+- `TestLogStoreJobChangeAppendedLater` (as rewritten in review round 1)
+  holds the store's change drain, makes 100 `queueJobChangeAhead` calls,
+  and requires each to return with its seq taken and its record queued,
+  not appended: 100 queued, where 09c38065 appends each on the caller and
+  queues none. It then checks all 100 are durable across a reopen. (Its
+  first version counted wal appends during the calls; that count was
+  process-wide and flaked.)
+
+### Speed A/B of the four benchmarks against d1a4b6d7
+
+Run on 2026-11-10, 19:15 to 20:47 GMT, on farm22-wrstat01, base and HEAD
+interleaved, 6 rounds of each at `-benchtime 1s`:
+
+```bash
+(unset $(compgen -v | grep '^OS_'); HOME=<scratch> \
+ SPEED_BASE=<scratch>/base-d1a4b6d7 SPEED_DIR=/nfs/hgi/wr/sb10-bigdb/customdb/1g4/rl-speed \
+ SPEED_BENCH='^Benchmark(KickUnderReserveLoad|ResumeUnderReserveLoad|SuspendUnderReserveLoad|AddManyUnderReserveLoad)$' \
+ SPEED_COUNT=6 SPEED_SCENARIOS=none developers/speed.sh quick)
+```
+
+Results: [rl-benchstat.txt](phase1-gate-1g4/rl-benchstat.txt), verdict
+[rl-verdict.txt](phase1-gate-1g4/rl-verdict.txt); the run directory is
+`/nfs/hgi/wr/sb10-bigdb/customdb/1g4/rl-speed/run-1794338151/`.
+
+| Figure | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| sec/op | -47.05% | -53.11% | -58.42% | -48.57% | -48.56% |
+| reserve-p50-us | ~ (+1.5%) | ~ (+3.8%) | ~ (-18.1%) | ~ (+7.8%) | ~ (+1.4%) |
+| reserve-p99-us | -78.14% | -74.52% | -82.91% | **+10.29% (p=0.009)** | ~ (+5.4%) |
+| reserve-max-us | -60.03% | -57.65% | -74.78% | ~ | ~ |
+| B/op | -96.71% | -97.67% | -97.85% | -4.73% | -5.11% |
+| allocs/op | -10.17% | -8.50% | -13.73% | -53.69% | -49.28% |
+
+Fix round 4's figures for the same benchmarks were reserve-p50 +244% to
++678%, reserve-p99 +64% to +121% (+18% to +20% on AddMany) and Kick
+allocs/op +11.45%. Every Kick, Resume and Suspend figure now passes, most of
+them far better than base: their reserve-p99 is a quarter of bbolt's.
+
+**`speed.sh` verdict: FAIL, on one figure**, AddManyUnderReserveLoad/norc's
+reserve-p99 (+10.29%). The fix as it stood for this run changed nothing
+an add runs (only the job-change write and the bulk loops), and this is
+the sampling artefact of point 3 above. Counting the add's slow reserves on
+this fix's tree against d1a4b6d7, both run at once, 4 rounds of each
+sub-benchmark ([rl-addmany-tail.txt](phase1-gate-1g4/rl-addmany-tail.txt)):
+
+| Tree | reserves per op | over 150us | over 500us | over 1ms |
+| --- | --- | --- | --- | --- |
+| base | 11,263-20,137 | 61-194 (mean 105) | 21-94 (mean 35) | 12-25 (mean 18) |
+| this fix | 7,222-10,992 | 56-125 (mean 89) | 17-49 (mean 31) | 14-31 (mean 22) |
+
+Per add, the add holds up about as many reserves as bbolt's (over 1ms, a
+mean of 22 against 18 here, and 16 against 17 in review round 2's runs
+below): its p99 is higher because the add is twice as fast, so its window
+holds 40% fewer reserves, and about the same number of slow ones make a
+higher percentile.
+
+Over wall time the picture differs. The add takes half as long, so the
+rate of slow reserves while an add runs is about double base's: over 1ms,
+about 73 a second against 32 here (55 against 30 in round 2's runs); over
+150us, about 297 a second against 184 (279 against 182). Judged per add,
+the add costs reserves no more than bbolt's; judged per second of add,
+reserves are held up up to twice as often, for half as long. Which view
+the gate should take is the gate owner's call; the gate was not changed.
+
+Review asked whether the add path has the pattern fixed above. It does
+not:
+
+- The add takes the queue's lock once, in `queue.AddMany`, and prepares
+  every item under that one hold; it never releases and re-takes the lock
+  per item. The queue package is unchanged since d1a4b6d7.
+- Under that hold it calls only server code that is the same on both trees
+  (`prepareForReady`, `recomputeJobRequirementsLocked`, `prepareReadyJob`;
+  `prepareBeforeQueueing` and `warmReqGroupRecs` run before it). The one
+  store call there, `cachedReqGroupRecs`, reads the same `reqStatCache` on
+  both stores, with no I/O. The log store writes the add's records before
+  the items are queued, outside the lock, as bbolt does.
+- Timing the `AddMany` hold in instrumented copies, one add of 10,000 jobs
+  with 8 reservers, settled, 8 rounds each: 16.3 to 18.9ms on base, 14.1
+  to 21.7ms on this fix (7 of 8 rounds at 14.1 to 16.2ms). Slow reserves
+  per op in the same runs: over 150us, 68-150 (mean 104) on base against
+  58-110 (mean 81) on this fix; over 1ms, 9-35 (mean 17) against 11-24
+  (mean 16).
+
+So nothing on the add path holds the queue's lock longer than base does,
+and per add it holds up about as many reserves; the p99 figure, and the
+per-add or per-second view of it, are left to the gate owner.
+
+### The settle step's effect
+
+This fix's code with and without the `settleStore` call in the four
+benchmarks, 6 interleaved rounds at `-benchtime 1s`, 21:28 to 22:45 GMT,
+`speed.sh` with `SPEED_BASE` a copy of this tree without the call:
+[rl-settle-benchstat.txt](phase1-gate-1g4/rl-settle-benchstat.txt), run
+directory `/nfs/hgi/wr/sb10-bigdb/customdb/1g4/rl-speed/run-1794346126/`.
+
+| Figure | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| sec/op | ~ | ~ | -12.86% | ~ | ~ |
+| B/op | -62.07% | -70.90% | -74.67% | -0.81% | -0.81% |
+| allocs/op | -31.58% (±21% to ±3%) | -42.06% (±38% to ±3%) | -46.16% (±26% to ±1%) | ~ | ~ |
+| reserve-p50-us | +21.17% (p=0.026) | +38.85% (p=0.041) | ~ | ~ | ~ |
+| reserve-p99-us | ~ | ~ | -22.53% | ~ | ~ |
+
+Without the wait, the fold of the setup's 21,000 adds lands in the timed
+window: it adds about 10MB and 40,000 allocations to each kick, resume or
+suspend, and its spread (±21% to ±38%) to theirs. The add benchmarks are
+unchanged by it, their own add being far larger than the fold's share.
+Settling also raises Kick's and Resume's reserve-p50 against the unsettled
+runs, to about base's level (against d1a4b6d7, settled: Kick 9.56us
+against 9.42us, Resume 12.59us against 12.13us, both not significant);
+unsettled, both were below base's. So the wait hides no regression in
+reserve latency; it removes setup work that had made HEAD look better
+there and worse on allocations.
+
+### Rerun of the rest of 1g.4's log store figures
+
+`BenchmarkAddDepGroupMember`, `report-storm` and `dep-granularity-check`
+against d1a4b6d7, 6 interleaved rounds each, 20:48 to 20:58 GMT, the fix
+round 4 command with `SPEED_BENCH='^BenchmarkAddDepGroupMember$'`,
+`SPEED_SCENARIOS="report-storm dep-granularity-check"` and
+`SPEED_SCENARIO_COUNT=6`:
+[rl-step6-benchstat.txt](phase1-gate-1g4/rl-step6-benchstat.txt), run
+directory `/nfs/hgi/wr/sb10-bigdb/customdb/1g4/rl-speed/run-1794343739/`.
+
+| Figure | base | HEAD + fix | delta |
+| --- | --- | --- | --- |
+| AddDepGroupMember sec/op | 359.5m | 284.5m | -20.85% |
+| AddDepGroupMember B/op | 102.0Mi | 110.9Mi | +8.68% |
+| AddDepGroupMember allocs/op | 1,175.7k | 602.5k | -48.75% |
+| report-storm jobs/s | 3,106 | 3,268 | ~ (p=0.13) |
+| report-storm max-archive-ms | 127.0 | 120.0 | ~ (p=0.97) |
+| report-storm wall-sec | 6.44 | 6.12 | ~ (p=0.13) |
+| dep-granularity add-sec | 515.0m | 326.5m | -36.60% |
+| dep-granularity peak RSS | 304.7Mi | 246.5Mi | -19.09% |
+| dep-granularity recovery-sec | 182.5m | 182.0m | ~ (p=0.70) |
+
+**`speed.sh` verdict: PASS**, and every scenario round met its thresholds.
+
+### Gates
+
+On the first round's code, each with a scratch `HOME` and every `OS_` variable
+unset, 20:58 to 21:25 GMT: `make lint` reports 0 issues, and `make test`,
+`WR_TEST_STORE=all make test` and `make race` each pass with 1,276 tests.
+Each of 7 mutants of the fix, each in a plain copy and each compiling, is
+killed (see the checklist). The incidental `TestReadFrameInto` gap is
+closed in the same checklist.
+
+### Review round 1 fixes, and the A/B on their code
+
+Review round 1 found five things, fixed as follows (details in the
+checklist):
+
+- `TestLogStoreJobChangeAppendedLater` could count another store's wal
+  appends (`logAppendedHook` is process-wide) and flaked once under load.
+  It now holds this store's change drain with a hook, checks that all 100
+  changes return with their seqs taken and their records queued, then
+  releases the drain and checks the records are durable across a reopen.
+  A reservation of one of the jobs made while its change is queued appends
+  the queued changes first and takes a later seq, so it is the record kept;
+  that checks wal order and seq agree, not that seq outranks wal order,
+  which `TestLogStoreStateSeqOrder` covers (two state records of a job
+  appended in reverse seq order; the later seq is kept before and after a
+  reopen), as do `TestLogStoreReducerOrder` and `TestLogStoreReducerSeqRules`
+  for the in-memory reducer. It
+  passed `-race -count 100` three times while a `-race -count 50` run of
+  the `TestLogStore*`, `TestLogHeld*` and `TestBulkQueueOpsLetReservesIn`
+  tests loaded the machine.
+- A panic appending a queued change exited the drain without closing it,
+  wedging flush, close and later adds of the key. `appendChange` now
+  recovers it per record, logs it at Crit with its stack and treats it as
+  a failed write (the record is lost, its key unnoted), and the drain goes
+  on; `TestLogStoreJobChangeAppendPanic` covers it.
+- `settleStore` now calls the store's `flush`, so the change queue is
+  drained too (the prepare step's bury, suspend and delay changes), not
+  only the fold.
+- `queueJobChangeAhead` and `lockedStateFrames` share `takeStateLocked`.
+- Comments and the wording above ("about as many", and the per-second view
+  of the add's slow reserves).
+
+The gates on those fixes found a defect in the deferred append itself:
+`make test` failed `TestResumeAfterChangeWritesResumedJob` once (Expected
+"ready", Actual "suspended"). That test relies on a durable write made
+after a change committing no earlier than the change, which held while the
+change was appended by its caller; with the change queued, the later write
+could be appended, and be durable, first. `write` now appends the changes
+queued before it first, under the queue's `appendMu`, which the drain also
+holds while it appends a batch, so appends again follow the order of calls.
+`TestLogStoreWriteAfterQueuedChange` pins it, and
+`TestLogStoreCloseWaitsForQueuedChanges` pins `close` waiting for the queue
+(the older `TestLogHeldCloseDrains` stopped catching that once writes
+append queued changes). The first A/B below was run before this change; the
+final A/B after it.
+
+The four benchmarks against d1a4b6d7 again, on this code, 6 interleaved
+rounds, 23:26 GMT on 2026-11-10 to 00:54 GMT on 2026-11-11, same command:
+[rl-r1-benchstat.txt](phase1-gate-1g4/rl-r1-benchstat.txt), verdict
+[rl-r1-verdict.txt](phase1-gate-1g4/rl-r1-verdict.txt), run directory
+`/nfs/hgi/wr/sb10-bigdb/customdb/1g4/rl-speed/run-1794353174/`.
+
+| Figure | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| sec/op | -49.40% | -56.84% | -60.04% | -50.13% | -49.16% |
+| reserve-p50-us | ~ (-4.8%) | ~ (-22.0%) | -18.36% | ~ (+15.3%) | ~ (+2.9%) |
+| reserve-p99-us | -70.35% | -80.14% | -73.45% | **+17.46% (p=0.004)** | **+16.11% (p=0.026)** |
+| reserve-max-us | -63.04% | -66.93% | -78.98% | ~ | ~ |
+| B/op | -96.74% | -97.72% | -97.76% | -4.97% | -4.83% |
+| allocs/op | -10.24% | ~ (-7.3%) | -9.76% | -54.15% | -48.49% |
+
+**`speed.sh` verdict: FAIL, on the two AddMany reserve-p99 figures** (+17%
+and +16%; +10% and +5% in the first A/B). The AddMany figures moved within
+their spread (±8% to ±18%).
+They are the per-add against per-second question above, left to the gate
+owner. Every Kick, Resume and Suspend figure passes.
+
+### Final A/B, on the code with all fixes
+
+The four benchmarks, `BenchmarkAddDepGroupMember`, report-storm and
+dep-granularity-check against d1a4b6d7, one `speed.sh` run, 6 interleaved
+rounds of each, 01:39 to 03:19 GMT on 2026-11-11 (the fix round 4 command
+with `SPEED_BENCH='^Benchmark(KickUnderReserveLoad|ResumeUnderReserveLoad|SuspendUnderReserveLoad|AddManyUnderReserveLoad|AddDepGroupMember)$'`,
+`SPEED_SCENARIOS="report-storm dep-granularity-check"` and
+`SPEED_SCENARIO_COUNT=6`):
+[rl-final-benchstat.txt](phase1-gate-1g4/rl-final-benchstat.txt), run
+directory `/nfs/hgi/wr/sb10-bigdb/customdb/1g4/rl-speed/run-1794361157/`.
+
+| Figure | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| sec/op | -50.09% | -57.20% | -62.60% | -50.12% | -49.76% |
+| reserve-p50-us | ~ (-9.9%) | ~ (-18.7%) | -21.47% | ~ (-1.6%) | ~ (+3.1%) |
+| reserve-p99-us | -65.93% | -76.32% | -80.11% | ~ (+9.7%, p=0.065) | ~ (+12.6%, p=0.093) |
+| reserve-max-us | -52.53% | -63.10% | -84.00% | ~ | ~ |
+| B/op | -96.74% | -97.79% | -97.80% | -5.24% | -4.85% |
+| allocs/op | -11.31% | -10.27% | -13.88% | -54.60% | -48.92% |
+
+| Figure | base | HEAD + fix | delta |
+| --- | --- | --- | --- |
+| AddDepGroupMember sec/op | 380.7m | 290.0m | -23.83% |
+| AddDepGroupMember B/op | 102.2Mi | 110.9Mi | +8.48% |
+| AddDepGroupMember allocs/op | 1,175.7k | 602.5k | -48.75% |
+| report-storm jobs/s | 3,150 | 3,265 | +3.66% |
+| report-storm max-archive-ms | 116.5 | 103.5 | ~ |
+| dep-granularity add-sec | 526.5m | 347.5m | -34.00% |
+| dep-granularity peak RSS | 303.3Mi | 254.2Mi | -16.19% |
+| dep-granularity recovery-sec | 195.0m | 192.0m | ~ |
+
+**`speed.sh` verdict: PASS**, and every scenario round met its thresholds.
+The AddMany reserve-p99 figures are 10-13% above base in this run but not
+significant; across the three A/Bs they were +10.29%/+5.4%, +17.46%/+16.11%
+and +9.7%/+12.6%. Since review round 1 an add's write goes through the
+changed `write`: it loads the change queue's `queued` count, and would
+append any changes queued before it (none are, during the benchmark's add).
+That is the only change on the add's path, and the add's hold of the
+queue's lock measured in review round 2 is no longer than base's, so this
+is still the per-add against per-second question above, for the gate
+owner.
+
+The settle step's effect table above was measured with round 0's
+`settleStore` (fold only); `settleStore` now also drains the change queue,
+which only moves the prepare step's queued changes, a few thousand state
+records, out of the timed window.
+
+Gates on the final code, each with a scratch `HOME` and every `OS_`
+variable unset, 01:10 to 01:39 GMT on 2026-11-11: `make lint` 0 issues;
+`make test`, `WR_TEST_STORE=all make test` and `make race` each pass with
+1,279 tests.
+
+### Review round 2 fixes (tests and docs)
+
+Review round 2 found no deadlock, ordering or durability defect, but gaps in
+the tests, which are now filled (each with a mutant it kills; see the
+checklist):
+
+- `TestLogStoreWriteWaitsForBatchBeingAppended` pins that a write made
+  while the drain is part way through a batch of queued changes waits for
+  the rest of the batch (`appendMu`, and `queued` falling only after each
+  append).
+- `TestLogStoreRevivingJobChange` pins that a change of a key a write in
+  flight is making live is appended once that write has finished.
+- `TestLogStoreDrainHoldsCloseMu` pins that the drain appends holding
+  `closeMu`, as the spec's "Write path" requires of every append.
+- A change's write that panics after counting itself in `writing` now
+  gives the count back, and a `finished` that panics is recovered
+  (`TestLogStoreJobChangeWritePanic`, `TestLogStoreJobChangeFinishPanic`).
+- The drain-holding test helper releases the drain before the store
+  closes, so no change test waits out the hold's 10s cap.
+
+Gates on this code, each with a scratch `HOME` and every `OS_` variable
+unset, 05:11 to 05:39 GMT on 2026-11-11: `make lint` reports 0 issues, and
+`make test`, `WR_TEST_STORE=all make test` and `make race` each pass with
+1,284 tests.
+
+The panic give-back adds a flag to the write path (`writeFramesCounted`),
+so the four benchmarks were run once more against d1a4b6d7, 6 interleaved
+rounds, 05:39 to 07:12 GMT:
+[rl-r2-benchstat.txt](phase1-gate-1g4/rl-r2-benchstat.txt), run directory
+`/nfs/hgi/wr/sb10-bigdb/customdb/1g4/rl-speed/run-1794375551/`.
+
+| Figure | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| sec/op | -50.10% | -51.22% | -63.17% | -47.27% | -49.59% |
+| reserve-p50-us | ~ | ~ | ~ | ~ | ~ |
+| reserve-p99-us | -73.98% | -72.81% | -82.54% | ~ (+15.5%) | **+23.37% (p=0.004)** |
+| reserve-max-us | -72.63% | -62.95% | -63.04% | ~ | -19.82% |
+| allocs/op | -10.08% | ~ | -11.98% | -53.59% | -49.23% |
+
+**`speed.sh` verdict: FAIL, on AddManyUnderReserveLoad/rc reserve-p99**
+(+23%). Every Kick, Resume and Suspend figure passes as before. The add's
+reserve-p99 (norc/rc) has now been +10%/+5% (FAIL), +17%/+16% (FAIL),
++10%/+13% (PASS) and +16%/+23% (FAIL) across four A/Bs. An add pays only the checks the changed write
+path makes (the `queued` load, and the `counted` flag in
+`writeFramesCounted`), and its hold of the queue's lock is no longer than
+base's, so this is the per-add against per-second question above, left to
+the gate owner.
+
+### Review round 3 fixes (tests and docs)
+
+Two more tests pin the change queue's drain:
+`TestLogStoreChangeQueuedDuringBatch` (a change queued while the drain appends an earlier batch is appended by
+that drain, not stranded) and `TestLogStoreChangeAfterClose` (a change
+queued after close is dropped and leaves no key noted as written and
+nothing counted in `writing`). Each kills the mutant review round 3 found
+surviving (see the checklist). No product code changed in this round but a
+comment, so the speed A/B was not rerun.
+
+Gates on this code, scratch `HOME`, every `OS_` variable unset, 07:36 to
+08:46 GMT on 2026-11-11: `make lint` 0 issues; `make test` and `make race`
+1,286 passed each. `WR_TEST_STORE=all make test` failed once on
+`TestClientAddAndWaitCancelledDuringOutage` (Line 252: the cancelled
+AddAndWait did not return within 3.8s), a known flake: in a load-matched
+A/B, this tree and 09c38065 run side by side 105 times each, it failed 1
+time on this tree and 3 times on 09c38065, always at that assertion. The
+rerun passed with 1,286 tests.

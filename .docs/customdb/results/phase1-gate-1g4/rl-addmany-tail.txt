@@ -1,0 +1,55 @@
+# TestInstAddManyTail (instrumented scratch copies, not committed): one add of 10,000 jobs under 8 reservers,
+# 4 rounds per sub-benchmark; counts of reserves slower than each threshold per op. Run 2026-11-10 about 20:48 GMT, both trees at once.
+# base = d1a4b6d7, fix = this fix
+base rc=false op=545ms reserves=11263 p99=90 >100us=101 >150us=75 >200us=61 >500us=24 >1ms=20
+base rc=false op=582ms reserves=19614 p99=148 >100us=296 >150us=194 >200us=160 >500us=94 >1ms=19
+base rc=false op=563ms reserves=15339 p99=141 >100us=274 >150us=137 >200us=92 >500us=35 >1ms=18
+base rc=false op=567ms reserves=16885 p99=123 >100us=260 >150us=101 >200us=53 >500us=22 >1ms=13
+base rc=true op=596ms reserves=12892 p99=93 >100us=116 >150us=61 >200us=43 >500us=28 >1ms=19
+base rc=true op=574ms reserves=13993 p99=109 >100us=180 >150us=66 >200us=46 >500us=21 >1ms=17
+base rc=true op=587ms reserves=14396 p99=129 >100us=250 >150us=109 >200us=66 >500us=35 >1ms=25
+base rc=true op=618ms reserves=20137 p99=112 >100us=272 >150us=97 >200us=63 >500us=23 >1ms=12
+fix rc=false op=289ms reserves=7227 p99=121 >100us=101 >150us=56 >200us=45 >500us=34 >1ms=29
+fix rc=false op=309ms reserves=9926 p99=147 >100us=222 >150us=96 >200us=72 >500us=44 >1ms=27
+fix rc=false op=288ms reserves=7393 p99=145 >100us=148 >150us=69 >200us=48 >500us=17 >1ms=16
+fix rc=false op=309ms reserves=10992 p99=155 >100us=246 >150us=115 >200us=73 >500us=36 >1ms=18
+fix rc=true op=286ms reserves=7222 p99=124 >100us=91 >150us=57 >200us=31 >500us=23 >1ms=23
+fix rc=true op=347ms reserves=9980 p99=170 >100us=224 >150us=125 >200us=83 >500us=49 >1ms=31
+fix rc=true op=315ms reserves=9816 p99=139 >100us=156 >150us=90 >200us=56 >500us=26 >1ms=18
+fix rc=true op=322ms reserves=10150 p99=153 >100us=221 >150us=106 >200us=65 >500us=19 >1ms=14
+
+# Earlier run, 09c38065 (before the fix) against d1a4b6d7, 2 x 8 rounds each, run one tree at a time:
+base rc=false op=578ms reserves=15128 p99=129 >100us=271 >150us=112 >200us=69 >500us=39 >1ms=27
+base rc=false op=531ms reserves=8984 p99=102 >100us=90 >150us=47 >200us=38 >500us=27 >1ms=18
+base rc=false op=528ms reserves=9273 p99=85 >100us=68 >150us=36 >200us=30 >500us=28 >1ms=20
+base rc=false op=542ms reserves=9331 p99=111 >100us=101 >150us=53 >200us=38 >500us=32 >1ms=16
+base rc=true op=543ms reserves=9697 p99=80 >100us=74 >150us=52 >200us=34 >500us=25 >1ms=20
+base rc=true op=564ms reserves=11796 p99=79 >100us=85 >150us=48 >200us=36 >500us=26 >1ms=10
+base rc=true op=554ms reserves=9409 p99=81 >100us=65 >150us=45 >200us=41 >500us=32 >1ms=24
+base rc=true op=537ms reserves=11409 p99=128 >100us=187 >150us=80 >200us=52 >500us=35 >1ms=29
+09c38065 rc=false op=237ms reserves=5792 p99=130 >100us=83 >150us=49 >200us=39 >500us=26 >1ms=16
+09c38065 rc=false op=255ms reserves=6658 p99=137 >100us=123 >150us=53 >200us=38 >500us=30 >1ms=17
+09c38065 rc=false op=265ms reserves=6725 p99=145 >100us=150 >150us=66 >200us=45 >500us=33 >1ms=15
+09c38065 rc=false op=247ms reserves=7131 p99=142 >100us=132 >150us=69 >200us=51 >500us=26 >1ms=18
+09c38065 rc=true op=266ms reserves=5770 p99=168 >100us=138 >150us=75 >200us=38 >500us=27 >1ms=16
+09c38065 rc=true op=291ms reserves=7818 p99=111 >100us=93 >150us=44 >200us=31 >500us=25 >1ms=16
+09c38065 rc=true op=309ms reserves=10176 p99=146 >100us=230 >150us=96 >200us=47 >500us=20 >1ms=12
+09c38065 rc=true op=289ms reserves=9290 p99=136 >100us=162 >150us=82 >200us=51 >500us=22 >1ms=17
+
+# Review round 2, about 21:30 GMT: the same, settled (settleStore), with the AddMany hold of the queue's lock timed; one tree at a time.
+base hold=16.256ms rc=false op=550ms reserves=15470 p99=113 >100us=213 >150us=89 >200us=56 >500us=37 >1ms=12
+base hold=16.907ms rc=false op=565ms reserves=17811 p99=133 >100us=331 >150us=133 >200us=79 >500us=35 >1ms=19
+base hold=18.301ms rc=false op=578ms reserves=18483 p99=124 >100us=310 >150us=107 >200us=69 >500us=34 >1ms=16
+base hold=16.279ms rc=false op=563ms reserves=18262 p99=135 >100us=339 >150us=150 >200us=97 >500us=26 >1ms=9
+base hold=16.516ms rc=true op=578ms reserves=15990 p99=116 >100us=237 >150us=84 >200us=36 >500us=16 >1ms=13
+base hold=18.88ms rc=true op=559ms reserves=15694 p99=115 >100us=226 >150us=76 >200us=51 >500us=25 >1ms=16
+base hold=18.315ms rc=true op=592ms reserves=17687 p99=132 >100us=338 >150us=122 >200us=62 >500us=28 >1ms=16
+base hold=17.139ms rc=true op=585ms reserves=13885 p99=108 >100us=163 >150us=68 >200us=42 >500us=35 >1ms=35
+fix hold=14.078ms rc=false op=264ms reserves=7331 p99=141 >100us=179 >150us=64 >200us=34 >500us=17 >1ms=12
+fix hold=15.255ms rc=false op=292ms reserves=11226 p99=138 >100us=244 >150us=94 >200us=59 >500us=33 >1ms=17
+fix hold=14.74ms rc=false op=288ms reserves=7799 p99=145 >100us=194 >150us=72 >200us=38 >500us=26 >1ms=16
+fix hold=16.18ms rc=false op=298ms reserves=9013 p99=147 >100us=167 >150us=90 >200us=52 >500us=17 >1ms=16
+fix hold=16.06ms rc=true op=279ms reserves=8539 p99=135 >100us=165 >150us=68 >200us=36 >500us=16 >1ms=16
+fix hold=14.481ms rc=true op=294ms reserves=8075 p99=136 >100us=201 >150us=58 >200us=32 >500us=12 >1ms=11
+fix hold=21.669ms rc=true op=314ms reserves=9801 p99=147 >100us=242 >150us=90 >200us=46 >500us=27 >1ms=24
+fix hold=14.813ms rc=true op=282ms reserves=9699 p99=160 >100us=206 >150us=110 >200us=63 >500us=21 >1ms=15

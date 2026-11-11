@@ -825,5 +825,24 @@ func TestReadFrameInto(t *testing.T) {
 
 			So(read(0), ShouldResemble, []string{"b", "cc"})
 		})
+
+		Convey("a plain frame's payload is read into the FrameBuffers, and its storage reused", func() {
+			bufs := new(FrameBuffers)
+			read := func() {
+				So(ReadFrameInto(f, plainOff, bufs, func(_ Ref, rec []byte) error {
+					So(string(rec), ShouldEqual, "plain")
+
+					return nil
+				}), ShouldBeNil)
+			}
+
+			read()
+
+			size := bufs.Size()
+			So(size, ShouldBeGreaterThanOrEqualTo, len("plain"))
+
+			read()
+			So(bufs.Size(), ShouldEqual, size)
+		})
 	})
 }

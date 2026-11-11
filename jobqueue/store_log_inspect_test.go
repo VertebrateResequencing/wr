@@ -216,9 +216,9 @@ func (s *logStore) forceBackup() error {
 	return s.backupTick()
 }
 
-// flush waits until every write appended so far has finished, then folds
-// them, so that what the folder writes, such as learned-requirement samples,
-// is there too.
+// flush waits until every write appended, and every job change queued, so far
+// has finished, then folds them, so that what the folder writes, such as
+// learned-requirement samples, is there too.
 func (s *logStore) flush() error {
 	for s.writing.Load() != 0 {
 		time.Sleep(logStoreFlushPoll)

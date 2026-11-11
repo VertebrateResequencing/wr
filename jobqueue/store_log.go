@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -115,6 +116,15 @@ var (
 	// taken its records' seqs and released its locks, before it makes and
 	// appends its records.
 	logTransitionSeqsHook func() //nolint:gochecknoglobals // a test seam
+
+	// logChangeDrainHook is called with the store by each drain of its change
+	// queue (see logChangeQueue) as it starts, before it takes any record.
+	logChangeDrainHook atomic.Pointer[func(*logStore)] //nolint:gochecknoglobals // a test seam
+
+	// logChangeAppendHook is called with the store before each record of its
+	// change queue is encoded and appended, by the drain or by a write
+	// appending the records queued before it.
+	logChangeAppendHook atomic.Pointer[func(*logStore)] //nolint:gochecknoglobals // a test seam
 
 	// logArchiveDecidedHook is called by an archive once it has decided what
 	// it does with its job's live record and made its records, before it
@@ -219,6 +229,71 @@ type jobRecord struct {
 	which int
 }
 
+// logQueuedChange is a state record of k, with seq and run state rs, whose
+// write calls finished once it has finished or failed to append.
+type logQueuedChange struct {
+	k        logKey
+	seq      uint64
+	rs       logRunState
+	finished func()
+}
+
+// appendChange encodes and appends c, without waiting for it; the caller holds
+// closeMu's read lock and the change queue's appendMu. A panic doing so
+// is logged with its stack and treated as a failed append, as the store treats
+// a failed write: the record is lost, its key is no longer noted as written
+// (finished), and the drain goes on to the next, so the store is never left
+// with records it will not write, a writing count that never falls, or a drain
+// that close waits for in vain.
+func (s *logStore) appendChange(c *logQueuedChange) {
+	finished := sync.OnceFunc(c.finished)
+
+	var counted, returned bool
+
+	defer func() {
+		if r := recover(); r != nil {
+			s.changePanicked(r, finished, counted && !returned)
+		}
+	}()
+
+	if fn := logChangeAppendHook.Load(); fn != nil {
+		(*fn)(s)
+	}
+
+	var f logFrames
+
+	s.addStateAt(&f, logRecState, c.seq, c.k, &c.rs)
+
+	_, err := s.writeFramesCounted(&f, finished, &counted)
+	returned = true
+
+	if err != nil {
+		finished()
+
+		clog.Error(s.ctx, "Database operation updateJobAfterChange failed", "err", err)
+	}
+}
+
+// changePanicked handles a panic, r, appending a queued change: it logs it with
+// its stack, gives back the write's count in writing if the write had counted
+// itself and could not finish (uncounted), and calls finished, recovering a
+// panic of its own, so the panic never escapes the drain.
+func (s *logStore) changePanicked(r any, finished func(), uncounted bool) {
+	clog.Crit(s.ctx, "jobqueue log store change appender panic", "err", r, "panic_stack", string(debug.Stack()))
+
+	if uncounted {
+		s.writing.Add(-1)
+	}
+
+	defer func() {
+		if rf := recover(); rf != nil {
+			clog.Crit(s.ctx, "jobqueue log store change appender panic finishing a change", "err", rf)
+		}
+	}()
+
+	finished()
+}
+
 // undone returns, sorted, the keys of the jobs depending on depGroup not
 // already done, marking them done.
 func (d *logDependentsScan) undone(depGroup string) []logKey {
@@ -243,6 +318,84 @@ func (d *logDependentsScan) notLive(keys []logKey, live []*Job) []logKey {
 	}
 
 	return others
+}
+
+// logChangeQueue holds the state records queueJobChangeAhead has taken the
+// seqs and run states of, until one goroutine at a time, started by the push
+// that finds none running, encodes and appends them. A record appended after
+// a later seq's is no different from one appended before it: recovery and the
+// store's state rank a key's state records by seq. Any other write appends
+// the records queued before it first (see write), so it is durable no earlier
+// than they are. Each pushed record counts in the store's writing until it has
+// been appended, so flush waits for it, and close waits for the queue to be
+// drained before it closes the writer.
+type logChangeQueue struct {
+	mu      sync.Mutex
+	pending []logQueuedChange
+	drained chan struct{} // closed once the running drain stops; nil if none
+
+	// appendMu is held by whoever appends queued records, for as long as it
+	// appends a batch it has taken, so a write that appends those queued
+	// before it (see logStore.write) waits for a batch being appended.
+	appendMu sync.Mutex
+
+	// queued counts the records pushed and not yet appended (or failed).
+	queued atomic.Int64
+}
+
+// push queues c, starting a drain of s's queue if none is running.
+func (q *logChangeQueue) push(s *logStore, c logQueuedChange) {
+	s.writing.Add(1)
+	q.queued.Add(1)
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.pending = append(q.pending, c)
+
+	if q.drained == nil {
+		q.drained = make(chan struct{})
+
+		go s.drainChanges()
+	}
+}
+
+// take returns the queued records, leaving none queued.
+func (q *logChangeQueue) take() []logQueuedChange {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	pending := q.pending
+	q.pending = nil
+
+	return pending
+}
+
+// endDrainIfEmpty ends the running drain and returns true if no records are
+// queued.
+func (q *logChangeQueue) endDrainIfEmpty() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if len(q.pending) != 0 {
+		return false
+	}
+
+	close(q.drained)
+	q.drained = nil
+
+	return true
+}
+
+// wait returns once no drain is running.
+func (q *logChangeQueue) wait() {
+	q.mu.Lock()
+	drained := q.drained
+	q.mu.Unlock()
+
+	if drained != nil {
+		<-drained
+	}
 }
 
 // openBackedLogStore is openLogStore with inc, if not nil, making the store's
@@ -523,6 +676,138 @@ func (s *logStore) putReadBufs(bufs *wal.FrameBuffers) {
 	if s.readBufs == nil {
 		s.readBufs = bufs
 	}
+}
+
+// drainChanges appends the records queued in s's change queue until it is
+// empty.
+//
+// It takes closeMu's read lock before the queue's appendMu, as a write that
+// appends the queued records itself does, so it never holds appendMu while
+// waiting behind a close for closeMu. Once the store is closed, the records
+// it finds are failed, as an append after close is.
+func (s *logStore) drainChanges() {
+	if fn := logChangeDrainHook.Load(); fn != nil {
+		(*fn)(s)
+	}
+
+	for {
+		s.closeMu.RLock()
+
+		if s.closed {
+			s.failQueuedChanges()
+		} else {
+			s.appendQueuedChanges()
+		}
+
+		s.closeMu.RUnlock()
+
+		if s.changes.endDrainIfEmpty() {
+			return
+		}
+	}
+}
+
+// appendQueuedChanges appends the records queued in s's change queue, in the
+// order they were queued, once any batch being appended has been. The caller
+// holds closeMu's read lock and the store is not closed.
+func (s *logStore) appendQueuedChanges() {
+	q := &s.changes
+
+	q.appendMu.Lock()
+	defer q.appendMu.Unlock()
+
+	pending := q.take()
+	for i := range pending {
+		s.appendChange(&pending[i])
+		s.writing.Add(-1)
+		q.queued.Add(-1)
+	}
+}
+
+// failQueuedChanges drops the records queued in s's change queue, as an append
+// after close fails, finishing each.
+func (s *logStore) failQueuedChanges() {
+	q := &s.changes
+
+	q.appendMu.Lock()
+	defer q.appendMu.Unlock()
+
+	for _, c := range q.take() {
+		c.finished()
+		s.writing.Add(-1)
+		q.queued.Add(-1)
+	}
+}
+
+// takeStateLocked takes job's run state and the seq of its state record, as
+// k's, for a caller that has taken job's read lock and then stateMu, as
+// lockUnlessReviving does, which it releases, and returns them with the func
+// to call once the record's write has finished (see addTransition).
+func (s *logStore) takeStateLocked(job *Job, k logKey) (logRunState, uint64, func()) {
+	var (
+		rs  logRunState
+		seq uint64
+	)
+
+	finished := s.addTransitionLocked(job, k, func() bool {
+		rs, seq = newLogRunState(job), s.nextSeq()
+
+		return true
+	})
+
+	if logTransitionSeqsHook != nil {
+		logTransitionSeqsHook()
+	}
+
+	return rs, seq, finished
+}
+
+// writeFrames is write, without first appending the queued job changes.
+func (s *logStore) writeFrames(f *logFrames, after func()) (*logWrite, error) {
+	var counted bool
+
+	return s.writeFramesCounted(f, after, &counted)
+}
+
+// countWrite counts a write in writing, which it gives back once it
+// finishes, and sets *counted.
+func (s *logStore) countWrite(counted *bool) {
+	s.writing.Add(1)
+
+	*counted = true
+}
+
+// writeFramesCounted is writeFrames, setting *counted once the write has
+// counted itself in writing, which it gives back once it finishes.
+func (s *logStore) writeFramesCounted(f *logFrames, after func(), counted *bool) (*logWrite, error) {
+	gen := s.enterAppend()
+	defer s.exitAppend(gen)
+
+	w := &logWrite{s: s, ops: f.ops, block: len(f.ops) > 1, after: after, fin: make(chan struct{})}
+	w.chunks = f.chunks(logBlockMaxFrames)
+	w.errs = make([]error, len(w.chunks))
+	w.left.Store(int32(len(w.chunks) + 1)) //nolint:gosec // a handful of chunks
+
+	if !w.block {
+		s.countWrite(counted)
+
+		ref, _ := s.w.Append(f.frames[wal.FrameHeader:], w.doneFor(0))
+		w.placed([]wal.Ref{ref})
+
+		return w, nil
+	}
+
+	blocks, ns, err := f.blocks(w.chunks)
+	if err != nil {
+		return nil, err
+	}
+
+	s.countWrite(counted)
+
+	refs, _ := s.w.AppendBlocks(blocks, ns, w.dones(len(blocks)))
+	w.placed(refs)
+
+	return w, nil
 }
 
 // logStateCommit is the durability of a state record appendState appends:
@@ -1078,22 +1363,9 @@ func (s *logStore) stateFrames(job *Job, k logKey) (logFrames, func()) {
 // lockedStateFrames is stateFrames for a caller that has taken job's read lock
 // and then stateMu, as lockUnlessReviving does, which it releases.
 func (s *logStore) lockedStateFrames(job *Job, k logKey) (logFrames, func()) {
-	var (
-		f   logFrames
-		rs  logRunState
-		seq uint64
-	)
+	var f logFrames
 
-	finished := s.addTransitionLocked(job, k, func() bool {
-		rs, seq = newLogRunState(job), s.nextSeq()
-
-		return true
-	})
-
-	if logTransitionSeqsHook != nil {
-		logTransitionSeqsHook()
-	}
-
+	rs, seq, finished := s.takeStateLocked(job, k)
 	s.addStateAt(&f, logRecState, seq, k, &rs)
 
 	return f, finished
@@ -1266,24 +1538,38 @@ func (s *logStore) prepareJobChange(context.Context, *Job, func(*Job)) *jobChang
 	return nil
 }
 
-// queueJobChangeAhead makes change to job under its write lock, then appends
-// job's state record without waiting for it (see appendState). Its seq is taken
-// under job's read lock, so a later change of job, or its next reservation,
-// takes a later one, and recovery sees whichever was made last. ahead is
-// always nil, as prepareJobChange gives.
+// queueJobChangeAhead makes change to job under its write lock, then takes
+// the seq of job's state record and the run state it records, under job's read
+// lock, so a later change of job, or its next reservation, takes a later seq,
+// and recovery sees whichever was made last. It leaves the record to be
+// encoded and appended by the store's change appender (see logChangeQueue),
+// without waiting for it. ahead is always nil, as prepareJobChange gives.
+//
+// The server calls it with its queue locked: once per job of a kick, resume or
+// suspend, and in releaseAbandonedItem, under ReleaseWith. The less it does
+// there, the sooner a reserve waiting on the queue gets in.
 func (s *logStore) queueJobChangeAhead(ctx context.Context, job *Job, _ *jobChangeAhead, change func(*Job)) {
 	job.Lock()
 	change(job)
 	job.Unlock()
 
 	k, err := parseLogKey(job.Key())
-	if err == nil {
-		_, err = s.appendState(job, k).WaitWithin(0)
+	if err != nil {
+		clog.Error(ctx, "Database operation updateJobAfterChange failed", "err", err)
+
+		return
 	}
 
-	if err != nil && !errors.Is(err, errDBClosed) {
-		clog.Error(ctx, "Database operation updateJobAfterChange failed", "err", err)
+	if s.lockIfNotReviving(job, k) != nil {
+		go (&logStateCommit{appended: make(chan struct{})}).append(s, job, k, s.stateFrames)
+
+		return
 	}
+
+	c := logQueuedChange{k: k}
+	c.rs, c.seq, c.finished = s.takeStateLocked(job, k)
+
+	s.changes.push(s, c)
 }
 
 // moveJobChangeAhead returns nil, ahead being always nil.
@@ -1501,8 +1787,12 @@ type logStore struct {
 	archiveTxs  int
 	rerunGuards rerunGuards
 
-	// writing counts the writes appended and not yet finished, and
-	// exitUpdates the exit updates expected or not yet finished.
+	// changes queues the state records of job changes for appending.
+	changes logChangeQueue
+
+	// writing counts the writes appended and not yet finished, and the job
+	// changes queued and not yet appended, and exitUpdates the exit updates
+	// expected or not yet finished.
 	writing     atomic.Int64
 	exitUpdates atomic.Int64
 
@@ -1686,35 +1976,17 @@ func (s *logStore) reportStats() {
 // group, such as a job's records, is never separated. after, if not nil, is
 // called once the write has finished. The caller holds closeMu for reading and
 // has checked closed.
+//
+// It first appends the job changes queued before it (see logChangeQueue), so
+// a write made after a change is appended after it and is durable no earlier,
+// as when the change was appended by its caller: a durable write made after a
+// change implies the change is durable too.
 func (s *logStore) write(f *logFrames, after func()) (*logWrite, error) {
-	gen := s.enterAppend()
-	defer s.exitAppend(gen)
-
-	w := &logWrite{s: s, ops: f.ops, block: len(f.ops) > 1, after: after, fin: make(chan struct{})}
-	w.chunks = f.chunks(logBlockMaxFrames)
-	w.errs = make([]error, len(w.chunks))
-	w.left.Store(int32(len(w.chunks) + 1)) //nolint:gosec // a handful of chunks
-
-	if !w.block {
-		s.writing.Add(1)
-
-		ref, _ := s.w.Append(f.frames[wal.FrameHeader:], w.doneFor(0))
-		w.placed([]wal.Ref{ref})
-
-		return w, nil
+	if s.changes.queued.Load() != 0 {
+		s.appendQueuedChanges()
 	}
 
-	blocks, ns, err := f.blocks(w.chunks)
-	if err != nil {
-		return nil, err
-	}
-
-	s.writing.Add(1)
-
-	refs, _ := s.w.AppendBlocks(blocks, ns, w.dones(len(blocks)))
-	w.placed(refs)
-
-	return w, nil
+	return s.writeFrames(f, after)
 }
 
 // writeAndWait is write then wait, with closeMu held for the write.
@@ -1740,13 +2012,16 @@ func (s *logStore) writeOpen(f *logFrames, after func()) (*logWrite, error) {
 	return s.write(f, after)
 }
 
-// close makes every record appended before it durable, then refuses further
-// writes and backups with errDBClosed. It waits for a backup in progress, which
-// then fails with errDBClosed unless it had already sealed its last wal file.
-// With periodic incremental backups, it waits for a tick in progress, then,
-// after the writer's last commit, runs one final tick (spec E4), as the bbolt
-// store writes a final backup on close.
+// close makes every record appended, or queued as a job change (see
+// logChangeQueue), before it durable, then refuses further writes and backups
+// with errDBClosed. It waits for a backup in progress, which then fails with
+// errDBClosed unless it had already sealed its last wal file. With periodic
+// incremental backups, it waits for a tick in progress, then, after the
+// writer's last commit, runs one final tick (spec E4), as the bbolt store
+// writes a final backup on close.
 func (s *logStore) close(ctx context.Context) error {
+	s.changes.wait()
+
 	s.closeMu.Lock()
 	already := s.closed
 	s.closed = true

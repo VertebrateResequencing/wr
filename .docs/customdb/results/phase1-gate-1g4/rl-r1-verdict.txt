@@ -1,0 +1,4 @@
+================ verdict ================
+  REGRESSION AddManyUnderReserveLoad/norc-8 reserve-p99-us: +17.46% (p=0.004)
+  REGRESSION AddManyUnderReserveLoad/rc-8 reserve-p99-us: +16.11% (p=0.026)
+FAIL: make speed found 2 problem(s) (threshold 10% at p<0.05)

@@ -1,0 +1,81 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                               │     base      │                head                 │
+                               │    sec/op     │    sec/op     vs base               │
+AddDepGroupMember-8               380.7m ±  8%   290.0m ±  9%  -23.83% (p=0.002 n=6)
+KickUnderReserveLoad-8           115.85m ±  8%   57.83m ± 22%  -50.09% (p=0.002 n=6)
+ResumeUnderReserveLoad-8         110.64m ± 16%   47.35m ± 26%  -57.20% (p=0.002 n=6)
+SuspendUnderReserveLoad-8        104.17m ± 13%   38.95m ±  8%  -62.60% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8    584.7m ±  6%   291.6m ±  5%  -50.12% (p=0.002 n=6)
+AddManyUnderReserveLoad/rc-8      614.1m ±  6%   308.5m ±  8%  -49.76% (p=0.002 n=6)
+geomean                           238.2m         118.6m        -50.20%
+                               │      base      │                 head                 │
+                               │      B/op      │     B/op       vs base               │
+AddDepGroupMember-8                102.2Mi ± 0%   110.9Mi ±  0%   +8.48% (p=0.002 n=6)
+KickUnderReserveLoad-8           193.947Mi ± 6%   6.330Mi ±  9%  -96.74% (p=0.002 n=6)
+ResumeUnderReserveLoad-8         190.923Mi ± 4%   4.224Mi ± 21%  -97.79% (p=0.002 n=6)
+SuspendUnderReserveLoad-8        181.281Mi ± 4%   3.983Mi ±  2%  -97.80% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8     159.5Mi ± 0%   151.2Mi ±  0%   -5.24% (p=0.002 n=6)
+AddManyUnderReserveLoad/rc-8       161.0Mi ± 1%   153.2Mi ±  0%   -4.85% (p=0.002 n=6)
+geomean                            161.3Mi        25.48Mi        -84.21%
+                               │     base      │                head                │
+                               │   allocs/op   │  allocs/op   vs base               │
+AddDepGroupMember-8              1175.7k ±  0%   602.5k ± 0%  -48.75% (p=0.002 n=6)
+KickUnderReserveLoad-8            99.95k ±  4%   88.65k ± 2%  -11.31% (p=0.002 n=6)
+ResumeUnderReserveLoad-8          61.65k ± 11%   55.31k ± 5%  -10.27% (p=0.004 n=6)
+SuspendUnderReserveLoad-8         58.71k ± 14%   50.56k ± 2%  -13.88% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8    806.9k ±  1%   366.4k ± 1%  -54.60% (p=0.002 n=6)
+AddManyUnderReserveLoad/rc-8      901.2k ±  2%   460.3k ± 1%  -48.92% (p=0.002 n=6)
+geomean                           260.1k         171.2k       -34.16%
+                               │      base      │                 head                  │
+                               │ reserve-max-us │ reserve-max-us  vs base               │
+KickUnderReserveLoad-8             6.244k ± 39%    2.964k ±  70%  -52.53% (p=0.002 n=6)
+ResumeUnderReserveLoad-8           6.831k ± 32%    2.521k ±  67%  -63.10% (p=0.002 n=6)
+SuspendUnderReserveLoad-8          6.824k ± 38%    1.092k ± 295%  -84.00% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8     17.61k ±  7%    17.50k ±  25%        ~ (p=0.818 n=6)
+AddManyUnderReserveLoad/rc-8       23.90k ± 29%    19.70k ±  27%        ~ (p=0.180 n=6)
+geomean                            10.41k          4.896k         -52.98%
+                               │      base      │                 head                  │
+                               │ reserve-p50-us │ reserve-p50-us  vs base               │
+KickUnderReserveLoad-8              8.638 ±  7%      7.786 ± 94%        ~ (p=0.937 n=6)
+ResumeUnderReserveLoad-8            13.81 ± 27%      11.23 ± 90%        ~ (p=0.394 n=6)
+SuspendUnderReserveLoad-8          10.955 ± 14%      8.602 ± 19%  -21.47% (p=0.009 n=6)
+AddManyUnderReserveLoad/norc-8      7.077 ± 13%      6.962 ± 24%        ~ (p=0.909 n=6)
+AddManyUnderReserveLoad/rc-8        6.020 ± 35%      6.207 ± 41%        ~ (p=0.240 n=6)
+geomean                             8.895            7.987        -10.21%
+                               │      base      │                 head                  │
+                               │ reserve-p99-us │ reserve-p99-us  vs base               │
+KickUnderReserveLoad-8              418.4 ± 50%      142.6 ± 37%  -65.93% (p=0.002 n=6)
+ResumeUnderReserveLoad-8            655.2 ± 32%      155.2 ± 22%  -76.32% (p=0.002 n=6)
+SuspendUnderReserveLoad-8           637.7 ± 25%      126.8 ±  6%  -80.11% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8      138.7 ± 11%      152.1 ± 12%        ~ (p=0.065 n=6)
+AddManyUnderReserveLoad/rc-8        122.4 ± 11%      137.8 ± 12%        ~ (p=0.093 n=6)
+geomean                             312.2            142.5        -54.35%
+                               │     base      │                head                 │
+                               │  reserves/op  │ reserves/op   vs base               │
+KickUnderReserveLoad-8            5.875k ±  8%   4.311k ±  9%  -26.62% (p=0.002 n=6)
+ResumeUnderReserveLoad-8          5.032k ± 17%   3.708k ±  8%  -26.31% (p=0.002 n=6)
+SuspendUnderReserveLoad-8         4.918k ±  7%   3.194k ±  7%  -35.05% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8   17.362k ± 14%   8.569k ± 11%  -50.65% (p=0.002 n=6)
+AddManyUnderReserveLoad/rc-8     16.826k ± 20%   9.454k ± 11%  -43.82% (p=0.002 n=6)
+geomean                           8.426k         5.288k        -37.24%
+                    │    base     │               head                │
+                    │   jobs/s    │   jobs/s     vs base              │
+ScenarioReportStorm   3.150k ± 3%   3.265k ± 2%  +3.66% (p=0.011 n=6)
+                    │      base      │              head               │
+                    │ max-archive-ms │ max-archive-ms  vs base         │
+ScenarioReportStorm      116.5 ± 39%      103.5 ± 46%  ~ (p=0.848 n=6)
+                    │    base    │               head               │
+                    │  wall-sec  │  wall-sec   vs base              │
+ScenarioReportStorm   6.350 ± 3%   6.125 ± 2%  -3.54% (p=0.011 n=6)
+                       │     base     │                head                 │
+                       │  peak-rss-B  │  peak-rss-B   vs base               │
+ScenarioDepGranularity   303.3Mi ± 2%   254.2Mi ± 2%  -16.19% (p=0.002 n=6)
+                       │     base     │             head              │
+                       │ recovery-sec │ recovery-sec  vs base         │
+ScenarioDepGranularity   195.0m ± 12%    192.0m ± 7%  ~ (p=0.082 n=6)
+                       │    base     │                head                │
+                       │   add-sec   │   add-sec    vs base               │
+ScenarioDepGranularity   526.5m ± 8%   347.5m ± 5%  -34.00% (p=0.002 n=6)

@@ -107,14 +107,15 @@ func BenchmarkAddDepGroupMember(b *testing.B) {
 }
 
 // settleStore waits until s's store has done the background work it has
-// pending for what has been stored so far: the log store's folder has folded
-// all of it into its history database. bbolt does no such work, so for it
-// this does nothing.
+// pending for what has been stored so far: the log store has appended every
+// job change it queued and its writes have finished, and its folder has folded
+// all of it into its history database (see flush). bbolt does no such work, so
+// for it this does nothing.
 func settleStore(tb testing.TB, s *Server) {
 	tb.Helper()
 
 	if ls, ok := s.db.(*logStore); ok {
-		if err := ls.foldNow(); err != nil {
+		if err := ls.flush(); err != nil {
 			tb.Fatal(err)
 		}
 	}

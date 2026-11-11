@@ -1,0 +1,60 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                               │   no settle  │               settle                │
+                               │    sec/op    │    sec/op     vs no settle               │
+KickUnderReserveLoad-8           58.59m ±  5%   59.28m ± 23%        ~ (p=0.485 n=6)
+ResumeUnderReserveLoad-8         47.19m ± 10%   50.60m ± 18%        ~ (p=0.180 n=6)
+SuspendUnderReserveLoad-8        42.39m ± 11%   36.94m ±  4%  -12.86% (p=0.004 n=6)
+AddManyUnderReserveLoad/norc-8   294.7m ± 11%   287.6m ±  6%        ~ (p=0.485 n=6)
+AddManyUnderReserveLoad/rc-8     303.6m ±  2%   305.4m ± 10%        ~ (p=0.589 n=6)
+geomean                          101.0m         99.46m         -1.48%
+                               │    no settle   │                settle                 │
+                               │ reserve-max-us │ reserve-max-us  vs no settle               │
+KickUnderReserveLoad-8            1.867k ± 246%    2.249k ± 231%        ~ (p=0.394 n=6)
+ResumeUnderReserveLoad-8          2.258k ±  73%    3.785k ±  61%        ~ (p=0.093 n=6)
+SuspendUnderReserveLoad-8         4.051k ± 100%    1.591k ± 146%  -60.74% (p=0.041 n=6)
+AddManyUnderReserveLoad/norc-8    17.87k ±  28%    17.35k ±  32%        ~ (p=0.699 n=6)
+AddManyUnderReserveLoad/rc-8      18.69k ±  34%    18.84k ±  45%        ~ (p=0.937 n=6)
+geomean                           5.639k           5.361k          -4.94%
+                               │    no settle   │                settle                 │
+                               │ reserve-p50-us │ reserve-p50-us  vs no settle               │
+KickUnderReserveLoad-8              7.850 ± 37%      9.512 ± 58%  +21.17% (p=0.026 n=6)
+ResumeUnderReserveLoad-8            10.48 ± 16%      14.55 ± 27%  +38.85% (p=0.041 n=6)
+SuspendUnderReserveLoad-8           9.156 ± 12%      8.376 ±  9%        ~ (p=0.132 n=6)
+AddManyUnderReserveLoad/norc-8      6.704 ± 24%      6.759 ± 20%        ~ (p=0.818 n=6)
+AddManyUnderReserveLoad/rc-8        6.848 ± 15%      6.735 ± 15%        ~ (p=0.699 n=6)
+geomean                             8.086            8.799         +8.82%
+                               │    no settle   │                settle                 │
+                               │ reserve-p99-us │ reserve-p99-us  vs no settle               │
+KickUnderReserveLoad-8              155.9 ± 19%      153.7 ± 29%        ~ (p=0.909 n=6)
+ResumeUnderReserveLoad-8            172.9 ± 15%      176.5 ± 21%        ~ (p=0.699 n=6)
+SuspendUnderReserveLoad-8           162.7 ± 18%      126.0 ±  4%  -22.53% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8      157.2 ± 13%      147.0 ± 18%        ~ (p=0.240 n=6)
+AddManyUnderReserveLoad/rc-8        139.4 ± 12%      135.5 ±  8%        ~ (p=0.310 n=6)
+geomean                             157.2            146.8         -6.66%
+                               │   no settle  │               settle               │
+                               │ reserves/op  │ reserves/op   vs no settle              │
+KickUnderReserveLoad-8           4.167k ±  4%   4.345k ± 10%       ~ (p=0.065 n=6)
+ResumeUnderReserveLoad-8         3.613k ± 10%   3.707k ±  7%       ~ (p=0.394 n=6)
+SuspendUnderReserveLoad-8        3.330k ±  8%   3.038k ±  3%  -8.75% (p=0.009 n=6)
+AddManyUnderReserveLoad/norc-8   8.768k ± 18%   8.953k ± 22%       ~ (p=1.000 n=6)
+AddManyUnderReserveLoad/rc-8     9.415k ± 11%   9.546k ± 28%       ~ (p=0.937 n=6)
+geomean                          5.289k         5.300k        +0.21%
+                               │    no settle   │                settle                │
+                               │      B/op      │     B/op       vs no settle               │
+KickUnderReserveLoad-8           16.546Mi ± 37%   6.276Mi ± 13%  -62.07% (p=0.002 n=6)
+ResumeUnderReserveLoad-8         15.136Mi ± 58%   4.405Mi ± 11%  -70.90% (p=0.002 n=6)
+SuspendUnderReserveLoad-8        15.294Mi ± 40%   3.874Mi ±  1%  -74.67% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8    152.5Mi ±  1%   151.2Mi ±  0%   -0.81% (p=0.009 n=6)
+AddManyUnderReserveLoad/rc-8      154.4Mi ±  1%   153.1Mi ±  0%   -0.81% (p=0.004 n=6)
+geomean                           38.99Mi         19.01Mi        -51.26%
+                               │   no settle   │               settle               │
+                               │   allocs/op   │  allocs/op   vs no settle               │
+KickUnderReserveLoad-8           127.00k ± 21%   86.89k ± 3%  -31.58% (p=0.002 n=6)
+ResumeUnderReserveLoad-8          92.09k ± 38%   53.35k ± 3%  -42.06% (p=0.002 n=6)
+SuspendUnderReserveLoad-8         88.84k ± 26%   47.83k ± 1%  -46.16% (p=0.002 n=6)
+AddManyUnderReserveLoad/norc-8    367.4k ±  2%   368.3k ± 3%        ~ (p=1.000 n=6)
+AddManyUnderReserveLoad/rc-8      460.1k ±  1%   460.8k ± 3%        ~ (p=0.937 n=6)
+geomean                           177.4k         130.4k       -26.51%

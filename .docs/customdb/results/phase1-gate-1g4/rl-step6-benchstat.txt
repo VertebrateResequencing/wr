@@ -1,0 +1,31 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                    │    base     │                head                │
+                    │   sec/op    │   sec/op     vs base               │
+AddDepGroupMember-8   359.5m ± 3%   284.5m ± 3%  -20.85% (p=0.002 n=6)
+                    │     base     │                head                │
+                    │     B/op     │     B/op      vs base              │
+AddDepGroupMember-8   102.0Mi ± 0%   110.9Mi ± 0%  +8.68% (p=0.002 n=6)
+                    │     base     │                head                │
+                    │  allocs/op   │  allocs/op   vs base               │
+AddDepGroupMember-8   1175.7k ± 0%   602.5k ± 0%  -48.75% (p=0.002 n=6)
+                    │    base     │             head              │
+                    │   jobs/s    │    jobs/s     vs base         │
+ScenarioReportStorm   3.106k ± 9%   3.268k ± 45%  ~ (p=0.132 n=6)
+                    │      base      │              head               │
+                    │ max-archive-ms │ max-archive-ms  vs base         │
+ScenarioReportStorm      127.0 ± 55%     120.0 ± 123%  ~ (p=0.974 n=6)
+                    │    base     │             head             │
+                    │  wall-sec   │  wall-sec    vs base         │
+ScenarioReportStorm   6.440 ± 10%   6.120 ± 83%  ~ (p=0.132 n=6)
+                       │     base     │                head                 │
+                       │  peak-rss-B  │  peak-rss-B   vs base               │
+ScenarioDepGranularity   304.7Mi ± 2%   246.5Mi ± 6%  -19.09% (p=0.002 n=6)
+                       │     base     │             head              │
+                       │ recovery-sec │ recovery-sec  vs base         │
+ScenarioDepGranularity    182.5m ± 7%    182.0m ± 8%  ~ (p=0.695 n=6)
+                       │    base     │                head                 │
+                       │   add-sec   │   add-sec     vs base               │
+ScenarioDepGranularity   515.0m ± 9%   326.5m ± 11%  -36.60% (p=0.002 n=6)

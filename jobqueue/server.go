@@ -3276,6 +3276,9 @@ func (s *Server) suspendJobs(ctx context.Context, keys []string) (suspended int)
 
 	for _, key := range keys {
 		changed, wasReady := s.suspendJob(ctx, key)
+
+		yieldQueueTurn()
+
 		if !changed {
 			continue
 		}
@@ -3289,6 +3292,22 @@ func (s *Server) suspendJobs(ctx context.Context, keys []string) (suspended int)
 	}
 
 	return suspended
+}
+
+// yieldQueueTurn yields the processor, as a loop that takes the queue's lock
+// once per item does between items, so a reserve that waited on the lock gets
+// it before the loop takes it again.
+//
+// Unlocking wakes one waiter, which must then be scheduled before it can take
+// the lock; a loop that goes straight on to its next item takes the lock again
+// sooner than that, every time, until the waiter has waited for 1ms and Go's
+// mutex hands the lock over. So without the yield a reserve made while a kick,
+// resume or suspend of many jobs ran could wait 1ms: the bbolt store's per-item
+// encode, done outside the lock, had been long enough for a waiter to get in,
+// but the log store does no such work. Yielding runs the woken waiter on this
+// processor at once.
+func yieldQueueTurn() {
+	runtime.Gosched()
 }
 
 // suspendJob suspends the job with the given key if its item is suspendable,
@@ -3344,6 +3363,8 @@ func (s *Server) resumeJobs(ctx context.Context, keys []string) (resumed int) {
 		if s.resumeJob(ctx, key) {
 			resumed++
 		}
+
+		yieldQueueTurn()
 	}
 
 	return resumed
@@ -7926,6 +7947,9 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 		err := s.q.KickWith(ctx, key, func(data any) {
 			kickedJob = s.markItemJobChanged(ctx, job, data, ahead, kickChange)
 		})
+
+		yieldQueueTurn()
+
 		if err == nil {
 			if kickQueuedHook != nil {
 				kickQueuedHook(key)

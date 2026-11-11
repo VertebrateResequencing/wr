@@ -505,6 +505,14 @@ checkpoint:
   before returning. So a best-effort change queued before
   `close()` is recovered with its latest state, as today's best-effort
   writer drains on close (`TestStoreCloseDrainsWrites`).
+- `queueJobChangeAhead`, which the server calls with its queue locked,
+  only makes the change and takes its state record's seq and run state
+  there. One goroutine at a time (`logChangeQueue`) encodes and appends
+  the record afterwards, and `close` waits for it before it sets the
+  closed flag, so such a change is durable after `close` too. Every other
+  write first appends the changes queued before it, so a write made after
+  a change is durable no earlier than the change. A panic appending one is
+  logged and loses only that record, as a failed write does.
 - Reservation (C3): wait at most `reserveDurableWait()`
   (`min(10s, ClientMinRequestTimeout/4)`, today's bound); on timeout or any
   error, return the job to the ready queue, record a release state record
