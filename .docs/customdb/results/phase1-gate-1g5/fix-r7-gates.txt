@@ -1,0 +1,28 @@
+== lint start 00:57:09
+0 issues.
+== lint end 00:58:07 rc=0
+== vet start 00:58:07
+== vet end 00:58:08 rc=0
+== vetall start 00:58:08
+== vetall end 00:58:10 rc=0
+== vettag start 00:58:10
+== vettag end 00:58:14 rc=0
+== targeted start 00:58:14
+
+--- PASS: TestStoreStatsReportedAtStop (0.10s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	75.094s
+== targeted end 00:59:32 rc=0
+== targetedrace start 00:59:32
+
+--- PASS: TestStoreStatsReportedAtStop (0.12s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	130.200s
+== targetedrace end 01:02:18 rc=0
+== test start 01:02:18
+  --------------------------------------------
+  1297 passed · 26 skipped · 35 packages · 6m24s
+
+  PASSED
+== test end 01:08:46 rc=0
+ALL DONE 01:08:46

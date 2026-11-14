@@ -1,0 +1,117 @@
+// iotest: does a bolt-like writer (random 4KB pages + fdatasync) on the same
+// filesystem lengthen a wal-like writer's small append+fdatasync? Varies the
+// bolt writer's bytes per commit at a fixed byte rate.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
+	"syscall"
+	"time"
+)
+
+func main() {
+	dir := flag.String("dir", "", "dir")
+	secs := flag.Int("secs", 60, "seconds per config")
+	rate := flag.Int("rate", 4<<20, "bolt bytes per second")
+	cfgs := flag.String("cfgs", "0,4194304,1048576,262144,65536", "bolt bytes per commit (0: no bolt writer)")
+	flag.Parse()
+
+	big := filepath.Join(*dir, "bolt.dat")
+	f, _ := os.OpenFile(big, os.O_RDWR|os.O_CREATE, 0o644)
+	const size = 512 << 20
+	if fi, _ := f.Stat(); fi.Size() < size {
+		buf := make([]byte, 1<<20)
+		for off := int64(0); off < size; off += 1 << 20 {
+			f.WriteAt(buf, off)
+		}
+		syscall.Fdatasync(int(f.Fd()))
+	}
+
+	var list []int
+	fmt.Sscan("", new(int))
+	for _, s := range splitComma(*cfgs) {
+		var n int
+		fmt.Sscan(s, &n)
+		list = append(list, n)
+	}
+
+	for _, per := range list {
+		w, _ := os.OpenFile(filepath.Join(*dir, fmt.Sprintf("wal-%d.dat", per)), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		var commits, commitMax time.Duration
+		nc := 0
+		if per > 0 {
+			wg.Go(func() {
+				r := rand.New(rand.NewSource(1))
+				page := make([]byte, 4096)
+				period := time.Duration(float64(time.Second) * float64(per) / float64(*rate))
+				tk := time.NewTicker(period)
+				defer tk.Stop()
+				for {
+					select {
+					case <-stop:
+						return
+					case <-tk.C:
+					}
+					t0 := time.Now()
+					for b := 0; b < per; b += 4096 {
+						r.Read(page)
+						f.WriteAt(page, int64(r.Intn(size/4096))*4096)
+					}
+					syscall.Fdatasync(int(f.Fd()))
+					f.WriteAt(page, 0)
+					syscall.Fdatasync(int(f.Fd()))
+					d := time.Since(t0)
+					commits += d
+					commitMax = max(commitMax, d)
+					nc++
+				}
+			})
+		}
+		var lat []time.Duration
+		end := time.Now().Add(time.Duration(*secs) * time.Second)
+		rec := make([]byte, 400)
+		off := int64(0)
+		for time.Now().Before(end) {
+			t0 := time.Now()
+			w.WriteAt(rec, off)
+			off += 400
+			syscall.Fdatasync(int(w.Fd()))
+			lat = append(lat, time.Since(t0))
+			time.Sleep(10 * time.Millisecond)
+		}
+		close(stop)
+		wg.Wait()
+		w.Close()
+		slices.Sort(lat)
+		q := func(p float64) time.Duration { return lat[min(len(lat)-1, int(float64(len(lat))*p))] }
+		mean := time.Duration(0)
+		if nc > 0 {
+			mean = commits / time.Duration(nc)
+		}
+		fmt.Printf("%s boltPerCommit=%d commits=%d commitMean=%s commitMax=%s walSyncs=%d p50=%s p90=%s p99=%s max=%s\n",
+			time.Now().UTC().Format("15:04:05"), per, nc, mean.Round(time.Millisecond), commitMax.Round(time.Millisecond), len(lat),
+			q(0.5).Round(10*time.Microsecond), q(0.9).Round(10*time.Microsecond), q(0.99).Round(10*time.Microsecond), lat[len(lat)-1].Round(10*time.Microsecond))
+	}
+}
+
+func splitComma(s string) []string {
+	var out []string
+	cur := ""
+	for _, c := range s {
+		if c == ',' {
+			out = append(out, cur)
+			cur = ""
+		} else {
+			cur += string(c)
+		}
+	}
+	return append(out, cur)
+}

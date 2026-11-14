@@ -1,0 +1,14 @@
+Completions fold probe, local disk, 2026-11-12 14:0x: history.bolt prefilled with N rglookups and N jobscomplete/completeSeq entries (1.5KB values, random keys); each row adds 4,000 jobs (folded), archives them, and times the fold of their completions with the bound off (1<<40) or on (0 = foldTxBytes 2MB). One row's txs is garbage (the minute stats logger reset the counter mid-fold).
+G5CPROBE p0-r0-complete4000 bound=1099511627776 took=109.283ms txs=2 nodes=850 pageAlloc=10387456
+G5CPROBE p0-r1-complete4000 bound=0 took=165.141258ms txs=6 nodes=2581 pageAlloc=17145856
+G5CPROBE p0-r2-complete4000 bound=1099511627776 took=164.329809ms txs=2 nodes=3222 pageAlloc=19628032
+G5CPROBE p0-r3-complete4000 bound=0 took=206.563378ms txs=8 nodes=3965 pageAlloc=22757376
+G5CPROBE p300000-r0-complete4000 bound=1099511627776 took=423.201873ms txs=2 nodes=10053 pageAlloc=55992320
+G5CPROBE p300000-r1-complete4000 bound=0 took=510.966998ms txs=21 nodes=10730 pageAlloc=68698112
+G5CPROBE p300000-r2-complete4000 bound=1099511627776 took=425.848274ms txs=2 nodes=10146 pageAlloc=56602624
+G5CPROBE p300000-r3-complete4000 bound=0 took=561.954528ms txs=21 nodes=10818 pageAlloc=68149248
+G5CPROBE p1000000-r0-complete4000 bound=1099511627776 took=502.466944ms txs=2 nodes=12071 pageAlloc=65544192
+G5CPROBE p1000000-r1-complete4000 bound=0 took=766.007596ms txs=18446744073709551608 nodes=12822 pageAlloc=87105536
+G5CPROBE p1000000-r2-complete4000 bound=1099511627776 took=469.569433ms txs=2 nodes=12065 pageAlloc=65544192
+G5CPROBE p1000000-r3-complete4000 bound=0 took=717.277665ms txs=25 nodes=12829 pageAlloc=86974464
+ok  	github.com/VertebrateResequencing/wr/jobqueue	106.736s

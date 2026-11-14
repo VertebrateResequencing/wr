@@ -723,20 +723,22 @@ func (st *logState) applyStd(op *logOp) {
 // the job's spec record before its complete record if the key is not live
 // (logStore.decideArchive), so its complete record always finds a spec. The
 // live spec it finds may be later than it: a put-back's of the job it
-// archives, whose spec is the same. A record history.bolt already holds, one
-// before the folded position, changes only the live plane.
+// archives, whose spec is the same. A record before the folded position,
+// which history.bolt holds, changes only the live plane, clearing the key's
+// std. So does one at or below its key's seq in the history index: a later
+// complete record applied first, or history.bolt holding this record or a
+// later one past the folded position, as recovery can find after a fold
+// split into several transactions committed some of a chunk's completions
+// but not its folded position (historyBolt.fold). clearStd is the same
+// whichever order complete records apply in.
 func (st *logState) applyComplete(op *logOp) {
 	e := st.live[op.key]
 
-	if st.folded.covers(op.ref) {
+	if st.completeOutranked(op) {
 		if e != nil {
 			e.clearStd(op.seq)
 		}
 
-		return
-	}
-
-	if seq, complete := st.history[op.key]; complete && op.seq <= seq {
 		return
 	}
 
@@ -766,6 +768,19 @@ func (st *logState) applyLimit(op *logOp) {
 	}
 
 	st.limits[op.name] = op.limit
+}
+
+// completeOutranked reports whether complete record op is before the folded
+// position or at or below its key's seq in the history index (see
+// applyComplete), so changes only the live plane.
+func (st *logState) completeOutranked(op *logOp) bool {
+	if st.folded.covers(op.ref) {
+		return true
+	}
+
+	seq, complete := st.history[op.key]
+
+	return complete && op.seq <= seq
 }
 
 // logLive is a live key's in-memory state.

@@ -64,7 +64,8 @@ const (
 
 	// backupCheckpointKeptLogMsg is logged at warn by a tick that keeps the
 	// backup's checkpoint because the newest local one's histFrom is past the
-	// history it shipped.
+	// history it shipped, unless the tick put off copying history.bolt (see
+	// historyDue).
 	backupCheckpointKeptLogMsg = "incremental backup kept its checkpoint: the newest one's histFrom is past " +
 		"the history it holds"
 
@@ -86,6 +87,16 @@ const (
 // nanoseconds) as the least time from the end of one incremental backup tick
 // to the start of the next. A test seam, 0 outside tests.
 var logBackupEvery atomic.Int64 //nolint:gochecknoglobals // a test seam
+
+// historyRecopyFloor is the size of the backup's history.bolt copy at or
+// below which a tick copies history.bolt again whenever its folded position
+// has moved: about a second's copy on NFS. Above it the copy waits for
+// enough wal (see historyDue).
+const historyRecopyFloor = 64 << 20
+
+// logHistoryRecopyFloor, if above 0, replaces historyRecopyFloor. A test seam,
+// 0 outside tests.
+var logHistoryRecopyFloor atomic.Int64 //nolint:gochecknoglobals // a test seam
 
 // logBackupTickHook, a test seam nil outside tests, is called by the ticker each
 // time its timer fires, before it makes that tick.
@@ -199,6 +210,7 @@ func (s *logStore) shipPart(n uint32, end int64) error {
 
 	b.parts[n] = append(b.parts[n], backupPart{name: name, off: from, size: end - from})
 	b.shippedWAL = true
+	b.walSinceHist += end - from
 
 	return nil
 }
@@ -313,9 +325,11 @@ type incBackup struct {
 	// store has shipped wal bytes to it (shippedWAL), whether it lacks
 	// VERSION (versionPending) and the least walFrom of a checkpoint it must
 	// hold before it gets it (versionFrom), its checkpoints, the folded
-	// position of the history.bolt copy it holds (if histShipped), and the
-	// parts of each wal file, which tile it from 0. sealedEnds caches the
-	// durable end of each sealed local wal file. A store reads what the
+	// position of the history.bolt copy it holds (if histShipped), that
+	// copy's size (histBytes), the wal bytes shipped since it (walSinceHist),
+	// whether this tick put off copying history.bolt again (histDeferred),
+	// and the parts of each wal file, which tile it from 0. sealedEnds caches
+	// the durable end of each sealed local wal file. A store reads what the
 	// backup holds only before it ships anything, so shippedWAL is false
 	// whenever that read checks it; it keeps the check right should the
 	// backup be read again later, as the tests' retargetBackup does.
@@ -327,6 +341,9 @@ type incBackup struct {
 	ckpts          []uint32
 	histShipped    bool
 	histFolded     historyPos
+	histBytes      int64
+	walSinceHist   int64
+	histDeferred   bool
 	parts          map[uint32][]backupPart
 	sealedEnds     map[uint32]int64
 
@@ -673,6 +690,27 @@ func (b *incBackup) holdsSpent(from, to uint32) bool {
 	}
 
 	return true
+}
+
+// historyDue reports whether history.bolt, its folded position moved since the
+// backup's copy, is to be copied again: if that copy is no bigger than
+// historyRecopyFloor, or the wal bytes shipped since it are at least its size.
+//
+// Copying it whole at every tick made the backup's writes grow with
+// history.bolt's size, not with what changed: on NFS a history.bolt of 1 to
+// 2GB was copied almost without a pause, and the copy's writeback held up the
+// wal's syncs, and so reservations, past phase 1's 50ms target
+// (.docs/bugfixes/261111-reserve-tail-nfs-4766eb70.md). Until the next copy
+// the backup keeps its checkpoint and the wal from its copy's folded position,
+// which a restore folds again, so the history bytes it ships are at most the
+// wal bytes it ships, plus a floor's worth a tick while history.bolt is small.
+func (b *incBackup) historyDue() bool {
+	floor := int64(historyRecopyFloor)
+	if n := logHistoryRecopyFloor.Load(); n > 0 {
+		floor = n
+	}
+
+	return b.histBytes <= floor || b.walSinceHist >= b.histBytes
 }
 
 // parsePartOffset returns the start offset that rest, what follows
@@ -1166,9 +1204,10 @@ func (s *logStore) checkBackupNotAhead() error {
 
 // shipHistory ships history.bolt whole, under one read transaction that also
 // reads its folded position, F_b, unless that is the position of the copy the
-// backup already holds.
+// backup already holds, or copying it again is not yet due (see historyDue).
 func (s *logStore) shipHistory() error {
 	b := s.inc
+	b.histDeferred = false
 
 	pos, err := s.history.foldedPos()
 	if err != nil {
@@ -1179,12 +1218,27 @@ func (s *logStore) shipHistory() error {
 		return nil
 	}
 
-	var folded historyPos
+	if b.histShipped && !b.historyDue() {
+		b.histDeferred = true
 
-	err = b.target.put(historyBoltFile, func(w io.Writer) error {
+		return nil
+	}
+
+	return s.copyHistory()
+}
+
+// copyHistory copies history.bolt whole to the backup, noting the folded
+// position and size of the copy, which no wal bytes have been shipped since.
+func (s *logStore) copyHistory() error {
+	var (
+		folded historyPos
+		size   int64
+	)
+
+	err := s.inc.target.put(historyBoltFile, func(w io.Writer) error {
 		var errc error
 
-		folded, errc = s.history.copyTo(w)
+		folded, size, errc = s.history.copyTo(w)
 
 		return errc
 	})
@@ -1192,7 +1246,8 @@ func (s *logStore) shipHistory() error {
 		return err
 	}
 
-	b.histShipped, b.histFolded = true, folded
+	b := s.inc
+	b.histShipped, b.histFolded, b.histBytes, b.walSinceHist = true, folded, size, 0
 
 	return nil
 }
@@ -1269,8 +1324,9 @@ func (s *logStore) sealedEnd(files []uint32, i int) (int64, error) {
 
 // shipCheckpoint ships checkpoint ckpt, held, if it is newer than the
 // backup's and its histFrom is at or below the shipped history's folded
-// position, else keeps the backup's, logging at warn if that is why. Then it
-// deletes every other checkpoint from the backup.
+// position, else keeps the backup's, logging at warn if that is why and the
+// tick did not put off copying history.bolt. Then it deletes every other
+// checkpoint from the backup.
 func (s *logStore) shipCheckpoint(ckpt uint32) error {
 	b := s.inc
 
@@ -1297,8 +1353,22 @@ func (s *logStore) shipCheckpoint(ckpt uint32) error {
 	return nil
 }
 
+// keepCheckpoint logs at warn that checkpoint ckpt, whose histFrom is past the
+// shipped history's folded position, was not shipped, unless the tick put off
+// copying history.bolt, which keeps the backup's checkpoint by design.
+func (s *logStore) keepCheckpoint(ckpt uint32, histFrom historyPos) {
+	b := s.inc
+	if b.histDeferred {
+		return
+	}
+
+	clog.Warn(s.ctx, backupCheckpointKeptLogMsg, "checkpoint", ckpt, "hist_from_file", histFrom.file,
+		"hist_from_offset", histFrom.off, "folded_file", b.histFolded.file, "folded_offset", b.histFolded.off)
+}
+
 // shipNewCheckpoint ships checkpoint ckpt if its histFrom is at or below the
-// shipped history's folded position, else logs at warn.
+// shipped history's folded position, else logs at warn, unless the tick put
+// off copying history.bolt, which keeps the backup's checkpoint by design.
 func (s *logStore) shipNewCheckpoint(ckpt uint32) error {
 	b := s.inc
 
@@ -1312,9 +1382,7 @@ func (s *logStore) shipNewCheckpoint(ckpt uint32) error {
 	}
 
 	if !b.histShipped || header.histFrom.after(b.histFolded) {
-		clog.Warn(s.ctx, backupCheckpointKeptLogMsg, "checkpoint", ckpt, "hist_from_file", header.histFrom.file,
-			"hist_from_offset", header.histFrom.off, "folded_file", b.histFolded.file,
-			"folded_offset", b.histFolded.off)
+		s.keepCheckpoint(ckpt, header.histFrom)
 
 		return nil
 	}

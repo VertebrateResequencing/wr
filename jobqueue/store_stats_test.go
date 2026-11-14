@@ -261,6 +261,47 @@ func TestStoreStatsReport(t *testing.T) {
 		So(storeStatsDuration(t, lines[0], "interval"), ShouldEqual, time.Minute)
 	})
 
+	Convey("A writer's report gives the longest lag it was told of as maxLag, and none if told of none", t,
+		func() {
+			logPath, logCtx := managerLogContext(t, ctx)
+
+			var lagged, unlagged writerStats
+
+			now := time.Now()
+
+			lagged.observeLag(3 * time.Second)
+			lagged.observeLag(7 * time.Second)
+			lagged.observeLag(time.Second)
+			lagged.observe(1, now, now)
+			lagged.report(logCtx, foldWriterName, time.Minute)
+
+			unlagged.observe(1, now, now)
+			unlagged.report(logCtx, logWriterName, time.Minute)
+
+			lines := logLinesContaining(readLogFile(t, logPath), dbWriterLogMatch)
+			So(lines, ShouldHaveLength, 2)
+			So(storeStatsDuration(t, lines[0], "maxLag"), ShouldEqual, 7*time.Second)
+			So(lines[1], ShouldNotContainSubstring, "maxLag")
+		})
+
+	Convey("A lag a writer was told of in an interval with no transaction is reported with its next "+
+		"transaction", t, func() {
+		logPath, logCtx := managerLogContext(t, ctx)
+
+		var w writerStats
+
+		w.observeLag(5 * time.Second)
+		w.report(logCtx, foldWriterName, time.Minute)
+
+		now := time.Now()
+		w.observe(1, now, now)
+		w.report(logCtx, foldWriterName, time.Minute)
+
+		lines := logLinesContaining(readLogFile(t, logPath), dbWriterLogMatch)
+		So(lines, ShouldHaveLength, 1)
+		So(storeStatsDuration(t, lines[0], "maxLag"), ShouldEqual, 5*time.Second)
+	})
+
 	Convey("A writer's report gives its mean lock and hold per transaction", t, func() {
 		logPath, logCtx := managerLogContext(t, ctx)
 

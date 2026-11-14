@@ -51,6 +51,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,6 +63,28 @@ import (
 const (
 	// historyBoltFile names history.bolt in the store directory.
 	historyBoltFile = "history.bolt"
+
+	// foldTxBytes is about how many bytes of pages of its own records (its
+	// freelist aside) one transaction of a fold that keeps up may write before
+	// it commits them and makes the rest in another (see historyBolt.fold,
+	// foldTxSize, foldTxLimit): 2MB, which committed in about 40ms on NFS.
+	foldTxBytes = 2 << 20
+
+	// foldLookupBatch is how many rglookups a fold puts between its looks at
+	// its transaction's estimated size (see foldTxSize).
+	foldLookupBatch = 64
+
+	// completeKeysPut and completeSeqsPut are about how many copies of a
+	// completion's key, and of an 8-byte seq or time, putComplete puts: its
+	// key in jobscomplete, endTimeToKey and completeSeq, plus its rep group
+	// end time's; and the seq and end times beside them.
+	completeKeysPut = 4
+	completeSeqsPut = 3
+
+	// foldTxMinCompletions is the fewest completions a fold transaction
+	// records, if it has that many, however big its estimated size, so that
+	// no estimate can make a fold commit for each record.
+	foldTxMinCompletions = 16
 
 	// historyPosLen is the length of the folded position meta holds: its wal
 	// file and offset.
@@ -94,6 +117,9 @@ var (
 		bucketEndTimeToKey, bucketRGEndTime, bucketJobRAM, bucketJobDisk, bucketJobSecs,
 		bucketHistoryMeta, bucketCompleteSeq, bucketKeyRGs,
 	}
+
+	// logFoldTxBytes, if above 0, replaces foldTxBytes.
+	logFoldTxBytes atomic.Int64 //nolint:gochecknoglobals // a test seam
 )
 
 // foldApplyBatch is how many of a fold's records foldHistory drops from the
@@ -145,6 +171,45 @@ type historyLookup struct {
 	key      logKey
 	seq      uint64
 	dropped  bool
+}
+
+// historyLookupChanges is the net effect on history.bolt of a fold's rglookup
+// and modify records (see netHistoryLookups): the keys whose rglookups to
+// drop, before the puts; the rglookups to put, in repgroupToKey's key order;
+// and the rep groups to note as ever added.
+type historyLookupChanges struct {
+	drops     []logKey
+	puts      []historyLookupPut
+	repGroups [][]byte
+
+	// complete is the fold's complete records, in key order, which its
+	// transactions record after its rglookups (see historyBolt.fold).
+	complete []historyFolded
+}
+
+// historyLookupPut is one rglookup's keys in repgroupToKey and keyRepgroups.
+type historyLookupPut struct {
+	lookup, reverse []byte
+}
+
+// newHistoryLookupChanges returns the net effect of lookups.
+func newHistoryLookupChanges(lookups []historyLookup) historyLookupChanges {
+	puts, drops := netHistoryLookups(lookups)
+
+	c := historyLookupChanges{drops: drops, puts: make([]historyLookupPut, len(puts)),
+		repGroups: lookupRepGroups(lookups)}
+
+	for i, l := range puts {
+		key := l.key.String()
+		c.puts[i] = historyLookupPut{
+			lookup:  []byte(l.repGroup + dbDelimiter + key),
+			reverse: []byte(key + dbDelimiter + l.repGroup),
+		}
+	}
+
+	slices.SortFunc(c.puts, func(a, b historyLookupPut) int { return bytes.Compare(a.lookup, b.lookup) })
+
+	return c
 }
 
 // netHistoryLookups returns what lookups, in order, leave: the rglookups put
@@ -225,9 +290,16 @@ func (f *historyFold) items() int {
 // the live plane only, leaving the index to this fold; then the keys a modify
 // dropped the folded rglookups of, which history.bolt no longer holds, before
 // any rglookup they would hide once their own is dropped; then the overlay's
-// completions and rglookups.
+// completions and rglookups. Each of history.bolt's transactions of f writes
+// about foldTxMaxBytes (see historyBolt.fold).
 func (s *logStore) foldHistory(f *historyFold) error {
-	if err := s.history.fold(f, s.reqStats, &s.foldStats); err != nil {
+	return s.foldHistoryUpTo(f, foldTxMaxBytes())
+}
+
+// foldHistoryUpTo is foldHistory with each of history.bolt's transactions of
+// f writing about maxBytes.
+func (s *logStore) foldHistoryUpTo(f *historyFold, maxBytes int) error {
+	if err := s.history.fold(f, s.reqStats, &s.foldStats, maxBytes); err != nil {
 		return err
 	}
 
@@ -284,6 +356,11 @@ func (s *logStore) dropFolded(f *historyFold) {
 type historyBolt struct {
 	bolt *bolt.DB
 	ch   codec.Handle
+
+	// writeScale is the bytes of pages the last fold transaction wrote, but
+	// for its freelist, per byte its foldTxSize estimated, 0 before any; the
+	// folder, one fold at a time, alone reads and sets it.
+	writeScale float64
 }
 
 // openHistoryBolt opens, creating if need be, history.bolt in dir, with every
@@ -366,8 +443,8 @@ func loadCompleteSeqs(tx *bolt.Tx, index map[logKey]uint64) error {
 	})
 }
 
-// fold commits f in one transaction: each rglookup into repgroupToKey,
-// repgroups and keyRepgroups, and each modify's dropping of its old key's
+// fold commits f to history.bolt: each rglookup into repgroupToKey, repgroups
+// and keyRepgroups, and each modify's dropping of its old key's
 // rglookups, in log order; each complete record whose seq is above its key's
 // completeSeq as today's archive records a completion (jobscomplete,
 // endTimeToKey, repgroupEndTime); the learned-requirement samples of each
@@ -376,83 +453,266 @@ func loadCompleteSeqs(tx *bolt.Tx, index map[logKey]uint64) error {
 // sample once the transaction commits; and the folded position and highest
 // folded seq into meta. A complete record at or below its key's completeSeq is already folded,
 // so folding it again changes nothing and adds no sample, and samples are kept
-// per distinct value, so an exitstat sample folded again adds none. The
-// transaction is observed in writer once it commits, unless it folds no record
-// and only moves the folded position, as the first fold after an open does, so
-// an idle store logs no "db writer" line (spec A3); a failed one is not, as the
-// fold that retries it is.
-func (h *historyBolt) fold(f *historyFold, stats *reqStatCache, writer *writerStats) error {
-	var begun time.Time
+// per distinct value, so an exitstat sample folded again adds none. Each
+// transaction is observed in writer, with the records it folded, once it
+// commits, unless it folds no record and only moves the folded position, as
+// the first fold after an open does, so an idle store logs no "db writer" line
+// (spec A3); a failed one is not, as the fold that retries it is.
+//
+// It commits f in one transaction unless its rglookups, then its completions,
+// would write more than maxBytes of history.bolt's pages of their own, as
+// foldTxSize estimates, or more than its freelist if that is bigger (see
+// putSome): then it commits the drops and what it has put and recorded so far
+// as soon as the estimate reaches it, and makes the rest in further
+// transactions, the last of which commits the rest of f and moves the folded
+// position. The folder passes foldTxLimit of its lag as maxBytes, so a fold
+// that falls behind makes bigger transactions, cheaper per record. Each rglookup and completion puts keys in
+// random places in history.bolt's trees: in a 1.3-2.3GB history.bolt, a chunk
+// of 2,000-4,000 rglookups (an add of many jobs is one block, which a chunk
+// never splits) wrote 7-15MB in 1,500-2,600 runs of pages, and a chunk of
+// several hundred completions took 1-4s, and on NFS such a commit held the
+// log's syncs, and so reservations, 60-350ms behind it
+// (.docs/bugfixes/261111-reserve-tail-nfs-4766eb70.md). A small
+// history.bolt's folds write far fewer pages, so are seldom split. Each
+// transaction before the last is idempotent (completeSeq makes a completion
+// recorded again a no-op) and only adds to or takes from history.bolt what
+// the overlay still holds of the same records, so a crash before the last
+// leaves every history query's answer as it was, but for learned-requirement
+// samples, which go with their completions, and the fold made again after it
+// makes the rest; recovery clears a live job's std for a complete record
+// history.bolt already holds past the folded position as for one before it
+// (logState.applyComplete).
+func (h *historyBolt) fold(f *historyFold, stats *reqStatCache, writer *writerStats, maxBytes int) error {
+	c := newHistoryLookupChanges(f.lookups)
+	c.complete = slices.Clone(f.complete)
+	slices.SortStableFunc(c.complete, func(a, b historyFolded) int { return bytes.Compare(a.key[:], b.key[:]) })
 
-	asked := time.Now()
+	items := f.items()
+
+	for {
+		asked := time.Now()
+
+		put, recorded, begun, err := h.foldSomeTx(f, c, maxBytes, stats)
+		if err != nil {
+			return err
+		}
+
+		if put == len(c.puts) && recorded == len(c.complete) {
+			if items > 0 {
+				writer.observe(items, asked, begun)
+			}
+
+			return nil
+		}
+
+		writer.observe(put+recorded, asked, begun)
+
+		c.drops, c.puts, c.complete, items = nil, c.puts[put:], c.complete[recorded:], items-put-recorded
+	}
+}
+
+// foldSomeTx makes one of fold's transactions: c's drops, its puts and then
+// its completions, until the transaction's estimated size reaches maxBytes
+// (see putSome), then, if that was all of them, the
+// rest of f. It returns how many puts and completions it made and when its
+// body began.
+func (h *historyBolt) foldSomeTx(f *historyFold, c historyLookupChanges, maxBytes int,
+	stats *reqStatCache,
+) (int, int, time.Time, error) {
+	var (
+		begun         time.Time
+		put, recorded int
+	)
 
 	err := h.bolt.Update(func(tx *bolt.Tx) error {
 		begun = time.Now()
 
-		return h.foldTx(tx, f, stats)
-	})
-	if err == nil && f.items() > 0 {
-		writer.observe(f.items(), asked, begun)
-	}
+		var err error
 
-	return err
+		put, recorded, err = h.putSome(tx, c, maxBytes, stats)
+		switch {
+		case err != nil:
+			return err
+		case put < len(c.puts) || recorded < len(c.complete):
+			return callTxHook()
+		default:
+			return h.foldTx(tx, f, c.repGroups, stats)
+		}
+	})
+
+	return put, recorded, begun, err
 }
 
-// foldTx makes fold's changes of f in tx.
-func (h *historyBolt) foldTx(tx *bolt.Tx, f *historyFold, stats *reqStatCache) error {
-	if err := foldHistoryLookups(tx, f.lookups); err != nil {
+// putSome makes, in tx, c's drops and its puts (see putHistoryLookups) and,
+// if it made all of them, its completions (see recordCompletions), until tx's
+// foldTxSize reaches maxBytes, or the bytes every commit writes for
+// history.bolt's freelist if more, returning how many puts and completions it
+// made. Once tx commits, the bytes it wrote but for its freelist set the next
+// one's scale. A transaction writing less of its own than its freelist would
+// cost more in the freelist than it saves the log's syncs.
+func (h *historyBolt) putSome(tx *bolt.Tx, c historyLookupChanges, maxBytes int,
+	stats *reqStatCache,
+) (int, int, error) {
+	pageSize := tx.DB().Info().PageSize
+	size := &foldTxSize{tx: tx, pageSize: pageSize, max: max(maxBytes, h.freelistWrite(pageSize)),
+		scale: h.writeScale}
+
+	tx.OnCommit(func() { h.noteWrite(tx, size) })
+
+	put, err := putHistoryLookups(tx, c, size)
+	if err != nil || put < len(c.puts) {
+		return put, 0, err
+	}
+
+	recorded, err := h.recordCompletions(tx, c.complete, size, stats)
+
+	return put, recorded, err
+}
+
+// foldTxMaxBytes returns foldTxBytes, or logFoldTxBytes if a test set it.
+func foldTxMaxBytes() int {
+	if n := logFoldTxBytes.Load(); n > 0 {
+		return int(n)
+	}
+
+	return foldTxBytes
+}
+
+// callTxHook returns what logFoldTxHook returns, or nil if it is not set.
+func callTxHook() error {
+	if hook := logFoldTxHook.Load(); hook != nil {
+		return (*hook)()
+	}
+
+	return nil
+}
+
+// putHistoryLookups deletes every rglookup of each of c's drops, then puts c's
+// rglookups in key order, since bbolt inserts into a node it has not yet split
+// by moving every later entry: so putting in random order costs time quadratic
+// in the number put. Once size is full, it stops, at a multiple of
+// foldLookupBatch, and returns how many it put.
+func putHistoryLookups(tx *bolt.Tx, c historyLookupChanges, size *foldTxSize) (int, error) {
+	for _, k := range c.drops {
+		if err := dropHistoryLookups(tx, k); err != nil {
+			return 0, err
+		}
+	}
+
+	keys := make([][]byte, 0, foldLookupBatch)
+
+	for i := 0; i < len(c.puts); i += foldLookupBatch {
+		if i > 0 && size.full() {
+			return i, nil
+		}
+
+		written, err := putHistoryLookupBatch(tx, c.puts[i:min(i+foldLookupBatch, len(c.puts))], keys)
+		if err != nil {
+			return i, err
+		}
+
+		size.written += written
+	}
+
+	return len(c.puts), nil
+}
+
+// putHistoryLookupBatch puts batch's rglookups in tx, in repgroupToKey in
+// their order and in keyRepgroups in key order, using keys' space, and
+// returns the bytes of keys it put.
+func putHistoryLookupBatch(tx *bolt.Tx, batch []historyLookupPut, keys [][]byte) (int, error) {
+	lookups := tx.Bucket(bucketRTK)
+	keys = keys[:0]
+	written := 0
+
+	for _, p := range batch {
+		if err := lookups.Put(p.lookup, nil); err != nil {
+			return written, err
+		}
+
+		keys = append(keys, p.reverse)
+		written += len(p.lookup) + len(p.reverse)
+	}
+
+	return written, putSortedKeys(tx.Bucket(bucketKeyRGs), keys)
+}
+
+// foldTxSize estimates how many bytes of its own one of a fold's
+// transactions will write when it commits, its freelist aside: a page for
+// each node it has changed (bbolt's node count), plus the bytes of the keys
+// and values it has put, which a page count misses, scaled by how many bytes
+// fold transactions wrote, but for their freelists, per byte so estimated
+// (see noteWrite). The scale covers what neither term sees: a node holding
+// values larger than a page is written as a run of pages, existing values
+// with it, and a node grown past a page splits into several.
+type foldTxSize struct {
+	tx       *bolt.Tx
+	pageSize int
+	max      int
+	written  int
+	scale    float64
+}
+
+// estimate returns the transaction's unscaled estimated size.
+func (z *foldTxSize) estimate() int {
+	stats := z.tx.Stats()
+
+	return int(stats.GetNodeCount())*z.pageSize + z.written
+}
+
+// full reports whether the transaction's estimated size, scaled, has reached
+// its max.
+func (z *foldTxSize) full() bool {
+	scale := z.scale
+	if scale == 0 {
+		scale = 1
+	}
+
+	return float64(z.estimate())*scale >= float64(z.max)
+}
+
+// noteWrite sets writeScale to the bytes of pages tx, a fold transaction
+// estimated by size, wrote as it committed, but for its freelist (see
+// freelistWrite), per byte estimated. The freelist is left out because its
+// size has nothing to do with the records a transaction holds: counted, a
+// large freelist would scale every estimate up until each transaction folded
+// a few records.
+func (h *historyBolt) noteWrite(tx *bolt.Tx, size *foldTxSize) {
+	estimate := size.estimate()
+	stats := tx.Stats()
+	written := stats.GetPageAlloc() - int64(h.freelistWrite(size.pageSize))
+
+	if estimate <= 0 || written <= 0 {
+		return
+	}
+
+	h.writeScale = float64(written) / float64(estimate)
+}
+
+// foldTx makes the rest of fold's changes of f in tx, once its rglookups are
+// put and its completions recorded: the rep groups ever added, repGroups; its
+// samples; and the folded position, with the highest seq of f's complete
+// records.
+func (h *historyBolt) foldTx(tx *bolt.Tx, f *historyFold, repGroups [][]byte, stats *reqStatCache) error {
+	if err := putSortedKeys(tx.Bucket(bucketRGs), repGroups); err != nil {
 		return err
 	}
 
-	maxSeq, err := h.putCompletes(tx, f.complete, stats)
+	err := putFailStats(tx, f.samples, stats)
 	if err == nil {
-		err = putFailStats(tx, f.samples, stats)
-	}
-
-	if hook := logFoldTxHook.Load(); err == nil && hook != nil {
-		err = (*hook)()
+		err = callTxHook()
 	}
 
 	if err != nil {
 		return err
 	}
 
+	maxSeq := historyMaxSeq(tx)
+	for i := range f.complete {
+		maxSeq = max(maxSeq, f.complete[i].seq)
+	}
+
 	return putHistoryMeta(tx, f.to, maxSeq)
-}
-
-// foldHistoryLookups puts each of lookups' rglookups in tx, or, for a dropped
-// one, deletes every rglookup of its key, as if in order. It works out their net
-// effect first, then deletes and puts in key order, since bbolt inserts into a
-// node it has not yet split by moving every later entry: so putting in random
-// order costs time quadratic in the number put. Every rglookup's rep group goes
-// into repgroups, the rep groups ever added, even one a later modify drops.
-func foldHistoryLookups(tx *bolt.Tx, lookups []historyLookup) error {
-	puts, drops := netHistoryLookups(lookups)
-
-	for _, k := range drops {
-		if err := dropHistoryLookups(tx, k); err != nil {
-			return err
-		}
-	}
-
-	lookupKeys := make([][]byte, len(puts))
-	reverseKeys := make([][]byte, len(puts))
-
-	for i, l := range puts {
-		key := l.key.String()
-		lookupKeys[i] = []byte(l.repGroup + dbDelimiter + key)
-		reverseKeys[i] = []byte(key + dbDelimiter + l.repGroup)
-	}
-
-	for bucket, keys := range map[string][][]byte{
-		string(bucketRTK): lookupKeys, string(bucketKeyRGs): reverseKeys, string(bucketRGs): lookupRepGroups(lookups),
-	} {
-		if err := putSortedKeys(tx.Bucket([]byte(bucket)), keys); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // putFailStats records the learned-requirement sample of each of samples, an
@@ -493,61 +753,90 @@ func (h *historyBolt) rewind(to historyPos) error {
 	})
 }
 
-// putCompletes is putComplete of each of complete, with the learned-requirement
-// samples of each it records through stats, returning the highest folded seq
-// meta is to hold after them.
-func (h *historyBolt) putCompletes(tx *bolt.Tx, complete []historyFolded, stats *reqStatCache) (uint64, error) {
-	maxSeq := historyMaxSeq(tx)
-
-	// In key order, for the reason foldHistoryLookups puts in key order; the
-	// completeSeq rule makes the order of one key's records not matter.
-	sorted := slices.Clone(complete)
-	slices.SortStableFunc(sorted, func(a, b historyFolded) int { return bytes.Compare(a.key[:], b.key[:]) })
-
-	for i := range sorted {
-		put, err := h.putComplete(tx, &sorted[i])
-		if err == nil && put {
-			err = putJobStats(tx, stats, sorted[i].job)
+// recordCompletions records each of complete's jobs, in their order (key
+// order, for the reason putHistoryLookups puts in key order; the completeSeq
+// rule makes the order of one key's records not matter), as putComplete, and
+// the learned-requirement samples of each it records (as putJobStats), until
+// size is full, once it has taken foldTxMinCompletions, and returns how many
+// it took. Recording one is idempotent, by
+// completeSeq, so a fold made again records only those its earlier attempt
+// did not commit.
+func (h *historyBolt) recordCompletions(tx *bolt.Tx, complete []historyFolded, size *foldTxSize,
+	stats *reqStatCache,
+) (int, error) {
+	for i := range complete {
+		if i >= foldTxMinCompletions && size.full() {
+			return i, nil
 		}
 
+		written, err := h.recordCompletion(tx, &complete[i], stats)
 		if err != nil {
-			return 0, err
+			return i, err
 		}
 
-		maxSeq = max(maxSeq, sorted[i].seq)
+		size.written += written
 	}
 
-	return maxSeq, nil
+	return len(complete), nil
 }
 
-// putComplete records c's job as its key's history entry and reports true,
-// unless completeSeq shows it is already folded.
-func (h *historyBolt) putComplete(tx *bolt.Tx, c *historyFolded) (bool, error) {
+// freelistWrite returns about how many bytes of pages each commit of
+// history.bolt writes for its freelist, as of the last commit: bbolt writes
+// the whole freelist, in pageSize pages, unless NoFreelistSync is set.
+func (h *historyBolt) freelistWrite(pageSize int) int {
+	if h.bolt.NoFreelistSync {
+		return 0
+	}
+
+	stats := h.bolt.Stats()
+
+	return (stats.FreelistInuse/pageSize + 1) * pageSize
+}
+
+// recordCompletion records c's job as putComplete does, and, if it was not
+// already folded, its learned-requirement samples through stats, returning
+// about how many bytes of keys and values it put.
+func (h *historyBolt) recordCompletion(tx *bolt.Tx, c *historyFolded, stats *reqStatCache) (int, error) {
+	written, err := h.putComplete(tx, c)
+	if err == nil && written > 0 {
+		err = putJobStats(tx, stats, c.job)
+	}
+
+	return written, err
+}
+
+// putComplete records c's job as its key's history entry and returns about
+// how many bytes of keys and values that put: its encoded job under its key in
+// jobscomplete, its key in endTimeToKey, its rep group's end time and its seq
+// in completeSeq. It returns 0 if completeSeq shows it is already folded.
+func (h *historyBolt) putComplete(tx *bolt.Tx, c *historyFolded) (int, error) {
 	key := []byte(c.key.String())
 	seqs := tx.Bucket(bucketCompleteSeq)
 
 	if v := seqs.Get(key); len(v) == historySeqLen && binary.BigEndian.Uint64(v) >= c.seq {
-		return false, nil
+		return 0, nil
 	}
 
 	var encoded []byte
 	if err := codec.NewEncoderBytes(&encoded, h.ch).Encode(c.job); err != nil {
-		return false, err
+		return 0, err
 	}
 
 	if err := updateEndTimeIndex(tx, key, c.job, h.ch); err != nil {
-		return false, err
+		return 0, err
 	}
 
 	if err := tx.Bucket(bucketJobsComplete).Put(key, encoded); err != nil {
-		return false, err
+		return 0, err
 	}
 
 	if err := updateRGEndTime(tx.Bucket(bucketRGEndTime), c.job); err != nil {
-		return false, err
+		return 0, err
 	}
 
-	return true, seqs.Put(key, binary.BigEndian.AppendUint64(nil, c.seq))
+	written := len(encoded) + completeKeysPut*len(key) + completeSeqsPut*historySeqLen
+
+	return written, seqs.Put(key, binary.BigEndian.AppendUint64(nil, c.seq))
 }
 
 // close closes history.bolt.
@@ -576,19 +865,24 @@ func (h *historyBolt) backup(tw *tar.Writer) (historyPos, error) {
 }
 
 // copyTo writes history.bolt to w, under a read transaction that also reads
-// its folded position, which it returns.
-func (h *historyBolt) copyTo(w io.Writer) (historyPos, error) {
-	var folded historyPos
+// its folded position, which it returns with the bytes written.
+func (h *historyBolt) copyTo(w io.Writer) (historyPos, int64, error) {
+	var (
+		folded historyPos
+		size   int64
+	)
 
 	err := h.bolt.View(func(tx *bolt.Tx) error {
 		folded = historyFoldedPos(tx.Bucket(bucketHistoryMeta))
 
-		_, err := tx.WriteTo(w)
+		var err error
+
+		size, err = tx.WriteTo(w)
 
 		return err
 	})
 
-	return folded, err
+	return folded, size, err
 }
 
 // foldedPos returns the folded position history.bolt holds.

@@ -1,0 +1,74 @@
+speed.sh quick, SPEED_BENCH=UnderReserveLoad, SPEED_SCENARIOS=none, SPEED_COUNT=8, farm22-wrstat01, 2026-11-12 03:43-06:2x GMT
+base: f1bcc1d7; head: f1bcc1d7 + the byte-bounded fold split + backup fix (no fold pacing)
+
+================ benchstat ================
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                               │     base     │                head                │
+                               │    sec/op    │    sec/op     vs base              │
+KickUnderReserveLoad-8           56.84m ± 13%   57.05m ± 20%       ~ (p=0.442 n=8)
+ResumeUnderReserveLoad-8         46.62m ± 30%   53.40m ± 21%       ~ (p=0.195 n=8)
+SuspendUnderReserveLoad-8        35.04m ± 19%   33.39m ± 18%       ~ (p=0.328 n=8)
+AddManyUnderReserveLoad/norc-8   278.5m ±  8%   263.0m ±  9%       ~ (p=0.234 n=8)
+AddManyUnderReserveLoad/rc-8     280.9m ±  8%   292.3m ±  9%       ~ (p=0.279 n=8)
+geomean                          93.80m         95.20m        +1.49%
+
+                               │      base      │                 head                  │
+                               │ reserve-max-us │ reserve-max-us  vs base               │
+KickUnderReserveLoad-8            2.017k ± 173%     2.433k ± 47%        ~ (p=0.645 n=8)
+ResumeUnderReserveLoad-8          2.263k ±  63%     3.246k ± 69%        ~ (p=0.342 n=8)
+SuspendUnderReserveLoad-8         2.011k ±  41%     1.052k ± 52%  -47.69% (p=0.001 n=8)
+AddManyUnderReserveLoad/norc-8    15.62k ±  21%     17.79k ± 20%        ~ (p=0.328 n=8)
+AddManyUnderReserveLoad/rc-8      16.18k ±  11%     16.60k ± 20%        ~ (p=0.645 n=8)
+geomean                           4.710k            4.764k         +1.14%
+
+                               │      base      │                 head                 │
+                               │ reserve-p50-us │ reserve-p50-us  vs base              │
+KickUnderReserveLoad-8              8.375 ± 37%      9.743 ± 76%       ~ (p=0.161 n=8)
+ResumeUnderReserveLoad-8            12.36 ± 48%      16.39 ± 59%       ~ (p=0.161 n=8)
+SuspendUnderReserveLoad-8           8.456 ± 15%      7.545 ± 15%       ~ (p=0.130 n=8)
+AddManyUnderReserveLoad/norc-8      7.175 ± 17%      7.053 ± 17%       ~ (p=0.382 n=8)
+AddManyUnderReserveLoad/rc-8        7.284 ± 21%      6.691 ± 11%       ~ (p=0.878 n=8)
+geomean                             8.552            8.932        +4.44%
+
+                               │      base      │                 head                 │
+                               │ reserve-p99-us │ reserve-p99-us  vs base              │
+KickUnderReserveLoad-8              145.8 ± 27%      157.9 ± 17%       ~ (p=0.798 n=8)
+ResumeUnderReserveLoad-8            155.8 ± 35%      180.4 ± 21%       ~ (p=0.442 n=8)
+SuspendUnderReserveLoad-8           121.8 ± 20%      119.2 ± 20%       ~ (p=0.878 n=8)
+AddManyUnderReserveLoad/norc-8      155.0 ± 17%      147.6 ± 23%       ~ (p=0.161 n=8)
+AddManyUnderReserveLoad/rc-8        136.4 ± 20%      133.9 ± 17%       ~ (p=0.744 n=8)
+geomean                             142.3            146.4        +2.82%
+
+                               │     base     │                head                │
+                               │ reserves/op  │ reserves/op   vs base              │
+KickUnderReserveLoad-8           4.155k ± 10%   4.212k ±  7%       ~ (p=0.367 n=8)
+ResumeUnderReserveLoad-8         3.480k ± 20%   3.746k ± 13%       ~ (p=0.234 n=8)
+SuspendUnderReserveLoad-8        2.951k ± 17%   2.853k ± 16%       ~ (p=0.234 n=8)
+AddManyUnderReserveLoad/norc-8   8.895k ± 32%   7.301k ± 25%       ~ (p=0.442 n=8)
+AddManyUnderReserveLoad/rc-8     8.030k ± 30%   8.104k ± 25%       ~ (p=0.878 n=8)
+geomean                          4.975k         4.843k        -2.66%
+
+                               │     base     │                head                 │
+                               │     B/op     │     B/op       vs base              │
+KickUnderReserveLoad-8           6.453Mi ± 6%   6.475Mi ± 13%       ~ (p=0.279 n=8)
+ResumeUnderReserveLoad-8         4.424Mi ± 9%   5.027Mi ± 19%       ~ (p=0.083 n=8)
+SuspendUnderReserveLoad-8        3.916Mi ± 2%   3.924Mi ±  4%       ~ (p=0.959 n=8)
+AddManyUnderReserveLoad/norc-8   151.2Mi ± 1%   150.9Mi ±  0%       ~ (p=0.442 n=8)
+AddManyUnderReserveLoad/rc-8     152.7Mi ± 0%   153.0Mi ±  1%       ~ (p=0.279 n=8)
+geomean                          19.16Mi        19.68Mi        +2.69%
+
+                               │    base     │                head                │
+                               │  allocs/op  │  allocs/op    vs base              │
+KickUnderReserveLoad-8           87.83k ± 1%   88.56k ±  3%       ~ (p=0.234 n=8)
+ResumeUnderReserveLoad-8         54.18k ± 7%   55.59k ± 13%       ~ (p=0.234 n=8)
+SuspendUnderReserveLoad-8        49.35k ± 5%   48.56k ±  3%       ~ (p=0.442 n=8)
+AddManyUnderReserveLoad/norc-8   368.0k ± 4%   360.0k ±  3%       ~ (p=0.442 n=8)
+AddManyUnderReserveLoad/rc-8     451.7k ± 3%   452.1k ±  3%       ~ (p=0.878 n=8)
+geomean                          131.3k        131.2k        -0.06%
+
+================ verdict ================
+results: /tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/g5b-speeddir/run-1794454947 (benchstat.txt, *.txt raw, *.out scenario logs)
+PASS: no benchmark or scenario worsened by more than 10% at p<0.05, and every scenario met its thresholds

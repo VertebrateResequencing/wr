@@ -1,0 +1,37 @@
+# round 7 mutants on ext4 /tmp, Sat 14 Nov 00:55:25 UTC 2026
+== M1
+diff -r /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_backup.go <scratchpad>/r5g5-mut-M1/jobqueue/store_backup.go
+296c296
+< 	err = write(&backupCopyWriter{f: f, syncEvery: backupCopySyncBytes})
+---
+> 	err = write(&backupCopyWriter{f: f, syncEvery: backupCopySyncBytes, keepCached: true})
+vet ok (compiles)
+  Line 100:
+  Expected '1' to be less than or equal to '0.5' (but it wasn't)!
+--- FAIL: TestLogStoreIncrementalBackupDropsHistoryCopyFromCache (1.00s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	1.757s
+== M2
+diff -r /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/db.go <scratchpad>/r5g5-mut-M2/jobqueue/db.go
+1404,1405c1404,1406
+< 		f:         f,
+< 		syncEvery: backupCopySyncBytes,
+---
+> 		f:          f,
+> 		syncEvery:  backupCopySyncBytes,
+> 		keepCached: true,
+vet ok (compiles)
+  Line 100:
+  Expected '1' to be less than or equal to '0.5' (but it wasn't)!
+--- FAIL: TestDBBackupCopy (0.17s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	1.657s
+== CK2
+diff -r /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_checkpoint.go <scratchpad>/r5g5-mut-CK2/jobqueue/store_checkpoint.go
+568c568
+< 	paced := &backupCopyWriter{f: f, syncEvery: backupCopySyncBytes, keepCached: true}
+---
+> 	paced := &backupCopyWriter{f: f, syncEvery: backupCopySyncBytes, keepCached: false}
+vet ok (compiles)
+  Line 100:
+  Expected '0.22424242424242424' to be greater than '0.5' (but it wasn't)!
+--- FAIL: TestLogStoreCheckpointPacesItsWrite (0.45s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	1.706s

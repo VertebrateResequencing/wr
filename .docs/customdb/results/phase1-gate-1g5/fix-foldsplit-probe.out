@@ -1,0 +1,55 @@
+G5 node probe, local disk, 2026-11-12 03:35 (run 1), 05:53 and 05:54 (runs 2, 3), byte-bound code (foldTxBytes 2MB) vs bound disabled (1<<40):
+(prefill = rglookups already in history.bolt, random keys over 50 rep groups; each row folds one unfolded add of `jobs`
+jobs into the same store, so each later row's tree also holds the rows before it; nodes and pageAlloc are
+history.bolt's TxStats deltas over the fold)
+G5PROBE p0-nosplit-4096 jobs=4096 bound=1099511627776 took=17.640926ms txs=1 nodes=5 writeBytes~pages=966656
+G5PROBE p0-bound-4096 jobs=4096 bound=0 took=26.622178ms txs=1 nodes=237 writeBytes~pages=1343488
+G5PROBE p0-nosplit-20000 jobs=20000 bound=1099511627776 took=112.592599ms txs=1 nodes=329 writeBytes~pages=5783552
+G5PROBE p0-bound-20000 jobs=20000 bound=0 took=121.485657ms txs=3 nodes=1427 writeBytes~pages=7585792
+G5PROBE p200000-nosplit-4096 jobs=4096 bound=1099511627776 took=94.72082ms txs=1 nodes=2649 writeBytes~pages=12177408
+G5PROBE p200000-bound-4096 jobs=4096 bound=0 took=103.122208ms txs=6 nodes=2847 writeBytes~pages=12890112
+G5PROBE p200000-nosplit-20000 jobs=20000 bound=1099511627776 took=228.025618ms txs=1 nodes=4797 writeBytes~pages=25133056
+G5PROBE p200000-bound-20000 jobs=20000 bound=0 took=267.416919ms txs=12 nodes=6133 writeBytes~pages=27791360
+G5PROBE p1000000-nosplit-4096 jobs=4096 bound=1099511627776 took=155.128331ms txs=1 nodes=4207 writeBytes~pages=18370560
+G5PROBE p1000000-bound-4096 jobs=4096 bound=0 took=159.222896ms txs=8 nodes=4329 writeBytes~pages=20869120
+G5PROBE p1000000-nosplit-20000 jobs=20000 bound=1099511627776 took=464.600646ms txs=1 nodes=13497 writeBytes~pages=59473920
+G5PROBE p1000000-bound-20000 jobs=20000 bound=0 took=546.2906ms txs=27 nodes=14325 writeBytes~pages=69566464
+G5PROBE p3000000-nosplit-4096 jobs=4096 bound=1099511627776 took=220.139854ms txs=1 nodes=5324 writeBytes~pages=23433216
+G5PROBE p3000000-bound-4096 jobs=4096 bound=0 took=337.75468ms txs=11 nodes=5548 writeBytes~pages=32120832
+G5PROBE p3000000-nosplit-20000 jobs=20000 bound=1099511627776 took=671.543495ms txs=1 nodes=18769 writeBytes~pages=81715200
+G5PROBE p3000000-bound-20000 jobs=20000 bound=0 took=1.027375032s txs=36 nodes=19525 writeBytes~pages=111267840
+ok  	github.com/VertebrateResequencing/wr/jobqueue	80.780s
+== run 2 05:53:06
+G5PROBE p0-nosplit-4096 jobs=4096 bound=1099511627776 took=18.696486ms txs=1 nodes=5 writeBytes~pages=966656
+G5PROBE p0-bound-4096 jobs=4096 bound=0 took=24.080367ms txs=1 nodes=237 writeBytes~pages=1343488
+G5PROBE p0-nosplit-20000 jobs=20000 bound=1099511627776 took=118.094409ms txs=1 nodes=329 writeBytes~pages=5783552
+G5PROBE p0-bound-20000 jobs=20000 bound=0 took=131.955409ms txs=3 nodes=1427 writeBytes~pages=7585792
+G5PROBE p200000-nosplit-4096 jobs=4096 bound=1099511627776 took=89.292602ms txs=1 nodes=2629 writeBytes~pages=12156928
+G5PROBE p200000-bound-4096 jobs=4096 bound=0 took=98.740166ms txs=6 nodes=2887 writeBytes~pages=13045760
+G5PROBE p200000-nosplit-20000 jobs=20000 bound=1099511627776 took=238.346642ms txs=1 nodes=4817 writeBytes~pages=24875008
+G5PROBE p200000-bound-20000 jobs=20000 bound=0 took=539.088699ms txs=12 nodes=6125 writeBytes~pages=27824128
+G5PROBE p1000000-nosplit-4096 jobs=4096 bound=1099511627776 took=159.256453ms txs=1 nodes=4196 writeBytes~pages=18243584
+G5PROBE p1000000-bound-4096 jobs=4096 bound=0 took=162.928986ms txs=8 nodes=4359 writeBytes~pages=20897792
+G5PROBE p1000000-nosplit-20000 jobs=20000 bound=1099511627776 took=435.27031ms txs=1 nodes=13511 writeBytes~pages=59654144
+G5PROBE p1000000-bound-20000 jobs=20000 bound=0 took=537.519714ms txs=28 nodes=14381 writeBytes~pages=70148096
+G5PROBE p3000000-nosplit-4096 jobs=4096 bound=1099511627776 took=227.8431ms txs=1 nodes=5316 writeBytes~pages=23429120
+G5PROBE p3000000-bound-4096 jobs=4096 bound=0 took=292.687864ms txs=11 nodes=5523 writeBytes~pages=32104448
+G5PROBE p3000000-nosplit-20000 jobs=20000 bound=1099511627776 took=715.559751ms txs=1 nodes=18682 writeBytes~pages=81383424
+G5PROBE p3000000-bound-20000 jobs=20000 bound=0 took=1.07677756s txs=36 nodes=19491 writeBytes~pages=111181824
+== run 3 05:54:27
+G5PROBE p0-nosplit-4096 jobs=4096 bound=1099511627776 took=18.788357ms txs=1 nodes=5 writeBytes~pages=966656
+G5PROBE p0-bound-4096 jobs=4096 bound=0 took=25.52401ms txs=1 nodes=237 writeBytes~pages=1343488
+G5PROBE p0-nosplit-20000 jobs=20000 bound=1099511627776 took=107.749177ms txs=1 nodes=329 writeBytes~pages=5783552
+G5PROBE p0-bound-20000 jobs=20000 bound=0 took=131.005108ms txs=3 nodes=1427 writeBytes~pages=7585792
+G5PROBE p200000-nosplit-4096 jobs=4096 bound=1099511627776 took=97.877824ms txs=1 nodes=2633 writeBytes~pages=12132352
+G5PROBE p200000-bound-4096 jobs=4096 bound=0 took=100.456552ms txs=6 nodes=2875 writeBytes~pages=13000704
+G5PROBE p200000-nosplit-20000 jobs=20000 bound=1099511627776 took=223.127513ms txs=1 nodes=4787 writeBytes~pages=24993792
+G5PROBE p200000-bound-20000 jobs=20000 bound=0 took=260.948473ms txs=12 nodes=6134 writeBytes~pages=27938816
+G5PROBE p1000000-nosplit-4096 jobs=4096 bound=1099511627776 took=135.825715ms txs=1 nodes=4166 writeBytes~pages=18190336
+G5PROBE p1000000-bound-4096 jobs=4096 bound=0 took=162.392878ms txs=8 nodes=4353 writeBytes~pages=20856832
+G5PROBE p1000000-nosplit-20000 jobs=20000 bound=1099511627776 took=464.007765ms txs=1 nodes=13408 writeBytes~pages=59109376
+G5PROBE p1000000-bound-20000 jobs=20000 bound=0 took=555.527566ms txs=27 nodes=14366 writeBytes~pages=69718016
+G5PROBE p3000000-nosplit-4096 jobs=4096 bound=1099511627776 took=335.662176ms txs=1 nodes=5337 writeBytes~pages=23478272
+G5PROBE p3000000-bound-4096 jobs=4096 bound=0 took=373.261229ms txs=11 nodes=5538 writeBytes~pages=32059392
+G5PROBE p3000000-nosplit-20000 jobs=20000 bound=1099511627776 took=649.405602ms txs=1 nodes=18678 writeBytes~pages=81494016
+G5PROBE p3000000-bound-20000 jobs=20000 bound=0 took=1.076602032s txs=36 nodes=19537 writeBytes~pages=111337472

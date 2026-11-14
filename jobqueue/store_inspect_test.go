@@ -122,7 +122,8 @@ var boltOnlyTests = []string{ //nolint:gochecknoglobals
 	"server_startup_upgrade_bolt_test.go",
 
 	// history.bolt, the log store's Phase 1 history, checked against the
-	// bbolt store's history.
+	// bbolt store's history, and the transactions its fold makes.
+	"store_fold_lookups_test.go",
 	"store_history_bolt_test.go",
 
 	// fixtures written as raw bbolt records, at a scale the store API would

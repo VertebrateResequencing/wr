@@ -33,6 +33,6 @@ import "os"
 // portable equivalent of Linux's sync_file_range; the backup copy there falls back
 // to a periodic full fsync to bound its dirty-page backlog. (See the linux build
 // for the real implementation.)
-func backupPaceRange(_ *os.File, _, _, _, _ int64) (handled bool, err error) {
+func backupPaceRange(_ *os.File, _, _, _, _ int64, _ bool) (handled bool, err error) {
 	return false, nil
 }

@@ -1,0 +1,55 @@
+================ benchstat ================
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                         │     base     │                head                 │
+                         │    sec/op    │    sec/op     vs base               │
+KickUnderReserveLoad-8     80.55m ±  7%   99.25m ± 22%        ~ (p=0.180 n=6)
+ResumeUnderReserveLoad-8   67.41m ± 31%   93.93m ± 20%  +39.34% (p=0.015 n=6)
+geomean                    73.69m         96.56m        +31.03%
+
+                         │      base      │                 head                  │
+                         │ reserve-max-us │ reserve-max-us  vs base               │
+KickUnderReserveLoad-8      3.352k ±  65%    3.466k ± 146%        ~ (p=0.699 n=6)
+ResumeUnderReserveLoad-8    3.785k ± 534%    2.547k ±  37%        ~ (p=0.132 n=6)
+geomean                     3.562k           2.971k         -16.58%
+
+                         │      base      │                 head                  │
+                         │ reserve-p50-us │ reserve-p50-us  vs base               │
+KickUnderReserveLoad-8        19.56 ± 22%      29.22 ± 30%  +49.35% (p=0.009 n=6)
+ResumeUnderReserveLoad-8      23.53 ± 56%      37.01 ± 31%  +57.29% (p=0.026 n=6)
+geomean                       21.46            32.89        +53.27%
+
+                         │      base      │                 head                  │
+                         │ reserve-p99-us │ reserve-p99-us  vs base               │
+KickUnderReserveLoad-8        224.5 ± 21%      284.1 ± 31%        ~ (p=0.485 n=6)
+ResumeUnderReserveLoad-8      214.1 ± 23%      261.7 ± 28%  +22.23% (p=0.015 n=6)
+geomean                       219.2            272.7        +24.38%
+
+                         │     base     │                head                 │
+                         │ reserves/op  │ reserves/op   vs base               │
+KickUnderReserveLoad-8     4.955k ± 10%   5.386k ± 12%        ~ (p=0.132 n=6)
+ResumeUnderReserveLoad-8   4.202k ± 23%   5.082k ± 14%        ~ (p=0.065 n=6)
+geomean                    4.563k         5.232k        +14.65%
+
+                         │     base      │                head                 │
+                         │     B/op      │     B/op      vs base               │
+KickUnderReserveLoad-8     7.541Mi ±  3%   8.293Mi ± 2%   +9.98% (p=0.002 n=6)
+ResumeUnderReserveLoad-8   5.738Mi ± 24%   6.334Mi ± 4%  +10.40% (p=0.002 n=6)
+geomean                    6.578Mi         7.248Mi       +10.19%
+
+                         │    base     │               head                │
+                         │  allocs/op  │  allocs/op   vs base              │
+KickUnderReserveLoad-8     92.36k ± 3%   94.77k ± 4%       ~ (p=0.132 n=6)
+ResumeUnderReserveLoad-8   59.00k ± 7%   63.09k ± 6%       ~ (p=0.065 n=6)
+geomean                    73.82k        77.32k       +4.74%
+
+================ verdict ================
+results: /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/speed/run-1794434176 (benchstat.txt, *.txt raw, *.out scenario logs)
+  REGRESSION ResumeUnderReserveLoad-8 sec/op: +39.34% (p=0.015)
+  REGRESSION KickUnderReserveLoad-8 reserve-p50-us: +49.35% (p=0.009)
+  REGRESSION ResumeUnderReserveLoad-8 reserve-p50-us: +57.29% (p=0.026)
+  REGRESSION ResumeUnderReserveLoad-8 reserve-p99-us: +22.23% (p=0.015)
+  REGRESSION ResumeUnderReserveLoad-8 B/op: +10.40% (p=0.002)
+FAIL: make speed found 5 problem(s) (threshold 10% at p<0.05)

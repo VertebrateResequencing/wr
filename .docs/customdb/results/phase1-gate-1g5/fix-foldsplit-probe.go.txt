@@ -1,0 +1,78 @@
+package jobqueue
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"slices"
+	"strconv"
+	"bytes"
+	"testing"
+	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
+	bolt "go.etcd.io/bbolt"
+)
+
+func g5prefill(s *logStore, n int) {
+	const per = 100000
+	for done := 0; done < n; done += per {
+		var lk, rk [][]byte
+		for i := 0; i < per && done+i < n; i++ {
+			b := make([]byte, 16)
+			rand.Read(b)
+			k := hex.EncodeToString(b)
+			rg := "prefill" + strconv.Itoa(i%50)
+			lk = append(lk, []byte(rg+dbDelimiter+k))
+			rk = append(rk, []byte(k+dbDelimiter+rg))
+		}
+		So(s.history.bolt.Update(func(tx *bolt.Tx) error {
+			if err := putSortedKeys(tx.Bucket(bucketRTK), lk); err != nil {
+				return err
+			}
+			return putSortedKeys(tx.Bucket(bucketKeyRGs), rk)
+		}), ShouldBeNil)
+	}
+}
+
+func g5fold(t *testing.T, s *logStore, label string, jobs int, bound int64) {
+	ctx := context.Background()
+	_, err := s.storeNewJobsGuarded(ctx, testLogJobs(label, "new", jobs), false, nil)
+	So(err, ShouldBeNil)
+	logFoldTxBytes.Store(bound)
+	before := s.history.bolt.Stats().TxStats
+	txs := s.foldStats.txs.Load()
+	start := time.Now()
+	So(s.foldNow(), ShouldBeNil)
+	took := time.Since(start)
+	after := s.history.bolt.Stats().TxStats
+	t.Logf("G5PROBE %s jobs=%d bound=%d took=%s txs=%d nodes=%d writeBytes~pages=%d", label, jobs, bound, took,
+		s.foldStats.txs.Load()-txs, after.GetNodeCount()-before.GetNodeCount(), after.GetPageAlloc()-before.GetPageAlloc())
+	logFoldTxBytes.Store(0)
+}
+
+func TestG5Nodes(t *testing.T) {
+	ctx := context.Background()
+	sizes := []int{0, 200000, 1000000, 3000000}
+	if e := os.Getenv("G5_SIZES"); e != "" {
+		sizes = nil
+		for _, f := range bytes.Fields([]byte(e)) {
+			n, _ := strconv.Atoi(string(f))
+			sizes = append(sizes, n)
+		}
+	}
+	slices.Sort(sizes)
+	for _, size := range sizes {
+		Convey(fmt.Sprintf("prefill %d", size), t, func() {
+			pauseLogFolder()
+			s, _ := openTestLogStore(t, ctx)
+			g5prefill(s, size)
+			for _, jobs := range []int{4096, 20000} {
+				g5fold(t, s, fmt.Sprintf("p%d-nosplit-%d", size, jobs), jobs, 1<<40)
+				g5fold(t, s, fmt.Sprintf("p%d-bound-%d", size, jobs), jobs, 0)
+			}
+		})
+	}
+}

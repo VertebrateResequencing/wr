@@ -1,0 +1,4 @@
+.......    reserve_backup_tail_repro_test.go:111: reservations 4400: p50 1.366877ms, p99 10.538505ms, max 19.608791ms
+--- PASS: TestReserveWaitDuringBackup (86.33s)
+PASS
+exit=0

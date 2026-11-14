@@ -1,0 +1,75 @@
+package jobqueue
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"slices"
+	"bytes"
+	"testing"
+	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
+	bolt "go.etcd.io/bbolt"
+)
+
+func g5cprefill(s *logStore, n int) {
+	const per = 50000
+	val := make([]byte, 1500)
+	rand.Read(val)
+	for done := 0; done < n; done += per {
+		var ks [][]byte
+		for i := 0; i < per && done+i < n; i++ {
+			b := make([]byte, 16)
+			rand.Read(b)
+			ks = append(ks, []byte(hex.EncodeToString(b)))
+		}
+		slices.SortFunc(ks, bytes.Compare)
+		So(s.history.bolt.Update(func(tx *bolt.Tx) error {
+			jc, cs := tx.Bucket(bucketJobsComplete), tx.Bucket(bucketCompleteSeq)
+			for _, k := range ks {
+				if err := jc.Put(k, val); err != nil {
+					return err
+				}
+				if err := cs.Put(k, []byte{0, 0, 0, 0, 0, 0, 0, 1}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}), ShouldBeNil)
+	}
+}
+
+func g5cfold(t *testing.T, s *logStore, label string, bound int64) {
+	logFoldTxBytes.Store(bound)
+	before := s.history.bolt.Stats().TxStats
+	txs := s.foldStats.txs.Load()
+	start := time.Now()
+	So(s.foldNow(), ShouldBeNil)
+	took := time.Since(start)
+	after := s.history.bolt.Stats().TxStats
+	t.Logf("G5CPROBE %s bound=%d took=%s txs=%d nodes=%d pageAlloc=%d", label, bound, took,
+		s.foldStats.txs.Load()-txs, after.GetNodeCount()-before.GetNodeCount(), after.GetPageAlloc()-before.GetPageAlloc())
+	logFoldTxBytes.Store(0)
+}
+
+func TestG5CompletionsFold(t *testing.T) {
+	ctx := context.Background()
+	for _, size := range []int{0, 300000, 1000000} {
+		Convey(fmt.Sprintf("prefill %d", size), t, func() {
+			pauseLogFolder()
+			s, _ := openTestLogStore(t, ctx)
+			g5prefill(s, size)
+			g5cprefill(s, size)
+			for round, bound := range []int64{1 << 40, 0, 1 << 40, 0} {
+				jobs := testLogJobs(fmt.Sprintf("c%d-%d", size, round), "cg", 4000)
+				_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+				So(err, ShouldBeNil)
+				So(s.foldNow(), ShouldBeNil)
+				archiveIncTestJobs(s, jobs)
+				g5cfold(t, s, fmt.Sprintf("p%d-r%d-complete4000", size, round), bound)
+			}
+		})
+	}
+}

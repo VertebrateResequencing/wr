@@ -123,6 +123,7 @@ const (
 type writerSummary struct {
 	txs, items                             uint64
 	lockNanos, maxLock, holdNanos, maxHold uint64
+	maxLag                                 uint64
 }
 
 // writerStats accumulates one writer's transactions, lock-free: callers only
@@ -138,6 +139,17 @@ type writerStats struct {
 	maxLock   atomic.Uint64
 	holdNanos atomic.Uint64
 	maxHold   atomic.Uint64
+
+	// maxLag is the longest a record had waited to be written by this writer,
+	// for the folder, which alone sets it (see observeLag).
+	maxLag atomic.Uint64
+}
+
+// observeLag records that a record had waited lag to be written: for the
+// folder, how long the oldest record a fold is folding may have waited since
+// it was durable in the log. The "db writer" line logs the longest as maxLag.
+func (w *writerStats) observeLag(lag time.Duration) {
+	storeMax(&w.maxLag, uint64(max(lag, 0)))
 }
 
 // observe records one transaction, holding the given number of items, that was
@@ -166,6 +178,7 @@ func (w *writerStats) take() writerSummary {
 		maxLock:   w.maxLock.Swap(0),
 		holdNanos: w.holdNanos.Swap(0),
 		maxHold:   w.maxHold.Swap(0),
+		maxLag:    w.maxLag.Swap(0),
 	}
 
 	if summary.txs == 0 {
@@ -174,6 +187,7 @@ func (w *writerStats) take() writerSummary {
 		storeMax(&w.maxLock, summary.maxLock)
 		w.holdNanos.Add(summary.holdNanos)
 		storeMax(&w.maxHold, summary.maxHold)
+		storeMax(&w.maxLag, summary.maxLag)
 	}
 
 	return summary
@@ -187,15 +201,21 @@ func (w *writerStats) report(ctx context.Context, name string, interval time.Dur
 		return
 	}
 
-	clog.Warn(ctx, dbWriterStatsLogMsg,
+	fields := []any{
 		"writer", name,
 		"txs", summary.txs,
 		"items", summary.items,
-		"meanLock", nanosDuration(summary.lockNanos/summary.txs),
+		"meanLock", nanosDuration(summary.lockNanos / summary.txs),
 		"maxLock", nanosDuration(summary.maxLock),
-		"meanHold", nanosDuration(summary.holdNanos/summary.txs),
+		"meanHold", nanosDuration(summary.holdNanos / summary.txs),
 		"maxHold", nanosDuration(summary.maxHold),
-		"interval", interval)
+	}
+
+	if summary.maxLag > 0 {
+		fields = append(fields, "maxLag", nanosDuration(summary.maxLag))
+	}
+
+	clog.Warn(ctx, dbWriterStatsLogMsg, append(fields, "interval", interval)...)
 }
 
 // dbWriterStats holds every bbolt writer's writerStats.

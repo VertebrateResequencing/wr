@@ -876,6 +876,21 @@ called ready, or explicitly deferred with the owner.
   owner should rule whether to close this or to pace the write anyway.
   Pacing would not fix 1g.5's failing soak, whose lines over 50ms are
   mostly in minutes with no checkpoint.
+  Resolved in 1g.5's bugfix
+  ([checklist](../../bugfixes/261111-reserve-tail-nfs-4766eb70.md),
+  checkpoint item; [results](../results/phase1-gate-1g5.md), "Round 5"),
+  by pacing, as the rule above says. Once the bugfix's other causes were
+  fixed, the gate soak G6 (2026-11-13) failed one line, its last, which
+  coincided with a 58.5MB checkpoint. `TestReserveWaitDuringCheckpoint`
+  (tag `reliability_repro`) then showed the unpaced write of a 73MB
+  checkpoint holding reservations to p99 97-143ms on local disk and on
+  NFS, as its final fsync sent the whole file ahead of the wal's syncs.
+  `checkpointMerge.write` now writes through `backupCopyWriter`, forcing
+  writeback every `backupCopySyncBytes` (1MiB) and keeping the pages
+  cached: p99 3.4-43.7ms (16 runs, all but two under 12ms), and the
+  checkpoint no slower (2.1-2.7s against 2.3-3.0s at `f1bcc1d7`).
+  `TestLogStoreCheckpointPacesItsWrite` guards it. The daytime soak of
+  the paced code (G7, 2026-11-16) is still to run.
 
 - [x] (from 1d.2 review round 6) Recovery step 1 deletes every `*.tmp`
   (`removeTmpFiles`, `jobqueue/store_checkpoint.go`), but only a

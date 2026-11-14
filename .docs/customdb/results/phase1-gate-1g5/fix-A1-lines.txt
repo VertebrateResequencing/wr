@@ -1,0 +1,52 @@
+12:55:25	n=1796	p99=21.5	max=27.1	abandoned=0	burst	pass
+12:56:25	n=1383	p99=3.7	max=8.7	abandoned=0	-	pass
+12:57:25	n=1377	p99=4.8	max=8.6	abandoned=0	-	pass
+12:58:25	n=1385	p99=4.6	max=7.3	abandoned=0	-	pass
+12:59:25	n=1281	p99=5.9	max=7.7	abandoned=0	burst	pass
+13:00:25	n=1352	p99=9.2	max=45.6	abandoned=0	burst	pass
+13:01:25	n=1399	p99=102.8	max=514.6	abandoned=0	-	FAIL
+13:02:25	n=1365	p99=4.0	max=7.6	abandoned=0	-	pass
+13:03:25	n=1379	p99=8.0	max=12.5	abandoned=0	-	pass
+13:04:25	n=1365	p99=4.8	max=8.7	abandoned=0	burst	pass
+13:05:25	n=2757	p99=28.8	max=37.1	abandoned=0	burst	pass
+13:06:25	n=2691	p99=5.9	max=13.8	abandoned=0	-	pass
+13:07:25	n=2750	p99=5.9	max=28.1	abandoned=0	-	pass
+13:08:25	n=2670	p99=5.4	max=13.5	abandoned=0	-	pass
+13:09:25	n=2759	p99=3.7	max=13.4	abandoned=0	burst	pass
+13:10:25	n=2733	p99=8.3	max=86.9	abandoned=0	burst	pass
+13:11:25	n=2882	p99=4.6	max=14.1	abandoned=0	-	pass
+13:12:25	n=2754	p99=8.7	max=23.5	abandoned=0	-	pass
+13:13:25	n=2656	p99=9.7	max=30.0	abandoned=0	-	pass
+13:14:25	n=2668	p99=7.2	max=22.5	abandoned=0	burst	pass
+13:15:25	n=4658	p99=14.4	max=65.5	abandoned=0	burst	pass
+13:16:25	n=4671	p99=13.4	max=47.1	abandoned=0	-	pass
+13:17:25	n=4712	p99=13.4	max=47.7	abandoned=0	-	pass
+13:18:25	n=4686	p99=18.4	max=41.9	abandoned=0	-	pass
+13:19:25	n=4605	p99=14.9	max=32.9	abandoned=0	burst	pass
+13:20:25	n=4671	p99=69.2	max=286.5	abandoned=0	burst	FAIL
+13:21:25	n=4717	p99=14.4	max=46.2	abandoned=0	-	pass
+13:22:25	n=4702	p99=12.3	max=34.0	abandoned=0	-	pass
+13:23:25	n=4661	p99=11.8	max=29.9	abandoned=0	-	pass
+13:24:25	n=4621	p99=15.5	max=46.1	abandoned=0	burst	pass
+13:25:25	n=4623	p99=69.2	max=210.0	abandoned=0	burst	FAIL
+13:26:25	n=4607	p99=6.4	max=49.3	abandoned=0	-	pass
+13:27:25	n=4674	p99=10.2	max=59.3	abandoned=0	-	pass
+13:28:25	n=4639	p99=13.9	max=61.2	abandoned=0	-	pass
+13:29:25	n=4647	p99=16.0	max=51.9	abandoned=0	burst	pass
+13:30:25	n=6622	p99=47.2	max=130.6	abandoned=0	burst	pass
+13:31:25	n=6484	p99=9.2	max=38.7	abandoned=0	-	pass
+13:32:25	n=6545	p99=12.8	max=54.8	abandoned=0	-	pass
+13:33:25	n=6548	p99=11.8	max=50.2	abandoned=0	-	pass
+13:34:25	n=6553	p99=17.3	max=73.6	abandoned=0	burst	pass
+13:35:25	n=6559	p99=119.5	max=217.6	abandoned=0	burst	FAIL
+13:36:25	n=6544	p99=25.7	max=58.6	abandoned=0	-	pass
+13:37:25	n=6638	p99=21.5	max=63.0	abandoned=0	-	pass
+13:38:25	n=6476	p99=17.3	max=50.8	abandoned=0	-	pass
+13:39:25	n=6623	p99=20.4	max=51.1	abandoned=0	-	pass
+summary burst n0-2000: lines=4 p99 4.8-21.5ms median 9.2 fail=0
+summary burst n2000-4000: lines=4 p99 3.7-28.8ms median 8.3 fail=0
+summary burst n4000-99999: lines=9 p99 14.4-119.5ms median 17.3 fail=3
+summary other n0-2000: lines=6 p99 3.7-102.8ms median 4.8 fail=1
+summary other n2000-4000: lines=6 p99 4.6-9.7ms median 5.9 fail=0
+summary other n4000-99999: lines=16 p99 6.4-25.7ms median 13.4 fail=0
+total lines=45 fail=4 abandoned=0

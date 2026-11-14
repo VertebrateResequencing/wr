@@ -245,12 +245,15 @@ const managerMmapMinHeadroom = 4 << 30
 const managerMmapMaxSize = 1 << 40
 
 // backupCopySyncInterval is how many bytes copyBackup writes to the backup file
-// before forcing writeback of that region (see backupCopyWriter.pace). 8 MiB caps
-// the delay a concurrent foreground archive/touch commit's fdatasync can suffer to
-// roughly one interval's worth of backup writeback, independent of the DB's size
-// or the storage's speed; it was tuned as the freeze-floor minimum below which the
-// periodic full-file backup no longer stalls the manager.
-const backupCopySyncInterval = 8 * 1024 * 1024
+// before forcing writeback of that region (see backupCopyWriter.pace). It caps
+// the delay a concurrent foreground fdatasync (a bbolt commit, or the log
+// store's wal sync that a reservation waits for) can suffer to roughly one
+// interval's worth of backup writeback, independent of the DB's size. 8 MiB,
+// the freeze-floor minimum the bbolt store was tuned to, cost each such sync up
+// to about 150ms on NFS (about 50MB/s), past phase 1's 50ms reservation target
+// (.docs/bugfixes/261111-reserve-tail-nfs-4766eb70.md); 1 MiB costs about
+// 20ms there and copies at about the same speed.
+const backupCopySyncInterval = 1024 * 1024
 
 //nolint:gochecknoglobals // prod-inert test seams for exercising the backup copy's pacing.
 var (
@@ -1000,7 +1003,7 @@ func (w *backupCopyWriter) pace() error {
 	}
 
 	curOffset, curLength := w.syncedOffset, w.written-w.syncedOffset
-	if handled, err := backupPaceRange(w.f, curOffset, curLength, w.prevOffset, w.prevLength); handled {
+	if handled, err := backupPaceRange(w.f, curOffset, curLength, w.prevOffset, w.prevLength, !w.keepCached); handled {
 		w.prevOffset, w.prevLength = curOffset, curLength
 		w.syncedOffset = w.written
 
@@ -1348,6 +1351,11 @@ type backupCopyWriter struct {
 	prevOffset   int64 // previous paced chunk (SFR pipeline: one chunk behind)
 	prevLength   int64
 	syncEvery    int64
+
+	// keepCached keeps the paced ranges in the page cache, for a file read
+	// soon after it is written, as a checkpoint's records are (by folds and
+	// queries, through their Refs).
+	keepCached bool
 }
 
 // Write streams p to the backup file, pacing writeback every syncEvery bytes. It

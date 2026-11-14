@@ -1,0 +1,41 @@
+                         │   foldoff    │               final                │
+                         │    sec/op    │    sec/op     vs base              │
+KickUnderReserveLoad-8     75.11m ±  6%   78.52m ± 26%       ~ (p=0.310 n=6)
+ResumeUnderReserveLoad-8   67.82m ± 11%   74.57m ± 34%  +9.95% (p=0.041 n=6)
+geomean                    71.37m         76.52m        +7.21%
+
+                         │    foldoff     │                 final                 │
+                         │ reserve-max-us │ reserve-max-us  vs base               │
+KickUnderReserveLoad-8      2.121k ±  45%    3.876k ± 207%  +82.72% (p=0.026 n=6)
+ResumeUnderReserveLoad-8    2.541k ± 191%    2.756k ± 270%        ~ (p=0.818 n=6)
+geomean                     2.322k           3.268k         +40.76%
+
+                         │    foldoff     │                final                 │
+                         │ reserve-p50-us │ reserve-p50-us  vs base              │
+KickUnderReserveLoad-8        19.91 ± 23%      21.59 ± 40%       ~ (p=0.058 n=6)
+ResumeUnderReserveLoad-8      26.09 ± 16%      28.67 ± 49%       ~ (p=0.310 n=6)
+geomean                       22.79            24.88        +9.17%
+
+                         │    foldoff     │                final                 │
+                         │ reserve-p99-us │ reserve-p99-us  vs base              │
+KickUnderReserveLoad-8        200.6 ±  7%      202.6 ± 37%       ~ (p=0.818 n=6)
+ResumeUnderReserveLoad-8      213.1 ± 15%      211.8 ± 32%       ~ (p=0.851 n=6)
+geomean                       206.8            207.2        +0.19%
+
+                         │   foldoff   │               final                │
+                         │ reserves/op │ reserves/op   vs base              │
+KickUnderReserveLoad-8     4.660k ± 6%   4.702k ± 13%       ~ (p=0.699 n=6)
+ResumeUnderReserveLoad-8   4.357k ± 9%   4.532k ± 19%       ~ (p=0.195 n=6)
+geomean                    4.506k        4.617k        +2.46%
+
+                         │    foldoff    │               final                │
+                         │     B/op      │     B/op      vs base              │
+KickUnderReserveLoad-8     8.069Mi ± 14%   8.085Mi ± 2%       ~ (p=0.699 n=6)
+ResumeUnderReserveLoad-8   6.079Mi ± 13%   6.170Mi ± 4%       ~ (p=0.132 n=6)
+geomean                    7.004Mi         7.063Mi       +0.85%
+
+                         │   foldoff   │               final               │
+                         │  allocs/op  │  allocs/op   vs base              │
+KickUnderReserveLoad-8     90.95k ± 2%   91.10k ± 4%       ~ (p=0.937 n=6)
+ResumeUnderReserveLoad-8   59.50k ± 2%   60.00k ± 8%       ~ (p=0.394 n=6)
+geomean                    73.56k        73.93k       +0.50%

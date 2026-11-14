@@ -1,0 +1,84 @@
+Round 4 final code probes, local disk, farm22-wrstat01, 2026-11-13. freelist probe: review round 3's freelist_probe_test.go (2 GetPageAlloc calls made addressable to compile); f1bcc1d7 arm run 11:56 (g5i-fl.txt below), final arm 12:49. review probe: f1bcc1d7 (rev1g5-foldtime-base.test) vs final, interleaved. completions / tx size probes as fix-foldcomplete-probe.go.txt / fix-txsize-probe.go.txt.
+--- f1bcc1d7 freelist arm (11:56) and the near-final head (11:57, before the scale's smoothing was dropped):
+== base 11:56:21
+junk 0MB: free pages 0, freelist bytes 6840
+RESULT junk 0MB freelist 6840B: fold of 4000 completions took 197.127193ms in 2 txs, wrote 24MB
+junk 256MB: free pages 129295, freelist bytes 1036424
+RESULT junk 256MB freelist 1036424B: fold of 4000 completions took 191.704233ms in 2 txs, wrote 26MB
+junk 512MB: free pages 258582, freelist bytes 2072752
+RESULT junk 512MB freelist 2072752B: fold of 4000 completions took 204.864754ms in 2 txs, wrote 28MB
+junk 1024MB: free pages 517158, freelist bytes 4145416
+RESULT junk 1024MB freelist 4145416B: fold of 4000 completions took 205.870985ms in 2 txs, wrote 32MB
+== head 11:57:11
+junk 0MB: free pages 0, freelist bytes 1224
+RESULT junk 0MB freelist 1224B: fold of 4000 completions took 213.999602ms in 13 txs, wrote 25MB
+junk 256MB: free pages 129295, freelist bytes 1036424
+RESULT junk 256MB freelist 1036424B: fold of 4000 completions took 240.590494ms in 13 txs, wrote 38MB
+junk 512MB: free pages 258582, freelist bytes 2072752
+RESULT junk 512MB freelist 2072752B: fold of 4000 completions took 280.394957ms in 13 txs, wrote 51MB
+junk 1024MB: free pages 517158, freelist bytes 4145416
+RESULT junk 1024MB freelist 4145416B: fold of 4000 completions took 291.043238ms in 7 txs, wrote 52MB
+== end 11:58:00
+--- final code:
+== freelist probe head 12:49:17
+RESULT junk 0MB freelist 1040B: fold of 4000 completions took 208.96886ms in 13 txs, wrote 25MB
+RESULT junk 256MB freelist 1036424B: fold of 4000 completions took 274.433439ms in 13 txs, wrote 38MB
+RESULT junk 512MB freelist 2072752B: fold of 4000 completions took 306.788363ms in 13 txs, wrote 51MB
+RESULT junk 1024MB freelist 4145416B: fold of 4000 completions took 299.683063ms in 7 txs, wrote 52MB
+== review probe 12:50:06
+rev1g5-foldtime-base run 1: REVFOLD took 860.78282ms txs 30
+g5i-head run 1: REVFOLD took 1.1177163s txs 72
+rev1g5-foldtime-base run 2: REVFOLD took 840.488522ms txs 30
+g5i-head run 2: REVFOLD took 1.109472387s txs 72
+rev1g5-foldtime-base run 3: REVFOLD took 856.895181ms txs 30
+g5i-head run 3: REVFOLD took 1.095909642s txs 72
+== completions probe 12:50:15
+G5CPROBE p0-r0-complete4000 bound=1099511627776 took=129.576106ms txs=2 nodes=850 pageAlloc=10387456
+G5CPROBE p0-r1-complete4000 bound=0 took=173.597458ms txs=9 nodes=2676 pageAlloc=17489920
+G5CPROBE p0-r2-complete4000 bound=1099511627776 took=187.997218ms txs=2 nodes=3222 pageAlloc=19632128
+G5CPROBE p0-r3-complete4000 bound=0 took=199.351751ms txs=12 nodes=4110 pageAlloc=23293952
+G5CPROBE p300000-r0-complete4000 bound=1099511627776 took=416.720278ms txs=2 nodes=10059 pageAlloc=55943168
+G5CPROBE p300000-r1-complete4000 bound=0 took=584.223339ms txs=28 nodes=10902 pageAlloc=72400896
+G5CPROBE p300000-r2-complete4000 bound=1099511627776 took=457.495243ms txs=2 nodes=10167 pageAlloc=56647680
+G5CPROBE p300000-r3-complete4000 bound=0 took=589.888245ms txs=29 nodes=11057 pageAlloc=73117696
+G5CPROBE p1000000-r0-complete4000 bound=1099511627776 took=494.479657ms txs=2 nodes=12049 pageAlloc=65720320
+G5CPROBE p1000000-r1-complete4000 bound=0 took=883.061624ms txs=33 nodes=13089 pageAlloc=94367744
+G5CPROBE p1000000-r2-complete4000 bound=1099511627776 took=575.105042ms txs=2 nodes=12092 pageAlloc=65740800
+G5CPROBE p1000000-r3-complete4000 bound=0 took=912.695541ms txs=33 nodes=13122 pageAlloc=94400512
+== tx size probe 12:52:06
+G5TX base=20000 cmd=100 txs=16 took=263.155678ms sum=32.7MB max=2.64MB allocsMB=[2.64 2.06 2.16 2.04 2.11 2.10 2.08 1.27 2.20 2.09 2.05 2.19 2.03 2.11 2.13 1.47]
+G5TX base=20000 cmd=8192 txs=70 took=873.704416ms sum=149.9MB max=4.96MB allocsMB=[4.96 1.84 2.24 2.23 1.93 2.35 2.11 2.01 2.13 2.22 1.91 2.31 2.07 2.26 2.06 2.16 2.08 2.15 2.02 2.19 2.09 2.08 2.19 2.01 2.31 2.11 2.16 2.01 2.27 1.95 2.25 2.13 2.05 2.01 1.34 2.17 2.38 2.03 2.10 2.24 1.98 2.15 2.13 2.16 1.98 2.43 1.90 2.18 2.08 2.16 2.10 2.13 2.21 1.99 2.20 2.13 2.06 2.13 2.15 1.93 2.25 2.23 2.12 2.03 2.06 2.04 2.22 2.09 2.28 1.32]
+G5TX base=20000 cmd=40960 txs=249 took=3.309791214s sum=629.8MB max=6.48MB allocsMB=[6.48 2.13 2.51 2.34 2.56 2.36 2.78 2.79 2.53 2.48 2.74 2.17 2.61 2.79 2.70 2.36 2.49 2.94 2.49 2.24 2.02 2.46 2.12 2.76 2.50 2.71 2.46 2.47 2.49 2.63 2.53 2.73 2.12 2.50 2.50 2.54 2.63 2.49 2.68 2.54 2.42 2.33 2.72 2.33 2.30 2.45 2.39 2.68 2.38 2.42 2.59 2.48 2.82 1.63 2.69 2.64 2.35 2.39 2.64 2.26 2.31 2.34 2.78 2.30 2.82 2.52 2.56 2.32 2.44 2.38 2.83 2.95 2.51 2.24 2.46 2.57 2.44 2.65 2.61 2.30 2.61 2.40 2.19 2.44 2.40 2.88 2.56 2.65 2.47 2.27 2.74 3.00 2.56 2.56 2.44 2.47 2.40 2.21 2.10 2.74 2.56 2.78 2.61 2.62 2.38 2.73 2.35 2.35 2.67 2.34 2.69 2.71 2.60 2.95 2.56 2.60 2.36 2.27 2.61 2.67 2.61 2.56 2.77 2.43 2.45 2.43 0.21 3.42 2.43 2.44 2.61 2.60 2.40 2.39 2.27 2.49 2.31 2.56 2.18 2.44 2.75 2.58 2.74 2.74 2.14 2.29 2.54 2.15 2.74 2.58 2.67 2.50 2.33 2.41 2.41 2.81 2.59 2.49 2.29 2.71 2.81 2.47 2.34 2.68 2.36 2.80 2.23 2.88 2.24 2.72 2.47 2.67 2.73 2.81 2.33 2.35 2.61 2.77 2.47 2.29 2.67 2.85 2.85 2.17 1.74 2.91 2.50 2.91 2.67 2.86 2.35 2.77 2.74 2.79 2.47 2.55 2.34 2.39 2.44 2.78 2.25 2.05 2.48 2.60 2.63 2.57 2.30 2.73 2.49 2.38 2.29 2.61 2.13 2.80 2.82 2.60 2.72 3.07 2.33 2.95 2.91 2.69 2.53 2.35 2.32 2.52 2.51 2.19 2.47 2.74 2.57 2.87 2.52 2.56 2.51 2.86 2.31 2.65 2.78 2.56 2.61 2.54 2.70 2.45 2.17 2.44 2.43 2.69 1.18]
+== end 12:53:31
+
+--- final code (60s foldLagStep, unsmoothed scale), 2026-11-13 16:39-16:44:
+== freelist probe final 16:39:48
+RESULT junk 0MB freelist 992B: fold of 4000 completions took 220.647028ms in 13 txs, wrote 25MB
+RESULT junk 256MB freelist 1036424B: fold of 4000 completions took 246.802009ms in 13 txs, wrote 38MB
+RESULT junk 512MB freelist 2072752B: fold of 4000 completions took 314.421471ms in 13 txs, wrote 51MB
+RESULT junk 1024MB freelist 4145416B: fold of 4000 completions took 307.451453ms in 7 txs, wrote 52MB
+== review probe 16:40:35
+rev1g5-foldtime-base run 1: REVFOLD took 879.538953ms txs 30
+g5i-head run 1: REVFOLD took 1.090096796s txs 72
+rev1g5-foldtime-base run 2: REVFOLD took 904.639898ms txs 30
+g5i-head run 2: REVFOLD took 1.087090326s txs 72
+rev1g5-foldtime-base run 3: REVFOLD took 880.093279ms txs 30
+g5i-head run 3: REVFOLD took 1.072647092s txs 72
+== completions probe 16:40:44
+G5CPROBE p0-r0-complete4000 bound=1099511627776 took=131.583146ms txs=2 nodes=850 pageAlloc=10387456
+G5CPROBE p0-r1-complete4000 bound=0 took=176.033053ms txs=9 nodes=2676 pageAlloc=17489920
+G5CPROBE p0-r2-complete4000 bound=1099511627776 took=189.178847ms txs=2 nodes=3222 pageAlloc=19632128
+G5CPROBE p0-r3-complete4000 bound=0 took=209.38731ms txs=12 nodes=4110 pageAlloc=23293952
+G5CPROBE p300000-r0-complete4000 bound=1099511627776 took=454.770932ms txs=2 nodes=10022 pageAlloc=56188928
+G5CPROBE p300000-r1-complete4000 bound=0 took=610.729354ms txs=28 nodes=10890 pageAlloc=72523776
+G5CPROBE p300000-r2-complete4000 bound=1099511627776 took=469.014466ms txs=2 nodes=10116 pageAlloc=56352768
+G5CPROBE p300000-r3-complete4000 bound=0 took=639.931007ms txs=29 nodes=11006 pageAlloc=73428992
+G5CPROBE p1000000-r0-complete4000 bound=1099511627776 took=537.854188ms txs=2 nodes=12050 pageAlloc=65409024
+G5CPROBE p1000000-r1-complete4000 bound=0 took=845.422558ms txs=33 nodes=13056 pageAlloc=94412800
+G5CPROBE p1000000-r2-complete4000 bound=1099511627776 took=584.354327ms txs=2 nodes=12073 pageAlloc=65839104
+G5CPROBE p1000000-r3-complete4000 bound=0 took=877.89615ms txs=33 nodes=13073 pageAlloc=94068736
+== tx size probe 16:42:37
+G5TX base=20000 cmd=100 txs=16 took=270.383082ms sum=32.6MB max=2.64MB allocsMB=[2.64 2.07 2.15 2.02 2.17 2.03 2.13 1.22 2.25 2.13 2.07 2.11 2.10 2.06 2.16 1.25]
+G5TX base=20000 cmd=8192 txs=70 took=790.549128ms sum=150.2MB max=5.06MB allocsMB=[5.06 1.84 2.22 2.19 1.95 2.33 1.97 2.20 2.06 2.20 1.94 2.36 2.02 2.10 2.05 2.23 2.12 2.18 1.94 2.23 2.03 2.24 2.12 2.
+G5TX base=20000 cmd=40960 txs=248 took=3.315570178s sum=626.9MB max=6.58MB allocsMB=[6.58 2.09 2.27 2.51 2.65 2.36 2.56 2.70 2.56 2.36 2.74 2.39 2.40 2.78 2.58 2.58 2.54 3.07 2.41 2.42 2.06 2.17 2.15 
+== end 16:44:10

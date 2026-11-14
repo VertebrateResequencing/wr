@@ -1,0 +1,45 @@
+Round 3 final code probes, local disk, farm22-wrstat01, 2026-11-12 20:39-20:44. review probe: f1bcc1d7 (rev1g5-foldtime-base.test) vs final, interleaved. node probe = fix-foldsplit-probe.go.txt; completions probe = fix-foldcomplete-probe.go.txt; tx size probe = fix-txsize-probe.go.txt (G5_BASE archived jobs folded, then 4,000 archived, folded with the default 2MB bound; allocsMB = each fold transaction's history.bolt PageAlloc).
+== review probe 20:39:40
+rev1g5-foldtime-base run 1: REVFOLD took 844.883181ms txs 30
+g5c-probe run 1: REVFOLD took 1.079881904s txs 73
+rev1g5-foldtime-base run 2: REVFOLD took 895.361178ms txs 30
+g5c-probe run 2: REVFOLD took 1.097576405s txs 73
+rev1g5-foldtime-base run 3: REVFOLD took 888.760866ms txs 30
+g5c-probe run 3: REVFOLD took 1.133118915s txs 73
+rev1g5-foldtime-base run 4: REVFOLD took 874.262142ms txs 30
+g5c-probe run 4: REVFOLD took 1.107124433s txs 73
+== node probe 20:39:53
+G5PROBE p0-nosplit-4096 jobs=4096 bound=1099511627776 took=21.515952ms txs=1 nodes=5 writeBytes~pages=966656
+G5PROBE p0-bound-4096 jobs=4096 bound=0 took=25.733195ms txs=2 nodes=244 writeBytes~pages=1376256
+G5PROBE p0-nosplit-20000 jobs=20000 bound=1099511627776 took=113.376448ms txs=1 nodes=329 writeBytes~pages=5783552
+G5PROBE p0-bound-20000 jobs=20000 bound=0 took=122.24425ms txs=5 nodes=1441 writeBytes~pages=7643136
+G5PROBE p200000-nosplit-4096 jobs=4096 bound=1099511627776 took=98.006231ms txs=1 nodes=2652 writeBytes~pages=12214272
+G5PROBE p200000-bound-4096 jobs=4096 bound=0 took=98.381906ms txs=6 nodes=2856 writeBytes~pages=12894208
+G5PROBE p200000-nosplit-20000 jobs=20000 bound=1099511627776 took=249.952014ms txs=1 nodes=4794 writeBytes~pages=25112576
+G5PROBE p200000-bound-20000 jobs=20000 bound=0 took=261.364442ms txs=14 nodes=6151 writeBytes~pages=27992064
+G5PROBE p1000000-nosplit-4096 jobs=4096 bound=1099511627776 took=142.206883ms txs=1 nodes=4185 writeBytes~pages=18288640
+G5PROBE p1000000-bound-4096 jobs=4096 bound=0 took=162.230657ms txs=9 nodes=4356 writeBytes~pages=21217280
+G5PROBE p1000000-nosplit-20000 jobs=20000 bound=1099511627776 took=467.195791ms txs=1 nodes=13434 writeBytes~pages=59269120
+G5PROBE p1000000-bound-20000 jobs=20000 bound=0 took=605.354749ms txs=32 nodes=14377 writeBytes~pages=71282688
+G5PROBE p3000000-nosplit-4096 jobs=4096 bound=1099511627776 took=220.842507ms txs=1 nodes=5334 writeBytes~pages=23461888
+G5PROBE p3000000-bound-4096 jobs=4096 bound=0 took=352.375708ms txs=15 nodes=5575 writeBytes~pages=35463168
+G5PROBE p3000000-nosplit-20000 jobs=20000 bound=1099511627776 took=661.409229ms txs=1 nodes=18712 writeBytes~pages=81383424
+G5PROBE p3000000-bound-20000 jobs=20000 bound=0 took=1.170538073s txs=53 nodes=19676 writeBytes~pages=125607936
+== completions probe 20:41:16
+G5CPROBE p0-r0-complete4000 bound=1099511627776 took=117.306588ms txs=2 nodes=850 pageAlloc=10387456
+G5CPROBE p0-r1-complete4000 bound=0 took=152.779842ms txs=10 nodes=2715 pageAlloc=17649664
+G5CPROBE p0-r2-complete4000 bound=1099511627776 took=196.618505ms txs=2 nodes=3222 pageAlloc=19632128
+G5CPROBE p0-r3-complete4000 bound=0 took=208.394144ms txs=12 nodes=4104 pageAlloc=23277568
+G5CPROBE p300000-r0-complete4000 bound=1099511627776 took=411.677148ms txs=2 nodes=10056 pageAlloc=56061952
+G5CPROBE p300000-r1-complete4000 bound=0 took=665.233165ms txs=39 nodes=11209 pageAlloc=79331328
+G5CPROBE p300000-r2-complete4000 bound=1099511627776 took=436.409112ms txs=2 nodes=10153 pageAlloc=56537088
+G5CPROBE p300000-r3-complete4000 bound=0 took=696.314959ms txs=39 nodes=11363 pageAlloc=79831040
+G5CPROBE p1000000-r0-complete4000 bound=1099511627776 took=490.934996ms txs=2 nodes=12031 pageAlloc=65703936
+G5CPROBE p1000000-r1-complete4000 bound=0 took=1.172760355s txs=18 nodes=13743 pageAlloc=114835456
+G5CPROBE p1000000-r2-complete4000 bound=1099511627776 took=548.138177ms txs=2 nodes=12088 pageAlloc=65617920
+G5CPROBE p1000000-r3-complete4000 bound=0 took=1.06544334s txs=54 nodes=13734 pageAlloc=113356800
+== tx size probe 20:43:04
+G5TX base=20000 cmd=100 txs=16 took=260.751652ms sum=32.6MB max=2.51MB allocsMB=[2.51 2.29 2.19 2.10 2.08 2.08 2.09 1.13 2.18 2.14 2.12 2.08 2.15 2.08 2.13 1.20]
+G5TX base=20000 cmd=8192 txs=70 took=779.178263ms sum=151.3MB max=4.32MB allocsMB=[4.32 2.62 2.28 2.28 2.06 2.31 2.10 2.05 2.05 2.21 2.02 2.20 2.13 2.06 2.23 2.06 2.13 2.22 1.93 2.08 2.23 2.16 2.10 2.02 2.24 2.08 2.24 2.01 2.13 2.14 2.22 2.13 2.06 1.98 1.93 2.12 2.24 2.24 2.02 2.26 2.13 2.09 2.18 2.09 2.02 2.24 2.09 2.16 2.18 2.11 2.10 2.17 2.14 2.08 2.01 2.25 2.09 2.13 2.04 2.15 2.08 2.15 2.11 2.09 2.24 1.97 2.13 2.17 2.24 1.77]
+G5TX base=20000 cmd=40960 txs=302 took=3.062141367s sum=666.5MB max=5.26MB allocsMB=[5.26 2.75 2.70 2.19 2.64 2.53 1.86 2.27 2.19 2.20 2.36 2.15 2.44 1.72 2.46 1.95 2.24 2.24 2.24 2.08 2.30 2.48 1.65 1.94 2.16 2.29 2.15 2.31 2.56 2.16 2.30 2.08 2.46 2.00 2.33 2.04 2.16 2.22 2.33 1.78 2.03 2.29 2.37 2.30 2.20 2.30 2.04 2.00 2.18 2.26 1.96 2.39 2.10 2.18 2.34 1.96 2.47 2.13 2.21 1.93 2.40 2.13 2.13 2.02 1.83 2.40 2.27 2.22 2.49 2.36 2.02 1.93 2.39 2.18 2.23 2.10 2.14 2.52 2.14 1.97 2.27 2.20 2.36 2.06 2.13 2.61 2.23 1.84 2.22 2.13 2.07 2.10 2.49 2.31 2.44 1.87 2.44 2.13 2.24 1.72 2.46 2.15 2.63 2.15 2.16 2.29 2.18 2.18 2.32 2.22 2.57 2.00 2.14 1.93 2.45 2.32 1.93 2.22 2.03 2.62 2.40 2.02 2.19 2.28 2.07 2.22 1.89 2.27 2.27 2.09 2.55 1.88 2.19 2.11 1.97 2.57 2.46 2.09 2.53 2.10 1.98 1.72 2.28 2.20 2.57 2.20 2.24 2.29 2.14 1.98 1.94 2.17 2.28 2.51 2.20 1.95 2.12 2.41 1.99 1.99 2.20 2.24 2.31 2.03 2.29 2.07 2.29 2.34 2.17 2.21 2.48 2.25 2.29 1.79 1.92 2.36 2.18 1.96 2.31 2.06 2.30 2.39 2.04 1.97 2.27 2.22 2.39 2.10 2.15 2.22 1.85 2.34 2.47 2.19 1.97 2.57 1.89 2.11 2.02 2.23 2.44 2.39 1.93 2.40 2.11 2.28 2.13 2.36 2.22 2.02 2.20 1.94 2.32 2.38 1.95 2.63 1.81 2.49 1.89 2.32 2.33 1.85 1.55 2.49 2.34 2.28 2.47 2.09 2.03 2.04 2.28 2.16 2.29 2.50 1.95 1.98 2.28 2.23 1.81 2.16 2.25 2.38 2.03 2.06 2.20 2.59 2.07 2.63 1.75 2.17 2.11 2.67 2.23 2.21 2.02 2.15 2.50 1.78 2.29 2.33 2.17 2.46 2.20 2.34 2.30 1.82 2.29 2.42 2.29 1.81 2.26 2.08 2.25 2.07 2.45 1.99 2.08 2.00 2.46 1.99 2.25 2.29 2.16 2.23 2.25 2.38 2.08 2.06 2.17 2.47 2.29 2.13 1.91 2.12 2.34 2.19 1.95 2.04 2.18 2.25 2.16 1.99]
+== end 20:44:22

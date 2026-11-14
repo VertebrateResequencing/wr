@@ -1821,8 +1821,11 @@ type logStore struct {
 	// set once close has stopped the folder goroutine, which foldStop stops
 	// and closes foldExited as it ends. foldStats are the folds' "db writer"
 	// figures, and foldFailures how many failed since foldFailLogged, when
-	// the folder goroutine last logged one.
+	// the folder goroutine last logged one. foldLagFrom is when the oldest
+	// record a fold has not folded can at the earliest have been written: when
+	// the last fold that reached its target began (see foldNow).
 	foldMu         sync.Mutex
+	foldLagFrom    time.Time
 	foldClosed     bool
 	foldStop       chan struct{}
 	foldExited     chan struct{}

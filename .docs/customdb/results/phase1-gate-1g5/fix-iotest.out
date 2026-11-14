@@ -1,0 +1,5 @@
+12:51:24 boltPerCommit=0 commits=0 commitMean=0s commitMax=0s walSyncs=3597 p50=890µs p90=1.1ms p99=1.3ms max=6.36ms
+12:52:04 boltPerCommit=8388608 commits=20 commitMean=152ms commitMax=204ms walSyncs=3399 p50=830µs p90=1.13ms p99=2.26ms max=179.8ms
+12:52:44 boltPerCommit=1048576 commits=160 commitMean=20ms commitMax=30ms walSyncs=3448 p50=930µs p90=1.18ms p99=14.51ms max=18.1ms
+12:53:24 boltPerCommit=131072 commits=1280 commitMean=4ms commitMax=46ms walSyncs=3574 p50=810µs p90=1.1ms p99=2.03ms max=9.96ms
+12:54:04 boltPerCommit=0 commits=0 commitMean=0s commitMax=0s walSyncs=3587 p50=920µs p90=1.12ms p99=1.31ms max=54.56ms

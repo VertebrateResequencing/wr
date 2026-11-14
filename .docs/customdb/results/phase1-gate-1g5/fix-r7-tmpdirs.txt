@@ -1,0 +1,30 @@
+== TMPDIR=/tmp (ext2/ext3)
+46 total assertions
+--- PASS: TestDBBackupCopy (0.30s)
+73 total assertions
+--- PASS: TestLogStoreIncrementalBackupDropsHistoryCopyFromCache (0.97s)
+99 total assertions
+--- PASS: TestLogStoreCheckpointPacesItsWrite (0.49s)
+PASS
+== TMPDIR=/dev/shm/r5g5-tmp (tmpfs)
+    db_bolt_test.go:1343: not checking the page-cache residency of /dev/shm/r5g5-tmp/TestDBBackupCopy2583499254/002/copy.db: FADV_DONTNEED leaves its pages resident there (as on tmpfs)
+45 total assertions (one or more sections skipped)
+--- PASS: TestDBBackupCopy (0.07s)
+    store_backup_history_copy_test.go:280: not checking the page-cache residency of /dev/shm/r5g5-tmp/TestLogStoreIncrementalBackupDropsHistoryCopyFromCache1359062908/001/db_bk/history.bolt: FADV_DONTNEED leaves its pages resident there (as on tmpfs)
+71 total assertions (one or more sections skipped)
+--- PASS: TestLogStoreIncrementalBackupDropsHistoryCopyFromCache (0.17s)
+    store_checkpoint_pace_test.go:82: not checking the page-cache residency of /dev/shm/r5g5-tmp/TestLogStoreCheckpointPacesItsWrite2358278987/001/store/00000002.ckpt: FADV_DONTNEED leaves its pages resident there (as on tmpfs)
+96 total assertions (one or more sections skipped)
+--- PASS: TestLogStoreCheckpointPacesItsWrite (0.42s)
+PASS
+== TMPDIR=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/r6-tmp (nfs)
+    db_bolt_test.go:1343: not checking the page-cache residency of /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/r6-tmp/TestDBBackupCopy2553063313/002/copy.db: a file written, synced, renamed and opened again there shows no page resident (as on NFS)
+41 total assertions (one or more sections skipped)
+--- PASS: TestDBBackupCopy (0.82s)
+    store_backup_history_copy_test.go:280: not checking the page-cache residency of /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/r6-tmp/TestLogStoreIncrementalBackupDropsHistoryCopyFromCache4097992342/001/db_bk/history.bolt: a file written, synced, renamed and opened again there shows no page resident (as on NFS)
+63 total assertions (one or more sections skipped)
+--- PASS: TestLogStoreIncrementalBackupDropsHistoryCopyFromCache (1.32s)
+    store_checkpoint_pace_test.go:82: not checking the page-cache residency of /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/r6-tmp/TestLogStoreCheckpointPacesItsWrite2746570895/001/store/00000002.ckpt: a file written, synced, renamed and opened again there shows no page resident (as on NFS)
+84 total assertions (one or more sections skipped)
+--- PASS: TestLogStoreCheckpointPacesItsWrite (0.78s)
+PASS

@@ -1,0 +1,40 @@
+speed.sh quick, SPEED_BENCH=SuspendUnderReserveLoad, SPEED_SCENARIOS=none, SPEED_COUNT=10, farm22-wrstat01, 2026-11-12 16:12-17:04 GMT (1-min load 1.7-2.7)
+base: f1bcc1d7; head: the final code
+
+================ benchstat ================
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                          │    base     │              head              │
+                          │   sec/op    │    sec/op     vs base          │
+SuspendUnderReserveLoad-8   34.35m ± 9%   36.19m ± 12%  ~ (p=0.143 n=10)
+
+                          │      base      │               head               │
+                          │ reserve-max-us │ reserve-max-us  vs base          │
+SuspendUnderReserveLoad-8     2.297k ± 53%     2.147k ± 25%  ~ (p=0.579 n=10)
+
+                          │      base      │               head               │
+                          │ reserve-p50-us │ reserve-p50-us  vs base          │
+SuspendUnderReserveLoad-8      8.949 ± 23%     10.152 ± 33%  ~ (p=0.393 n=10)
+
+                          │      base      │               head               │
+                          │ reserve-p99-us │ reserve-p99-us  vs base          │
+SuspendUnderReserveLoad-8      133.7 ± 10%      139.3 ± 15%  ~ (p=0.225 n=10)
+
+                          │    base     │             head              │
+                          │ reserves/op │ reserves/op  vs base          │
+SuspendUnderReserveLoad-8   2.821k ± 5%   2.853k ± 8%  ~ (p=0.256 n=10)
+
+                          │     base     │              head               │
+                          │     B/op     │     B/op       vs base          │
+SuspendUnderReserveLoad-8   4.241Mi ± 7%   4.411Mi ± 11%  ~ (p=0.393 n=10)
+
+                          │    base     │             head              │
+                          │  allocs/op  │  allocs/op   vs base          │
+SuspendUnderReserveLoad-8   51.21k ± 5%   52.72k ± 9%  ~ (p=0.353 n=10)
+
+================ verdict ================
+results: /tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/g5b-speeddir/run-1794499927 (benchstat.txt, *.txt raw, *.out scenario logs)
+PASS: no benchmark or scenario worsened by more than 10% at p<0.05, and every scenario met its thresholds
+exit 0

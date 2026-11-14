@@ -1,0 +1,8 @@
+bk=10
+    zz_repro_test.go:266: fold= seed=300000 n=4400 p50=1.636959ms p99=68.184286ms max=115.637659ms walMaxSync=79.163762ms history.bolt=842MB
+bk=0
+    zz_repro_test.go:266: fold= seed=300000 n=4400 p50=1.58213ms p99=5.421346ms max=9.911828ms walMaxSync=7.912668ms history.bolt=842MB fold
+bk=10
+    zz_repro_test.go:266: fold= seed=300000 n=4400 p50=1.476622ms p99=64.365461ms max=105.078395ms walMaxSync=66.940875ms history.bolt=842MB
+bk=0
+    zz_repro_test.go:266: fold= seed=300000 n=4400 p50=1.813402ms p99=4.952287ms max=9.481678ms walMaxSync=7.549984ms history.bolt=842MB fol

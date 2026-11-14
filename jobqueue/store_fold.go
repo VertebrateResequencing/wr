@@ -64,6 +64,17 @@ const (
 	// of the next, while folds succeed.
 	foldInterval = time.Second
 
+	// foldLagStep is the fold lag past which a fold's transactions may grow
+	// (see foldTxLimit), in proportion to it. The folder trails the log by a
+	// few seconds while it keeps up, and a portal burst's backlog kept
+	// records waiting up to about 50s, which the bound must not grow for:
+	// transactions of 15-20MB, as a 5s step let a burst's fold make, held the
+	// log's syncs 170-230ms (gate soak G5,
+	// .docs/customdb/results/phase1-gate-1g5.md). Past that, a fold that
+	// keeps records waiting longer still is behind for good, and must fold
+	// more records a second than small transactions can.
+	foldLagStep = time.Minute
+
 	// foldChunkRecords is how many log records one fold transaction reads
 	// before it ends, at the next frame (see foldNow), so that a backlog's fold
 	// holds its records in memory, the store's lock and history.bolt's commit a
@@ -516,16 +527,17 @@ func (s *logStore) foldNow() error {
 		return errDBClosed
 	}
 
+	began := time.Now()
+	if s.foldLagFrom.IsZero() {
+		s.foldLagFrom = began
+	}
+
 	durFile, durEnd := s.w.Durable()
 	to := historyPos{file: durFile, off: uint64(durEnd)} //nolint:gosec // an offset
 
 	for {
-		f, err := s.readFold(to)
-		if err != nil || f == nil {
-			return err
-		}
-
-		if err = s.foldHistory(f); err != nil {
+		done, err := s.foldChunk(to, began)
+		if err != nil || done {
 			return err
 		}
 
@@ -535,6 +547,46 @@ func (s *logStore) foldNow() error {
 		default:
 		}
 	}
+}
+
+// foldChunk folds the log's next chunk towards to (see foldNow), and reports
+// true, having noted that a fold that began at began reached its target, if
+// there was none. Its history.bolt transactions write about foldTxLimit of
+// how long its oldest record may have waited: since foldLagFrom.
+func (s *logStore) foldChunk(to historyPos, began time.Time) (bool, error) {
+	f, err := s.readFold(to)
+	if err != nil {
+		return false, err
+	}
+
+	if f == nil {
+		s.foldLagFrom = began
+
+		return true, nil
+	}
+
+	lag := time.Since(s.foldLagFrom)
+	s.foldStats.observeLag(lag)
+
+	return false, s.foldHistoryUpTo(f, foldTxLimit(lag))
+}
+
+// foldTxLimit returns how many bytes of pages one transaction of a fold may
+// write (see historyBolt.fold) when its oldest record may have waited lag to
+// be folded: foldTxMaxBytes, and once lag passes foldLagStep, that many times
+// lag/foldLagStep. Small transactions keep each commit from holding the log's
+// syncs long, but each commit costs about the same however few records it
+// holds, so they fold fewer records a second; a fold falling behind is let
+// make them bigger, as unsplit folds of a backlog's 4,096-record chunks were,
+// so that a backlog folds as cheaply per record as before the bound
+// (.docs/bugfixes/261111-reserve-tail-nfs-4766eb70.md).
+func foldTxLimit(lag time.Duration) int {
+	limit := foldTxMaxBytes()
+	if lag > foldLagStep {
+		limit = int(float64(limit) * float64(lag) / float64(foldLagStep))
+	}
+
+	return limit
 }
 
 // readFold reads the log from the folded position F to to, the writer's

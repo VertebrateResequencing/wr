@@ -764,7 +764,12 @@ since the last), and never sooner after the previous one ended than it took:
    key, as a re-add or modify can change a key's spec between two of its
    `complete` records, and it lets each entry's spec survive wal deletion.
    In Phase 1 that set is empty: after step 2, `histFrom` is at or past
-   the cut.
+   the cut. The write forces writeback every `backupCopySyncBytes` (1MiB),
+   as the backup copy does (Location, lock, conversion, restore and
+   backup), keeping the pages cached for reads of its records, so that
+   step 4's fsync never sends a whole `.ckpt` (55-76MB at the end of phase
+   1's gate soaks) at once ahead of the wal's syncs, which reservations
+   wait for.
 4. fsync, rename to `.ckpt`, fsync the directory, then swap every in-memory
    Ref (spec, last state, std, overlay spec, replaced entry spec) that
    points below the cut for its copy in the new checkpoint, then delete
@@ -795,7 +800,43 @@ frame after that many records and commits its records with the folded position
 it moves to in one transaction, so a backlog is folded, held in memory and
 under the store's lock a chunk at a time, and a crash between chunks leaves
 history holding the log up to its folded position. A chunk never splits a
-block, so one large write (an add of many jobs) folds in one transaction.
+block, so one large write (an add of many jobs) folds in one chunk. A chunk is
+one transaction unless its rglookup puts and then its completions would write
+more than its bound of `history.bolt`'s pages of their own (each commit's
+freelist write aside): the fold puts rglookups 64 at a time and records
+completions one at a time (at least 16 a transaction), each in key order, and
+once the transaction's estimated size reaches the bound commits it, the first
+also making the chunk's rglookup drops, and makes the rest in further
+transactions, the last of which commits the chunk's samples, rep groups ever
+added and folded position. The bound is `foldTxBytes` (2MB) while the fold
+keeps up, and that times lag/`foldLagStep` (60s) once the oldest record it is
+folding may have waited longer than `foldLagStep` to be folded (its lag: since
+the start of the last fold that reached the durable end it was given), so a
+fold that falls behind makes bigger transactions, cheaper per record, as a
+backlog's unsplit chunks were; and never less than the freelist each commit
+writes, so that freelist cannot outweigh a transaction's own records. The
+estimate is a page for each node the transaction has changed (bbolt's node
+count) plus the bytes of the keys and values it has put, scaled by the bytes of
+pages the last fold transaction wrote (bbolt's `PageAlloc`, less the freelist
+write) per byte estimated, 1 until the first commits after an open. So a chunk
+of jobs whose values are larger than a page, written as runs of pages with
+their neighbours, is split by what it writes. The folder's `"db writer"` line
+logs the longest lag in its interval as `maxLag`. Those puts, drops and
+completions are idempotent (`completeSeq` makes a completion recorded again a
+no-op) and only add to or take from what the overlay holds of the same records,
+so a crash before the chunk's last transaction leaves every history query's
+answer as it was, and the chunk folded again makes them again. The exceptions:
+a completion's learned-requirement samples go with it, so they can count before
+the folded position does; and replay meets complete records that `history.bolt`
+already holds past the folded position, which it treats as ones before it,
+clearing a live job's std. In a 1.3-2.3GB `history.bolt`, each rglookup and
+completion puts keys in random places: one transaction of an add's thousands of
+rglookups wrote 7-15MB in 1,500-2,600 runs of pages, and one of several hundred
+completions took 1-4s, and on NFS such a commit held the wal's syncs, and so
+reservations, 60-350ms behind it
+(`.docs/bugfixes/261111-reserve-tail-nfs-4766eb70.md`); a small
+`history.bolt`'s folds write far fewer pages, so they are mostly one
+transaction each.
 Close stops a fold after the chunk it is folding, as a crash between chunks
 would, so it never waits for a backlog; the next open folds the rest. A
 failed fold (read or history commit) is retried from the last durable position
@@ -949,8 +990,16 @@ with `failures`; it never stops the manager.
      it until the tick ends.
   2. Ships history not yet shipped. Phase 1: `history.bolt` copied whole,
      only when its `meta` folded position differs from the last shipped
-     copy's, under one read transaction that also reads that position.
-     Phase 2: every sealed `.hist` not yet shipped. F only advances and C's
+     copy's, under one read transaction that also reads that position, and
+     only when that copy was at most `historyRecopyFloor` (64MiB) or the
+     wal bytes shipped since it are at least its size. Otherwise the tick
+     puts the copy off: the backup keeps its checkpoint and the wal from
+     F_b, which a restore folds again, so the history bytes a backup ships
+     are at most the wal bytes it ships, not `history.bolt`'s size every
+     tick (whose writeback held reservations' wal syncs past 50ms on NFS:
+     `.docs/bugfixes/261111-reserve-tail-nfs-4766eb70.md`). A store's first
+     tick always copies it. Phase 2: every sealed `.hist` not yet shipped.
+     F only advances and C's
      `histFrom` was durable before C existed, so F_b is at or past it. A
      fold commit or seal after this step cannot break the invariant: a
      checkpoint written after it is shipped only by a later tick, after
@@ -970,7 +1019,8 @@ with `failures`; it never stops the manager.
      or below F_b, ships C (`.tmp` then rename locally; one object on S3),
      then deletes every other checkpoint from the backup. A C no newer is
      never shipped, as the backup may already lack wal files it needs;
-     one whose `histFrom` is past F_b is kept back with a warn. The backup
+     one whose `histFrom` is past F_b is kept back, with a warn unless step
+     2 put off the history copy. The backup
      holds exactly one checkpoint, two only between the ship and that
      delete; restore uses the newest. The wal bytes go before C so that a
      crash between never leaves the backup's newest checkpoint without its
@@ -998,7 +1048,7 @@ with `failures`; it never stops the manager.
 
   Every local copy goes through today's paced `backupCopyWriter`
   (`jobqueue/db.go` `copyBackup`/`pace`: async writeback every
-  `backupCopySyncBytes`, 8MiB, via `backupPaceRange` in
+  `backupCopySyncBytes`, 1MiB, via `backupPaceRange` in
   `db_backupsync_linux.go`, then one fsync), the fix for the backup copy
   burst that starved bbolt's fdatasync on NFS; it moves to
   `store_backup.go` when Phase 2 deletes `db.go`. An S3 ship is first
@@ -2934,9 +2984,10 @@ passing. Work and measurements on NFS go under
     The soak runs without `FIXTURE` (an empty store), not from the
     converted production fixture, so its `history.bolt` holds only its own
     completions and the soak measures the log. Its backup ticks copy
-    `history.bolt` whole (paced) whenever its folded position changed, a
-    known caveat since Phase 1 is never released; the Phase 2 soak gives
-    the authoritative backup-I/O result.
+    `history.bolt` whole (paced) whenever its folded position changed and
+    the wal shipped since the last copy is at least its size (or it is
+    small), a known caveat since Phase 1 is never released; the Phase 2
+    soak gives the authoritative backup-I/O result.
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
   - Daytime NFS targets, measured apart from the crash soak, whose
     injected stalls push abandoned reservations' waits to

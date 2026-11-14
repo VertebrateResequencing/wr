@@ -1,0 +1,64 @@
+package jobqueue
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strconv"
+	"testing"
+	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
+)
+
+// TestG5TxSizeProbe: G5_BASE archived jobs folded first, then a chunk of 4,000
+// archived jobs folded with the default bound; prints each fold transaction's
+// PageAlloc (bytes written), for commands of G5_CMD bytes.
+func TestG5TxSizeProbe(t *testing.T) {
+	ctx := context.Background()
+	base, _ := strconv.Atoi(os.Getenv("G5_BASE"))
+	cmd, _ := strconv.Atoi(os.Getenv("G5_CMD"))
+
+	Convey("probe", t, func() {
+		s, _ := openTestLogStore(t, ctx)
+
+		for b := 0; b < base; b += 2000 {
+			jobs := bigCmdJobs("base"+strconv.Itoa(b), 2000, cmd)
+			_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+			So(err, ShouldBeNil)
+			So(s.foldNow(), ShouldBeNil)
+			archiveIncTestJobs(s, jobs)
+			So(s.foldNow(), ShouldBeNil)
+		}
+
+		pauseLogFolder()
+
+		jobs := bigCmdJobs("chunk", 4000, cmd)
+		_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+		So(err, ShouldBeNil)
+		So(s.foldNow(), ShouldBeNil)
+		archiveIncTestJobs(s, jobs)
+
+		start := time.Now()
+		allocs := foldTxPageAllocs(s)
+		took := time.Since(start)
+
+		var maxA, sum int64
+		for _, a := range allocs {
+			maxA = max(maxA, a)
+			sum += a
+		}
+
+		t.Logf("G5TX base=%d cmd=%d txs=%d took=%s sum=%.1fMB max=%.2fMB allocsMB=%v", base, cmd, len(allocs), took,
+			float64(sum)/1e6, float64(maxA)/1e6, mb(allocs))
+	})
+}
+
+func mb(a []int64) []string {
+	out := make([]string, len(a))
+	for i, v := range a {
+		out[i] = fmt.Sprintf("%.2f", float64(v)/1e6)
+	}
+
+	return out
+}

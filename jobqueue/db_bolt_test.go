@@ -1322,6 +1322,27 @@ func TestDBBackupCopy(t *testing.T) {
 			So(copyData, ShouldResemble, originalData)
 		})
 
+		Convey("copyBackup leaves most of its copy out of the page cache", func() {
+			origBytes := backupCopySyncBytes
+
+			defer func() { backupCopySyncBytes = origBytes }()
+
+			backupCopySyncBytes = testInterval
+
+			err = testDB.copyBackup(copyPath)
+			So(err, ShouldBeNil)
+
+			f, erro := os.Open(copyPath)
+			So(erro, ShouldBeNil)
+
+			defer f.Close()
+
+			info, errs := f.Stat()
+			So(errs, ShouldBeNil)
+			So(info.Size(), ShouldBeGreaterThanOrEqualTo, minIntervalsSpanned*testInterval)
+			soResidency(t, f, info.Size(), ShouldBeLessThanOrEqualTo, 0.5)
+		})
+
 		Convey("copyBackup paces writeback in backupCopySyncBytes-sized chunks", func() {
 			origBytes := backupCopySyncBytes
 			origHook := backupPaceHook

@@ -1,0 +1,119 @@
+# TestReserveWaitDuringCheckpoint (tag reliability_repro), farm22-wrstat01, 2026-11-13.
+# Arms: 'unpaced' = round 4's working tree with the pre-fix checkpoint write (mutant CK1);
+# 'base' = f1bcc1d7 plus the two tagged test files; 'head' = round 5. Local = t.TempDir() on /tmp;
+# NFS = WR_REPRO_DIR=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro. Script: r5g5-ckab.sh (scratchpad).
+
+## first red run, local, pre-fix working tree (20:08)
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72896485B in 2.392579134s; reservations 476: p50 965.69µs, p99 128.311322ms, max 146.011401ms
+--- FAIL: TestReserveWaitDuringCheckpoint (11.41s)
+
+## local, pre-fix working tree, 3 runs (20:09)
+Fri 13 Nov 20:09:37 GMT 2026
+reserve_checkpoint_tail_repro_test.go:102: checkpoint 72896360B in 2.375602974s; reservations 473: p50 1.058577ms, p99 135.344162ms, max 150.319455ms
+  Expected '135.344162ms' to be less than or equal to '50ms' (but it wasn't)!
+--- FAIL: TestReserveWaitDuringCheckpoint (11.75s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	11.829s
+reserve_checkpoint_tail_repro_test.go:102: checkpoint 72891436B in 2.351011936s; reservations 467: p50 1.016508ms, p99 138.077519ms, max 157.950798ms
+  Expected '138.077519ms' to be less than or equal to '50ms' (but it wasn't)!
+--- FAIL: TestReserveWaitDuringCheckpoint (11.57s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	11.659s
+reserve_checkpoint_tail_repro_test.go:102: checkpoint 72897330B in 2.332742024s; reservations 465: p50 1.049873ms, p99 138.261419ms, max 157.208555ms
+  Expected '138.261419ms' to be less than or equal to '50ms' (but it wasn't)!
+--- FAIL: TestReserveWaitDuringCheckpoint (11.07s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	11.153s
+
+## local, round 5, 3 runs (20:11)
+Fri 13 Nov 20:11:05 GMT 2026
+reserve_checkpoint_tail_repro_test.go:102: checkpoint 72896705B in 2.26588873s; reservations 452: p50 1.158241ms, p99 16.062493ms, max 20.647845ms
+--- PASS: TestReserveWaitDuringCheckpoint (11.14s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	11.225s
+reserve_checkpoint_tail_repro_test.go:102: checkpoint 72890498B in 2.190391088s; reservations 436: p50 1.095149ms, p99 5.527062ms, max 8.98021ms
+--- PASS: TestReserveWaitDuringCheckpoint (11.40s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	11.471s
+reserve_checkpoint_tail_repro_test.go:102: checkpoint 72889186B in 2.212295405s; reservations 442: p50 1.067864ms, p99 5.802899ms, max 11.981186ms
+--- PASS: TestReserveWaitDuringCheckpoint (10.78s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	10.855s
+
+## NFS evening, unpaced vs head interleaved (20:15)
+unpaced round 1 20:15:55 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72891017B in 2.776593881s; reservations 555: p50 877.769µs, p99 123.771081ms, max 147.493341ms
+--- FAIL: TestReserveWaitDuringCheckpoint (37.39s)
+head round 1 20:16:33 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72890252B in 2.320451489s; reservations 463: p50 823.215µs, p99 3.650028ms, max 6.199843ms
+--- PASS: TestReserveWaitDuringCheckpoint (36.01s)
+unpaced round 2 20:17:09 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72889037B in 2.936937682s; reservations 582: p50 871.068µs, p99 99.548651ms, max 117.526763ms
+--- FAIL: TestReserveWaitDuringCheckpoint (37.48s)
+head round 2 20:17:46 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72890079B in 2.281187008s; reservations 453: p50 846.04µs, p99 4.01343ms, max 7.039448ms
+--- PASS: TestReserveWaitDuringCheckpoint (36.78s)
+unpaced round 3 20:18:23 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72889078B in 2.861956035s; reservations 567: p50 855.872µs, p99 143.0433ms, max 168.074035ms
+--- FAIL: TestReserveWaitDuringCheckpoint (37.73s)
+head round 3 20:19:01 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72898577B in 2.423416435s; reservations 482: p50 832.097µs, p99 6.626297ms, max 9.219761ms
+--- PASS: TestReserveWaitDuringCheckpoint (36.14s)
+
+## local, base (f1bcc1d7) vs head interleaved (20:20)
+base round 1 20:20:26 dir=local
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72890235B in 2.379309222s; reservations 475: p50 1.196308ms, p99 122.062051ms, max 142.011933ms
+--- FAIL: TestReserveWaitDuringCheckpoint (9.96s)
+head round 1 20:20:36 dir=local
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72888388B in 2.2778105s; reservations 452: p50 1.110267ms, p99 5.841317ms, max 14.992703ms
+--- PASS: TestReserveWaitDuringCheckpoint (11.28s)
+base round 2 20:20:47 dir=local
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72896052B in 2.330861669s; reservations 464: p50 1.050651ms, p99 135.798513ms, max 153.959732ms
+--- FAIL: TestReserveWaitDuringCheckpoint (10.32s)
+head round 2 20:20:58 dir=local
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72889145B in 2.249668824s; reservations 447: p50 1.048584ms, p99 7.94175ms, max 14.346568ms
+--- PASS: TestReserveWaitDuringCheckpoint (11.30s)
+base round 3 20:21:09 dir=local
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72889327B in 2.493139448s; reservations 495: p50 989.035µs, p99 142.433604ms, max 156.749284ms
+--- FAIL: TestReserveWaitDuringCheckpoint (10.09s)
+head round 3 20:21:19 dir=local
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72890311B in 2.273469864s; reservations 450: p50 972.274µs, p99 7.805602ms, max 21.65978ms
+--- PASS: TestReserveWaitDuringCheckpoint (11.25s)
+base round 4 20:21:30 dir=local
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72889155B in 2.742660409s; reservations 542: p50 935.756µs, p99 126.751291ms, max 151.684453ms
+--- FAIL: TestReserveWaitDuringCheckpoint (10.59s)
+head round 4 20:21:41 dir=local
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72889670B in 2.202007349s; reservations 435: p50 1.027696ms, p99 10.626085ms, max 15.979876ms
+--- PASS: TestReserveWaitDuringCheckpoint (11.35s)
+
+## NFS evening, base (f1bcc1d7) vs head interleaved (20:21)
+base round 1 20:21:58 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72891251B in 2.747890739s; reservations 546: p50 1.076477ms, p99 107.939623ms, max 119.573352ms
+--- FAIL: TestReserveWaitDuringCheckpoint (14.49s)
+head round 1 20:22:13 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72917053B in 2.66414699s; reservations 531: p50 757.025µs, p99 3.883217ms, max 8.462196ms
+--- PASS: TestReserveWaitDuringCheckpoint (36.66s)
+base round 2 20:22:49 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72890452B in 2.706629881s; reservations 535: p50 818.826µs, p99 110.567003ms, max 135.258433ms
+--- FAIL: TestReserveWaitDuringCheckpoint (14.73s)
+head round 2 20:23:04 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72890504B in 2.333717352s; reservations 464: p50 828.277µs, p99 3.999412ms, max 6.066205ms
+--- PASS: TestReserveWaitDuringCheckpoint (35.53s)
+base round 3 20:23:40 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72890532B in 3.029545354s; reservations 606: p50 823.692µs, p99 103.513356ms, max 132.944983ms
+--- FAIL: TestReserveWaitDuringCheckpoint (14.77s)
+head round 3 20:23:55 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:102: checkpoint 72889492B in 2.366884877s; reservations 469: p50 743.146µs, p99 4.020261ms, max 9.236298ms
+--- PASS: TestReserveWaitDuringCheckpoint (35.12s)
+
+## NFS (23:27), base vs head, with the setup's timings logged
+base round 1 23:27:28 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:100: adds took 2.681066021s, the first checkpoint 6.623299159s
+    reserve_checkpoint_tail_repro_test.go:107: checkpoint 72916862B in 2.698699535s; reservations 537: p50 729.477µs, p99 97.412323ms, max 121.777399ms
+--- FAIL: TestReserveWaitDuringCheckpoint (14.19s)
+head round 1 23:27:43 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:100: adds took 2.72535149s, the first checkpoint 27.695526112s
+    reserve_checkpoint_tail_repro_test.go:107: checkpoint 72897385B in 2.122235452s; reservations 421: p50 778.766µs, p99 3.439529ms, max 7.89626ms
+--- PASS: TestReserveWaitDuringCheckpoint (34.88s)
+base round 2 23:28:18 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:100: adds took 2.686714169s, the first checkpoint 6.773550054s
+    reserve_checkpoint_tail_repro_test.go:107: checkpoint 72898079B in 2.73948722s; reservations 542: p50 845.588µs, p99 106.942494ms, max 131.344987ms
+--- FAIL: TestReserveWaitDuringCheckpoint (14.37s)
+head round 2 23:28:32 dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/repro
+    reserve_checkpoint_tail_repro_test.go:100: adds took 2.645397172s, the first checkpoint 27.457131225s
+    reserve_checkpoint_tail_repro_test.go:107: checkpoint 72898212B in 2.4189955s; reservations 482: p50 797.286µs, p99 43.736429ms, max 62.749093ms
+--- PASS: TestReserveWaitDuringCheckpoint (34.82s)

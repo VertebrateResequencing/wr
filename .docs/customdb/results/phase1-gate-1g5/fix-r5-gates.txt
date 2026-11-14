@@ -1,0 +1,40 @@
+lint start 20:30:04 HOME=<scratchpad>/r5g5-mhome-A81J
+lint end 20:31:01 rc=0
+reprockpt start 20:31:01 HOME=<scratchpad>/r5g5-mhome-jHtU
+reprockpt end 20:31:16 rc=0
+reprobk start 20:31:16 HOME=<scratchpad>/r5g5-mhome-T2Qq
+reprobk end 20:32:53 rc=0
+test start 20:32:53 HOME=<scratchpad>/r5g5-mhome-18il
+test end 20:39:03 rc=0
+testall start 20:39:03 HOME=<scratchpad>/r5g5-mhome-jaCr
+testall end 20:44:57 rc=0
+race start 20:44:57 HOME=<scratchpad>/r5g5-mhome-jJaN
+race end 20:54:38 rc=0
+ALL DONE 20:54:38
+== lint
+0 issues.
+== test
+    rp                         1 passed
+  --------------------------------------------
+  1296 passed · 26 skipped · 35 packages · 6m5s
+
+  PASSED
+== testall
+    rp                         1 passed
+  --------------------------------------------
+  1296 passed · 26 skipped · 35 packages · 5m50s
+
+  PASSED
+== race
+    rp                         1 passed
+  --------------------------------------------
+  1296 passed · 25 skipped · 35 packages · 9m35s
+
+  PASSED
+== reprockpt
+reserve_checkpoint_tail_repro_test.go:100: adds took 2.062639931s, the first checkpoint 4.577295471s
+reserve_checkpoint_tail_repro_test.go:107: checkpoint 72890451B in 2.359914977s; reservations 464: p50 1.006ms, p99 11.578293ms, max 28.399223ms
+--- PASS: TestReserveWaitDuringCheckpoint (11.15s)
+== reprobk
+reserve_backup_tail_repro_test.go:119: reservations 4400: p50 1.506853ms, p99 7.443941ms, max 13.79186ms
+--- PASS: TestReserveWaitDuringBackup (94.17s)

@@ -36,14 +36,16 @@ import (
 // backupPaceRange bounds the backup copy's dirty-page backlog using a pipelined
 // sync_file_range: it starts asynchronous writeback of the just-written "current"
 // chunk (SYNC_FILE_RANGE_WRITE, no wait), then waits for the "previous" chunk
-// (one behind) to finish writing back (WAIT_BEFORE|WRITE|WAIT_AFTER) and drops it
-// from the page cache (FADV_DONTNEED). This caps outstanding dirty pages at ~two
+// (one behind) to finish writing back (WAIT_BEFORE|WRITE|WAIT_AFTER) and, if drop,
+// drops it from the page cache (FADV_DONTNEED). This caps outstanding dirty pages at ~two
 // chunks so a concurrent foreground DB commit's fdatasync never queues behind
 // gigabytes of backup dirty pages (the cause of the periodic backup stall), while
 // overlapping writeback with copying so it avoids the ~1.8x copy-duration cost of
 // a blocking fsync-per-chunk. It reports handled=true (this Linux build paced the
 // copy); non-Linux builds return handled=false so the caller falls back to fsync.
-func backupPaceRange(f *os.File, curOffset, curLength, prevOffset, prevLength int64) (handled bool, err error) {
+func backupPaceRange(f *os.File, curOffset, curLength, prevOffset, prevLength int64,
+	drop bool,
+) (handled bool, err error) {
 	fd := int(f.Fd())
 
 	if curLength > 0 {
@@ -58,9 +60,11 @@ func backupPaceRange(f *os.File, curOffset, curLength, prevOffset, prevLength in
 			return true, err
 		}
 
-		// best-effort: drop the now-durable previous chunk from the page cache so
-		// the multi-GB backup copy does not evict useful pages.
-		_ = unix.Fadvise(fd, prevOffset, prevLength, unix.FADV_DONTNEED) //nolint:errcheck
+		if drop {
+			// best-effort: drop the now-durable previous chunk from the page cache so
+			// the multi-GB backup copy does not evict useful pages.
+			_ = unix.Fadvise(fd, prevOffset, prevLength, unix.FADV_DONTNEED) //nolint:errcheck
+		}
 	}
 
 	return true, nil

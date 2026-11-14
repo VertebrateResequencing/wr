@@ -1,0 +1,56 @@
+# round 5 mutants of the final code, Fri 13 Nov 20:54:55 UTC 2026, targeted tests: TestStoreFoldBacklogCapacity TestStoreStatsReport TestLogStoreCheckpointPacesItsWrite
+== MA
+diff -r /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_fold.go <scratchpad>/r5g5-mut-MA/jobqueue/store_fold.go
+563c563,564
+< 		s.foldLagFrom = began
+---
+> 		s.foldLagFrom = time.Now()
+> 		_ = began
+vet ok (compiles)
+  Line 437:
+  Expected '1399393' to be greater than or equal to '409946911' (but it wasn't)!
+--- FAIL: TestStoreFoldBacklogCapacity (6.01s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	6.539s
+== MC
+diff -r /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_stats.go <scratchpad>/r5g5-mut-MC/jobqueue/store_stats.go
+190d189
+< 		storeMax(&w.maxLag, summary.maxLag)
+vet ok (compiles)
+  Line 390:
+  Expected: nil
+--- FAIL: TestStoreStatsReport (0.00s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	6.828s
+== CK1
+diff -r /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_checkpoint.go <scratchpad>/r5g5-mut-CK1/jobqueue/store_checkpoint.go
+569c569,570
+< 	cw := &checkpointWriter{w: bufio.NewWriter(paced), refFile: m.walFrom | checkpointRefFlag,
+---
+> 	_ = paced
+> 	cw := &checkpointWriter{w: bufio.NewWriter(f), refFile: m.walFrom | checkpointRefFlag,
+vet ok (compiles)
+  Line 79:
+  Expected '0' to be greater than or equal to '5' (but it wasn't)!
+--- FAIL: TestLogStoreCheckpointPacesItsWrite (0.54s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	6.839s
+== CK2
+diff -r /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_checkpoint.go <scratchpad>/r5g5-mut-CK2/jobqueue/store_checkpoint.go
+568c568
+< 	paced := &backupCopyWriter{f: f, syncEvery: backupCopySyncBytes, keepCached: true}
+---
+> 	paced := &backupCopyWriter{f: f, syncEvery: backupCopySyncBytes, keepCached: false}
+vet ok (compiles)
+  Line 80:
+  Expected '0.22424242424242424' to be greater than '0.9' (but it wasn't)!
+--- FAIL: TestLogStoreCheckpointPacesItsWrite (0.56s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	6.244s
+== CK3
+diff -r /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/store_checkpoint.go <scratchpad>/r5g5-mut-CK3/jobqueue/store_checkpoint.go
+568c568
+< 	paced := &backupCopyWriter{f: f, syncEvery: backupCopySyncBytes, keepCached: true}
+---
+> 	paced := &backupCopyWriter{f: f, syncEvery: 8 * backupCopySyncBytes, keepCached: true}
+vet ok (compiles)
+  Line 79:
+  Expected '0' to be greater than or equal to '5' (but it wasn't)!
+--- FAIL: TestLogStoreCheckpointPacesItsWrite (0.53s)
+FAIL	github.com/VertebrateResequencing/wr/jobqueue	6.719s

@@ -557,10 +557,16 @@ func (m *checkpointMerge) wanted() map[wal.Ref]bool {
 }
 
 // write writes m's checkpoint to f and syncs it: its header, a block per
-// checkpointBlockBytes of records, and its trailer.
+// checkpointBlockBytes of records, and its trailer. It forces writeback every
+// backupCopySyncBytes, as the backup copy does, so that the final sync does
+// not send the whole file (55-76MB at the end of phase 1's gate soaks) at
+// once ahead of the log's syncs, which reservations wait for: unpaced, such a
+// checkpoint held reservations up to about 150ms, on local disk too
+// (TestReserveWaitDuringCheckpoint).
 func (m *checkpointMerge) write(f *os.File, folded historyPos) (map[wal.Ref]wal.Ref, error) {
 	want, unreferenced := m.wanted(), m.unreferenced()
-	cw := &checkpointWriter{w: bufio.NewWriter(f), refFile: m.walFrom | checkpointRefFlag,
+	paced := &backupCopyWriter{f: f, syncEvery: backupCopySyncBytes, keepCached: true}
+	cw := &checkpointWriter{w: bufio.NewWriter(paced), refFile: m.walFrom | checkpointRefFlag,
 		swap: make(map[wal.Ref]wal.Ref, len(want))}
 
 	header := checkpointHeader{walFrom: m.walFrom, histFrom: folded, maxSeq: m.state.maxSeq,

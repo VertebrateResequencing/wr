@@ -1,0 +1,278 @@
+--- a/jobqueue/wal/writer.go
++++ b/jobqueue/wal/writer.go
+@@ -114,6 +114,12 @@
+ 	return binary.LittleEndian.Uint32(rest), binary.LittleEndian.Uint64(rest[4:]), true
+ }
+ 
++// DiagSyncHook (diagnostic build only) is called after each batch's write and sync.
++// DiagFinishHook (diagnostic build only) is called after each batch's done funcs.
++var DiagFinishHook func(start time.Time, took time.Duration, queued int) //nolint:gochecknoglobals
++
++var DiagSyncHook func(start time.Time, write, sync time.Duration, bytes, records int) //nolint:gochecknoglobals
++
+ // batch is the records queued for one segment between two of the writer's
+ // takes, made durable together by one write and one sync.
+ type batch struct {
+@@ -679,8 +685,13 @@
+ 		if err == nil {
+ 			w.failures = 0
+ 
++			diagT := time.Now()
+ 			b.finish(nil)
+ 
++			if h := DiagFinishHook; h != nil {
++				h(diagT, time.Since(diagT), len(batches))
++			}
++
+ 			continue
+ 		}
+ 
+@@ -717,11 +728,17 @@
+ 
+ 	// Every earlier batch for this segment succeeded, or b would have failed
+ 	// with it, so b.off is the segment's durable end.
++	diagStart := time.Now()
+ 	if _, err := w.f.WriteAt(b.buf, b.off); err != nil {
+ 		return fmt.Errorf("wal: write segment %08x: %w", b.file, err)
+ 	}
+ 
++	diagWrote := time.Now()
+ 	err := w.timedSync()
++
++	if h := DiagSyncHook; h != nil {
++		h(diagStart, diagWrote.Sub(diagStart), time.Since(diagWrote), len(b.buf), b.records)
++	}
+ 	if err != nil {
+ 		return fmt.Errorf("wal: sync segment %08x: %w", b.file, err)
+ 	}
+--- a/jobqueue/store_history_bolt.go
++++ b/jobqueue/store_history_bolt.go
+@@ -298,7 +298,12 @@
+ // process may not map that much address space it falls back to bbolt's
+ // default mapping.
+ func openHistoryBolt(dir string, ch codec.Handle) (*historyBolt, error) {
+-	bdb, err := openBoltWithHeadroom(filepath.Join(dir, historyBoltFile),
++	diagDir := dir
++	if d := os.Getenv("WR_DIAG_HISTDIR"); d != "" {
++		diagDir = d
++	}
++
++	bdb, err := openBoltWithHeadroom(filepath.Join(diagDir, historyBoltFile),
+ 		bolt.Options{Timeout: managerDBOpenTimeout, FreelistType: bolt.FreelistMapType})
+ 	if err != nil {
+ 		return nil, err
+@@ -385,12 +390,14 @@
+ 	var begun time.Time
+ 
+ 	asked := time.Now()
++	diagBefore := h.bolt.Stats()
+ 
+ 	err := h.bolt.Update(func(tx *bolt.Tx) error {
+ 		begun = time.Now()
+ 
+ 		return h.foldTx(tx, f, stats)
+ 	})
++	diagFold(h.bolt, asked, begun, f.items(), diagBefore)
+ 	if err == nil && f.items() > 0 {
+ 		writer.observe(f.items(), asked, begun)
+ 	}
+--- a/jobqueue/store_fold.go
++++ b/jobqueue/store_fold.go
+@@ -451,6 +451,10 @@
+ 		return foldInterval
+ 	}
+ 
++	if diagNoFold {
++		return foldInterval
++	}
++
+ 	err := s.foldNow()
+ 
+ 	switch {
+--- a/jobqueue/store_stats.go
++++ b/jobqueue/store_stats.go
+@@ -380,6 +380,8 @@
+ // The count goes in before the wait, so a report that takes the wait also
+ // takes the count; at worst a count reaches a line before its wait does.
+ func (s *serverWaitStats) observeReservation(d time.Duration, notDurable bool) {
++	diagReserve(d)
++
+ 	if notDurable {
+ 		s.reserveNotDurable.Add(1)
+ 	}
+--- a/jobqueue/store_log.go
++++ b/jobqueue/store_log.go
+@@ -804,6 +804,13 @@
+ 
+ 	s.countWrite(counted)
+ 
++	diagN := 0
++	for _, b := range blocks {
++		diagN += len(b)
++	}
++
++	diagAdd(diagN, len(blocks))
++
+ 	refs, _ := s.w.AppendBlocks(blocks, ns, w.dones(len(blocks)))
+ 	w.placed(refs)
+ 
+--- a/jobqueue/store_records.go
++++ b/jobqueue/store_records.go
+@@ -569,7 +569,9 @@
+ 
+ // apply applies ops, in order, to the store's state.
+ func (s *logStore) apply(ops []logOp) {
++	diagT := time.Now()
+ 	s.mu.Lock()
++	diagLockWait(diagT, len(ops))
+ 	defer s.mu.Unlock()
+ 
+ 	for i := range ops {
+--- a/jobqueue/store_backup_tick.go
++++ b/jobqueue/store_backup_tick.go
+@@ -1179,8 +1179,13 @@
+ 		return nil
+ 	}
+ 
++	if diagNoHistBackup && b.histShipped {
++		return nil
++	}
++
+ 	var folded historyPos
+ 
++	diagT := time.Now()
+ 	err = b.target.put(historyBoltFile, func(w io.Writer) error {
+ 		var errc error
+ 
+@@ -1188,6 +1193,7 @@
+ 
+ 		return errc
+ 	})
++	diagHist(diagT, s.history.bolt)
+ 	if err != nil {
+ 		return err
+ 	}
+--- a/jobqueue/zz_diag.go
++++ b/jobqueue/zz_diag.go
+@@ -0,0 +1,121 @@
++package jobqueue
++
++// Diagnostic build only (1g.5 bugfix): traces wal batch syncs, fold
++// commits, add writes and reservation waits to tab-separated files in
++// $WR_DIAG_TRACE (a local directory), and WR_DIAG_NOFOLD=1 skips every fold.
++
++import (
++	"bufio"
++	"fmt"
++	"os"
++	"path/filepath"
++	"sync/atomic"
++	"time"
++
++	"github.com/VertebrateResequencing/wr/jobqueue/wal"
++	bolt "go.etcd.io/bbolt"
++)
++
++var (
++	diagCh      chan string                                 //nolint:gochecknoglobals
++	diagDropped atomic.Uint64                               //nolint:gochecknoglobals
++	diagNoFold  = os.Getenv("WR_DIAG_NOFOLD") == "1"        //nolint:gochecknoglobals
++	diagNoHistBackup = os.Getenv("WR_DIAG_NOHISTBACKUP") == "1" //nolint:gochecknoglobals
++)
++
++func init() { //nolint:gochecknoinits
++	dir := os.Getenv("WR_DIAG_TRACE")
++	if dir == "" || len(os.Args) < 3 || os.Args[1] != "manager" || os.Args[2] != "start" {
++		return
++	}
++
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		return
++	}
++
++	f, err := os.Create(filepath.Join(dir, fmt.Sprintf("trace-%d.tsv", os.Getpid())))
++	if err != nil {
++		return
++	}
++
++	diagCh = make(chan string, 1<<16)
++
++	go func() {
++		bw := bufio.NewWriterSize(f, 1<<20)
++		t := time.NewTicker(time.Second)
++
++		for {
++			select {
++			case s := <-diagCh:
++				bw.WriteString(s) //nolint:errcheck
++			case <-t.C:
++				if d := diagDropped.Swap(0); d > 0 {
++					fmt.Fprintf(bw, "dropped\t%d\t%d\n", time.Now().UnixNano(), d)
++				}
++
++				bw.Flush() //nolint:errcheck
++			}
++		}
++	}()
++
++	wal.DiagFinishHook = func(start time.Time, took time.Duration, queued int) {
++		if took > time.Millisecond {
++			diagEmit(fmt.Sprintf("finish\t%d\t%d\t%d\n", start.UnixNano(), took, queued))
++		}
++	}
++
++	wal.DiagSyncHook = func(start time.Time, write, sync time.Duration, bytes, records int) {
++		diagEmit(fmt.Sprintf("sync\t%d\t%d\t%d\t%d\t%d\n", start.UnixNano(), write, sync, bytes, records))
++	}
++}
++
++func diagLockWait(start time.Time, n int) {
++	if d := time.Since(start); d > time.Millisecond {
++		diagEmit(fmt.Sprintf("applylock\t%d\t%d\t%d\n", start.UnixNano(), d, n))
++	}
++}
++
++func diagEmit(s string) {
++	if diagCh == nil {
++		return
++	}
++
++	select {
++	case diagCh <- s:
++	default:
++		diagDropped.Add(1)
++	}
++}
++
++func diagFold(db *bolt.DB, asked, begun time.Time, items int, before bolt.Stats) {
++	if diagCh == nil {
++		return
++	}
++
++	end := time.Now()
++	after := db.Stats()
++	d := after.TxStats.Sub(&before.TxStats)
++
++	var size int64
++	if fi, err := os.Stat(db.Path()); err == nil {
++		size = fi.Size()
++	}
++
++	diagEmit(fmt.Sprintf("fold\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", asked.UnixNano(), begun.UnixNano(),
++		end.UnixNano(), items, d.GetWrite(), d.GetWriteTime(), d.GetSpillTime(), d.GetPageAlloc(),
++		after.FreePageN, after.PendingPageN, after.FreelistInuse, size))
++}
++
++func diagReserve(waited time.Duration) {
++	diagEmit(fmt.Sprintf("resv\t%d\t%d\n", time.Now().UnixNano(), waited))
++}
++
++func diagAdd(bytes, blocks int) {
++	diagEmit(fmt.Sprintf("add\t%d\t%d\t%d\n", time.Now().UnixNano(), bytes, blocks))
++}
++
++func diagHist(start time.Time, db *bolt.DB) {
++	var size int64
++	_ = db.View(func(tx *bolt.Tx) error { size = tx.Size(); return nil })
++	diagEmit(fmt.Sprintf("hist\t%d\t%d\t%d\n", start.UnixNano(), time.Now().UnixNano(), size))
++}

@@ -1,0 +1,17 @@
+start 2026-11-13T11:03:03.002Z 1794567783.004 home=/tmp/claude-11346/-nfs-users-nfs-s-sb10-src-go-github-com-VertebrateResequencing-wr/11ff1329-f08a-4839-8d20-e8b51f0456f7/scratchpad/tmp.kVP4LO82am dir=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/addbench/run12
+=== RUN   TestAddLatency1000
+.t=2026-11-13T11:03:03+0000 lvl=warn msg="recovering: opened database" db=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/addbench/run12/log/db elapsed=31ms caller=clog.go:338
+t=2026-11-13T11:03:03+0000 lvl=warn msg="recovering: decoded live jobs" jobs=0 runStates=0 elapsed=0s caller=clog.go:338
+t=2026-11-13T11:03:03+0000 lvl=warn msg="recovering: built dependency-group state" memberships=0 elapsed=0s caller=clog.go:338
+t=2026-11-13T11:03:03+0000 lvl=warn msg="recovering prior state" total=0 caller=clog.go:338
+t=2026-11-13T11:03:03+0000 lvl=warn msg="recovering: prior state recovered" restored=0 total=0 caller=clog.go:338
+....t=2026-11-13T11:03:08+0000 lvl=warn msg="add wait" n=110 p50=10.224ms p99=123.732ms max=124.18ms caller=clog.go:338
+t=2026-11-13T11:03:09+0000 lvl=warn msg="db writer" writer=log batches=111 records=600001 bytes=13649938 meanSync=4.374ms maxSync=11.423ms interval=1m0s caller=clog.go:338
+t=2026-11-13T11:03:09+0000 lvl=warn msg="db writer" writer=fold txs=44 items=90000 meanLock=169µs maxLock=670µs meanHold=59.406ms maxHold=103.691ms interval=1m0s caller=clog.go:338
+    store_addbench_test.go:125: store=log n=100 p50=25.690111ms p99=57.671679ms
+..
+7 total assertions
+
+--- PASS: TestAddLatency1000 (6.20s)
+PASS
+end 2026-11-13T11:03:09.296Z 1794567789.298 rc=0

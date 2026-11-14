@@ -1,0 +1,20 @@
+=== RUN   TestReserveWaitDuringBackup
+..............................................................t=2026-11-11T13:13:52+0000 lvl=warn msg="db writer" writer=log batches=7784 records=1500000 bytes=365936886 meanSync=1.403ms maxSync=72.595ms interval=1m0s caller=clog.go:338
+t=2026-11-11T13:13:52+0000 lvl=warn msg="db writer" writer=fold txs=155 items=600000 meanLock=2.02ms maxLock=6.314ms meanHold=223.741ms maxHold=533.862ms interval=1m0s caller=clog.go:338
+.t=2026-11-11T13:13:54+0000 lvl=warn msg="recovering: opened database" db=<scratchpad>/repro-run/TestReserveWaitDuringBackup1939532028/001/queue.db elapsed=1.749s caller=clog.go:338
+.......    reserve_backup_tail_repro_test.go:111: reservations 4400: p50 1.644292ms, p99 73.878409ms, max 123.06215ms
+xt=2026-11-11T13:14:37+0000 lvl=warn msg="db writer" writer=log batches=7431 records=32400 bytes=8050126 meanSync=1.805ms maxSync=69.435ms interval=1m0s caller=clog.go:338
+t=2026-11-11T13:14:37+0000 lvl=warn msg="db writer" writer=fold txs=41 items=10759 meanLock=341µs maxLock=1.87ms meanHold=31.432ms maxHold=263.672ms interval=1m0s caller=clog.go:338
+.
+Failures:
+
+  * jobqueue/reserve_backup_tail_repro_test.go 
+  Line 114:
+  Expected '73.878409ms' to be less than or equal to '50ms' (but it wasn't)!
+
+
+72 total assertions
+
+--- FAIL: TestReserveWaitDuringBackup (89.32s)
+FAIL
+exit=1

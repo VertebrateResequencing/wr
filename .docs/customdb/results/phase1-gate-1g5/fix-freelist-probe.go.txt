@@ -1,0 +1,120 @@
+//go:build reliability_repro
+
+package jobqueue
+
+// Review probe (rev3g5): fold time and transaction count of a backlog of
+// completions when history.bolt carries a large freelist.
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
+	bolt "go.etcd.io/bbolt"
+)
+
+func TestFreelistFoldProbe(t *testing.T) {
+	ctx := context.Background()
+
+	sizes := os.Getenv("PROBE_JUNK_MB")
+	if sizes == "" {
+		sizes = "0,256,512,1024"
+	}
+
+	n := 4000
+	if v := os.Getenv("PROBE_N"); v != "" {
+		n, _ = strconv.Atoi(v)
+	}
+
+	for f := range strings.SplitSeq(sizes, ",") {
+		junkMB, _ := strconv.Atoi(f)
+
+		Convey(fmt.Sprintf("junk %dMB", junkMB), t, func() {
+			pauseLogFolder()
+
+			s, _ := openTestLogStore(t, ctx)
+
+			base := make([]*Job, n)
+			for i := range base {
+				base[i] = testDBJob(fmt.Sprintf("echo base %d %s", i, strings.Repeat("x", 500)), fmt.Sprintf("rg%d", i%50))
+			}
+
+			_, err := s.storeNewJobsGuarded(ctx, base, false, nil)
+			So(err, ShouldBeNil)
+			archiveIncTestJobs(s, base)
+			So(s.foldNow(), ShouldBeNil)
+
+			if junkMB > 0 {
+				val := make([]byte, 1000)
+				per := 50000
+				total := junkMB * 1000
+
+				for start := 0; start < total; start += per {
+					So(s.history.bolt.Update(func(tx *bolt.Tx) error {
+						b, err := tx.CreateBucketIfNotExists([]byte("rev3junk"))
+						if err != nil {
+							return err
+						}
+
+						for i := start; i < min(total, start+per); i++ {
+							if err := b.Put(binary.BigEndian.AppendUint64(nil, uint64(i)), val); err != nil {
+								return err
+							}
+						}
+
+						return nil
+					}), ShouldBeNil)
+				}
+
+				So(s.history.bolt.Update(func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte("rev3junk")) }), ShouldBeNil)
+
+				for range 3 {
+					So(s.history.bolt.Update(func(tx *bolt.Tx) error {
+						b, err := tx.CreateBucketIfNotExists([]byte("rev3pad"))
+						if err != nil {
+							return err
+						}
+
+						return b.Put([]byte("k"), []byte("v"))
+					}), ShouldBeNil)
+				}
+			}
+
+			st := s.history.bolt.Stats()
+			t.Logf("junk %dMB: free pages %d, freelist bytes %d", junkMB, st.FreePageN, st.FreelistInuse)
+
+			more := make([]*Job, n)
+			for i := range more {
+				more[i] = testDBJob(fmt.Sprintf("echo more %d %s", i, strings.Repeat("x", 500)), fmt.Sprintf("rg%d", i%50))
+			}
+
+			_, err = s.storeNewJobsGuarded(ctx, more, false, nil)
+			So(err, ShouldBeNil)
+			So(s.foldNow(), ShouldBeNil)
+			archiveIncTestJobs(s, more)
+
+			var txs atomic.Int64
+
+			hook := func() error { txs.Add(1); return nil }
+			logFoldTxHook.Store(&hook)
+
+			defer logFoldTxHook.Store(nil)
+
+			before := s.history.bolt.Stats().TxStats.GetPageAlloc()
+			t0 := time.Now()
+			So(s.foldNow(), ShouldBeNil)
+			el := time.Since(t0)
+			after := s.history.bolt.Stats().TxStats.GetPageAlloc()
+
+			t.Logf("RESULT junk %dMB freelist %dB: fold of %d completions took %s in %d txs, wrote %dMB",
+				junkMB, st.FreelistInuse, n, el, txs.Load(), (after-before)>>20)
+		})
+	}
+}
