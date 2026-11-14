@@ -130,6 +130,7 @@ const (
 	convertAtCreated                        // after step 2
 	convertAtRenamed                        // after step 3
 	convertAtCounting                       // in step 4, before the jobs are counted
+	convertAtCounted                        // in step 4, after each job counted
 	convertAtJob                            // in step 4, after each job
 	convertAtBuilt                          // after step 4, before step 5
 	convertAtPublishing                     // in step 5, before the rename
@@ -378,6 +379,48 @@ func checkFreeSpaceFor(boltFile, dir string) error {
 	}
 
 	return nil
+}
+
+// countJobs returns how many values, not nested buckets, tx's jobslive and
+// jobscomplete hold. It also walks jobrunstate, counting nothing, so that
+// every bucket eachLiveJobTx walks has been read through eachSource first.
+//
+// It reports how many it has counted as the phase's progress, as converting
+// does: on a large file read cold, counting is most of the conversion's time
+// (5m47s of 7m03s for 3,000,000 jobs on NFS), which would otherwise show an
+// operator nothing.
+func (b *storeBuild) countJobs(tx *bolt.Tx) (int, error) {
+	n := 0
+
+	for _, name := range [][]byte{bucketJobsLive, bucketJobsComplete, bucketJobRunState} {
+		counted := !bytes.Equal(name, bucketJobRunState)
+
+		err := eachSource(tx, name, func(_, v []byte) error {
+			if !counted || v == nil {
+				return nil
+			}
+
+			n++
+
+			b.jobCounted(n)
+
+			return callConvertHook(convertAtCounted)
+		})
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	return n, nil
+}
+
+// jobCounted reports n, how many jobs countJobs has counted, when progress is
+// due.
+func (b *storeBuild) jobCounted(n int) {
+	if b.upgrade.progressDue(n) {
+		b.upgrade.writeProgress(internal.DBUpgradeConvertState,
+			fmt.Sprintf("counting the jobs to convert (%d counted)", n), n)
+	}
 }
 
 // freeSpace returns how many bytes are free to this process on dir's
@@ -692,7 +735,7 @@ func (b *storeBuild) read(src *bolt.DB) (err error) {
 		return err
 	}
 
-	if b.total, err = countJobs(tx); err != nil {
+	if b.total, err = b.countJobs(tx); err != nil {
 		return err
 	}
 
@@ -711,30 +754,6 @@ func (b *storeBuild) read(src *bolt.DB) (err error) {
 // converted, in errConvertSourceRead.
 func sourceReadError(err error) error {
 	return fmt.Errorf("%w: %w", errConvertSourceRead, err)
-}
-
-// countJobs returns how many values, not nested buckets, tx's jobslive and
-// jobscomplete hold. It also walks jobrunstate, counting nothing, so that
-// every bucket eachLiveJobTx walks has been read through eachSource first.
-func countJobs(tx *bolt.Tx) (int, error) {
-	n := 0
-
-	for _, name := range [][]byte{bucketJobsLive, bucketJobsComplete, bucketJobRunState} {
-		counted := !bytes.Equal(name, bucketJobRunState)
-
-		err := eachSource(tx, name, func(_, v []byte) error {
-			if counted && v != nil {
-				n++
-			}
-
-			return nil
-		})
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	return n, nil
 }
 
 // recoverPanic, deferred by read, sets *err to a panic of the build's own,

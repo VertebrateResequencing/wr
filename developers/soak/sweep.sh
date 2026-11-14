@@ -163,9 +163,15 @@ for spec in "${MODES[@]}"; do
   fi
   # a mode that names a fixture DB needs it to exist
   fix=$(sed -n 's/.*WRDEV_PRISTINE_DB=\([^ ]*\).*/\1/p' <<< "$envs")
-  if [[ "$envs" == *WRDEV_PRISTINE_DB=* ]] && { [ -z "$fix" ] || [ ! -f "$fix" ]; }; then
+  if [[ "$envs" == *WRDEV_PRISTINE_DB=* ]] && { [ -z "$fix" ] || [ ! -e "$fix" ]; }; then
     echo -e "$(date +%s)\t$mode\tSKIPPED-NOFIXTURE\t${fix:-unset}" >> "$SW/results.tsv"; echo "=== $mode skipped: no fixture DB"
     continue
+  fi
+  # add-storm-fixture refuses an existing fixture path, so a rerun in the same sweepdir first
+  # removes the fixture (a log store directory), manifest and job cwd its previous run wrote
+  # there; the preflight above has already refused while any of this root's runners may use it
+  if [ "$mode" = add-storm-fixture ]; then
+    rm -rf "${SW:?}/aslfixture-sweep.db" "${SW:?}/aslfixture-sweep.db.aslmanifest" "${SW:?}/aslfixture-sweep.db.jobcwd"
   fi
   wmode=${mode%-fix120k}
   log="$SW/logs/$(printf %02d $n)-$mode.out"

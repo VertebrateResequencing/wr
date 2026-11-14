@@ -1,0 +1,54 @@
+=== build  () start 05:58:29 load=0.66 free=135G
+=== build rc=0 in 15s; tail:
+    building wr from 8b7ccade -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/root/wr
+    built wsprobe -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/root/wsprobe
+    OK
+=== control-rpc-history  () start 05:58:44 load=1.28 free=135G
+=== control-rpc-history rc=0 in 180s; tail:
+      for all 199999 other commands, and the ungrouped 'wr status -i hsrg -z -o plain' cost
+      301ms and 0MB (refused=1, lines=0)
+    ## CLEANUP
+    killed our manager pid 2963131
+=== add-storm-fixture  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine6 WRDEV_ASL_FIXTURE=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/aslfixture-sweep.db) start 06:01:44 load=8.47 free=134G
+=== add-storm-fixture rc=0 in 436s; tail:
+    PASS: use it with:  WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/root WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/aslfixture-sweep.db /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/developers/wrdev.sh add-storm-lsf
+    ## CLEANUP
+      our manager stopped; wrpiso53482h3171765268_* jobs left in LSF: 0
+      kept the generated fixture; working files are in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/root/aslfixgen-1794636104
+=== add-storm-lsf  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/aslfixture-sweep.db ) start 06:09:00 load=9.03 free=131G
+=== add-storm-lsf rc=0 in 346s; tail:
+          max 194ms, none over the manager's 10s slow-request threshold
+    ## CLEANUP
+      our manager stopped; wrpiso53482h3171765268_* jobs left in LSF: 0
+      removed the working DB copy; the per-add logs are kept in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/root/addstormlsf-1794636540
+=== add-storm-lsf-fix120k  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/fix120k/fix120k.db ) start 06:14:46 load=3.07 free=131G
+=== add-storm-lsf-fix120k rc=0 in 645s; tail:
+          max 163ms, none over the manager's 10s slow-request threshold
+    ## CLEANUP
+      our manager stopped; wrpiso53482h3171765268_* jobs left in LSF: 0
+      removed the working DB copy; the per-add logs are kept in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/root/addstormlsf-1794636886
+=== unsuspend-burst  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 06:25:31 load=6.93 free=131G
+=== unsuspend-burst rc=0 in 586s; tail:
+      GAP 38s ending T06:32:06
+      GAP 16s ending T06:32:22
+      GAP 60s ending T06:33:22
+    ## CLEANUP
+=== backup-stall-check  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 06:35:17 load=0.92 free=131G
+=== backup-stall-check rc=0 in 570s; tail:
+    ## VERDICT: maxDelayed=0 badjobDelta=0 maxStatusRPC=103ms
+    NO STALL: jobs drained cleanly despite backups (the fix works)
+    ## CLEANUP
+    if you launched LSF runners, bkill them by the exact jobid you recorded (never 'wrp_*').
+=== report-storm-lsf  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 06:44:47 load=2.22 free=131G
+=== report-storm-lsf rc=0 in 526s; tail:
+      GAP 59s ending T06:52:23
+      GAP 58s ending T06:53:23
+    ## VERDICT: badjobDelta=0 maxDelayed=0 maxLost=0 maxStatusRPC=1777ms
+    ## CLEANUP
+=== crash-recovery  () start 06:53:33 load=3.94 free=131G
+=== crash-recovery rc=1 in 165s; tail:
+    job running; marker=1 my wrp_ jobid=
+    FAIL (NOT MEASURED): within 150s the command did not start once (marker=1) under a
+      runner seen in RUN (jobid=none), so a manager kill would not test recovery of a running job
+    killed our manager pid 3607952
+sweep done 06:56:18

@@ -1,0 +1,30 @@
+=== crash-recovery repeat 1 start 05:27:58
+NOTE: our prod-mode LSF runners are wrpiso53482h4065993733_* (WR_JOBNAME_TOKEN=iso53482h4065993733);
+Added 1 new commands (0 were duplicates) to the queue using default identifier 'rgCR'
+job running; marker=1 my wrp_ jobid=221842
+--- killing prod manager mid-run (LSF runner 221842 survives), then restarting (DB preserved) ---
+NOTE: our prod-mode LSF runners are wrpiso53482h4065993733_* (WR_JOBNAME_TOKEN=iso53482h4065993733);
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 1 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+PASS: re-sent archive accepted (complete=1), command ran exactly once
+=== crash-recovery repeat 1 rc=0 end 05:28:33
+=== crash-recovery repeat 2 start 05:28:33
+NOTE: our prod-mode LSF runners are wrpiso53482h4065993733_* (WR_JOBNAME_TOKEN=iso53482h4065993733);
+Added 1 new commands (0 were duplicates) to the queue using default identifier 'rgCR'
+job running; marker=1 my wrp_ jobid=222090
+--- killing prod manager mid-run (LSF runner 222090 survives), then restarting (DB preserved) ---
+NOTE: our prod-mode LSF runners are wrpiso53482h4065993733_* (WR_JOBNAME_TOKEN=iso53482h4065993733);
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 1 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+PASS: re-sent archive accepted (complete=1), command ran exactly once
+=== crash-recovery repeat 2 rc=0 end 05:30:08
+=== crash-recovery repeat 3 start 05:30:08
+NOTE: our prod-mode LSF runners are wrpiso53482h4065993733_* (WR_JOBNAME_TOKEN=iso53482h4065993733);
+Added 1 new commands (0 were duplicates) to the queue using default identifier 'rgCR'
+job running; marker=1 my wrp_ jobid=222369
+--- killing prod manager mid-run (LSF runner 222369 survives), then restarting (DB preserved) ---
+NOTE: our prod-mode LSF runners are wrpiso53482h4065993733_* (WR_JOBNAME_TOKEN=iso53482h4065993733);
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 1 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+PASS: re-sent archive accepted (complete=1), command ran exactly once
+=== crash-recovery repeat 3 rc=0 end 05:31:43

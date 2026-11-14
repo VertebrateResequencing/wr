@@ -1,0 +1,7 @@
+r1 crash: start Sat 14 Nov 07:22:45 UTC 2026
+6 crash-recovery wait=1 rc=1 (must be 1)
+7.1 crash-recovery rc=0
+7.2 crash-recovery rc=0
+7.3 crash-recovery rc=0
+7.4 crash-recovery rc=0
+r1 crash end Sat 14 Nov 07:31:13 UTC 2026

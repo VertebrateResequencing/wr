@@ -1,0 +1,8 @@
+reusing running dev manager pid 1479923
+generating 40000 jobs (20000 true + 20000 false) across 100 memory groups
+Added 20000 new commands (0 were duplicates) to the queue using default identifier 'rgtrue'
+Added 20000 new commands (0 were duplicates) to the queue using default identifier 'rgfalse'
+t+4s RUN=2100 terminal=1902/40000 rgtrue(c=1869,b=0) rgfalse(b=33,c=0) badjob=0 notrun=0 status_rpc=101ms
+t+49s RUN=7653 terminal=23901/40000 rgtrue(c=3908,b=0) rgfalse(b=19993,c=0) badjob=0 notrun=0 status_rpc=72ms
+t+95s RUN=0 terminal=40000/40000 rgtrue(c=20000,b=0) rgfalse(b=20000,c=0) badjob=0 notrun=0 status_rpc=43ms
+FULLY DRAINED

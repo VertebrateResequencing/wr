@@ -1,0 +1,16 @@
+rev2fix: src 8b7ccade dirty:  M .docs/customdb/phases/incidentals.md  M .docs/customdb/phases/phase1-gate.md  M developers/soak/sweep.sh  M developers/wrdev.sh  M jobqueue/db.go  M jobqueue/reliable4_history_seed_test.go  M jobqueue/store_convert.go  M jobqueue/store_convert_test.go ?? .claude/ ?? .docs/bugfixes/261114-wrdev-scenarios-a9b41fdc.md ?? .docs/customdb/results/phase1-gate-1g6.md ?? .docs/customdb/results/phase1-gate-1g6/ 
+rev2fix: wrdev.sh md5 8a9f12f09fc9 jobqueue diff md5 31b3c14602b5 start Sat 14 Nov 08:11:53 UTC 2026
+binary md5 1f8bdb845aa7
+01 convert prod-start rc=0 in 422s
+01 left beside db: ca.pem cert.pem client.token db db.bolt-pre-dev db.lock key.pem log manager.addr pid 
+01 1.1G	/nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev2fix/root/.wr-prod_production/db
+01 932M	/nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev2fix/root/.wr-prod_production/db.bolt-pre-dev
+02 dep-granularity-check rc=0 in 49s
+03 control-rpc-history rc=0 in 147s
+04.1 crash-recovery rc=0 in 67s
+04.2 crash-recovery rc=0 in 130s
+05 crash-recovery wait=1 rc=1 (must be 1)
+06 unsuspend-burst (bbolt pristine10) rc=0 in 575s
+07 add-storm-lsf (s3 directory fixture) rc=0 in 330s
+rev2fix: wrdev.sh md5 8a9f12f09fc9 end Sat 14 Nov 08:41:07 UTC 2026
+left in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev2fix/root/.wr-prod_production: ca.pem cert.pem client.token key.pem log manager.addr pid 

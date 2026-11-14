@@ -1,0 +1,9 @@
+in-process TTR-miss churn: jobs=60 runners=20 archiveDelayMs=1500 TTR=500ms seconds=60
+  knobs: TOUCH=0 RUNNER_DEAD=0 (runner-pid fix is default-on)
+    reliable4_ttrmiss_test.go:157: TTRMISS: 60 jobs, TTR=500ms, archiveDelay=1.5s (3.0xTTR), 20 runners, touch=false, deadline 60s; deadPid=1172293
+    reliable4_ttrmiss_test.go:335: TTRMISS t+  5s completed=60/60 attempts=60 accepted=60 badjob=0 mustReserve=0 otherErr=0
+    reliable4_ttrmiss_test.go:350: TTRMISS VERDICT: completed=60/60 attempts=60 accepted=60 rejected=0 (badjob=0 mustReserve=0) otherErr=0
+    reliable4_ttrmiss_test.go:358: TTRMISS NO CHURN: all 60 jobs completed; 0 late archives rejected as duplicates (fine as long as each job completed once)
+--- PASS: TestReliable4TtrMissChurn (5.51s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	5.522s

@@ -1,0 +1,62 @@
+fixture manifest OK: 20000 incomplete jobs, safe prefix 'echo aslfix', blocked by aslblock,
+  rep groups rgaslfix (+ rgaslfixkid for jobs those jobs add), stamped 2026-11-14T06:08:39+00:00
+self-adding jobs will add via /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/aslfixture-sweep.db.jobcwd/wradd.sh -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev4fix/root/wr (WR_CONFIG_DIR=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev4fix/root/config)
+add-path REAL-LSF gate: 24 concurrent 'wr add' loops, each adding ONE sleep-1
+  job per ~1000ms (jittered) to rep group rgasl behind limit group asllimit:30,
+  while the fixture's 20000 recovered jobs run at aslblock:30 and add jobs of their own;
+  120s storm, kill -9 the manager, 12s down, restart on the SAME DB,
+  120s more storm, then every ACKNOWLEDGED add must still be in the database.
+  work dir /nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev4fix/root/addstormlsf-1794655346; LSF jobs wrpiso53494h343686705_* on queue normal
+copying fixture /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/aslfixture-sweep.db (3169051926 bytes) -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev4fix/root/.wr-prod_production/db (mutated by this run; the fixture is not)
+  copied in 11s
+starting isolated PROD-mode manager (backups ON, -s lsf, debug=0)
+[32mINFO[0m[11-14|11:22:52] wr manager  started on 172.27.71.182:53494, pid 1752153 
+[32mINFO[0m[11-14|11:22:52] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53495/?token=[REDACTED] 
+manager pid 1752153 answering status RPCs
+recovered-job audit: 20000/20000 incomplete commands read, all of a form the generator writes
+raised aslblock to 30 (was 0), so the recovered population may now run on real LSF
+launched 24 adder loops -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev4fix/root/addstormlsf-1794655346/adder_*.log
+  [storm t+28s] storm: adds=24 complete=0 running=0 buried=0 | recovered: complete=0 running=0 ready=10000 dependent=10000 buried=0 | kids=0/0 | LSF_RUN=0 LSF_PEND=0 status_rpc=56ms
+  [storm t+39s] storm: adds=253 complete=125 running=30 buried=0 | recovered: complete=2131 running=29 ready=7844 dependent=10000 buried=0 | kids=84/0 | LSF_RUN=109 LSF_PEND=12 status_rpc=73ms
+  [storm t+49s] storm: adds=484 complete=420 running=30 buried=0 | recovered: complete=5681 running=29 ready=4297 dependent=10000 buried=0 | kids=240/0 | LSF_RUN=108 LSF_PEND=0 status_rpc=50ms
+  [storm t+61s] storm: adds=729 complete=687 running=21 buried=0 | recovered: complete=8951 running=27 ready=1023 dependent=10000 buried=0 | kids=369/0 | LSF_RUN=60 LSF_PEND=0 status_rpc=99ms
+  [storm t+72s] storm: adds=966 complete=923 running=23 buried=0 | recovered: complete=12105 running=27 ready=268 dependent=7600 buried=0 | kids=592/0 | LSF_RUN=55 LSF_PEND=0 status_rpc=113ms
+  [storm t+83s] storm: adds=1194 complete=1157 running=15 buried=0 | recovered: complete=15304 running=29 ready=767 dependent=3900 buried=0 | kids=793/0 | LSF_RUN=55 LSF_PEND=0 status_rpc=167ms
+  [storm t+95s] storm: adds=1419 complete=1375 running=17 buried=0 | recovered: complete=18690 running=29 ready=881 dependent=400 buried=0 | kids=899/0 | LSF_RUN=54 LSF_PEND=0 status_rpc=99ms
+  [storm t+106s] storm: adds=1654 complete=1607 running=29 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=53 LSF_PEND=6 status_rpc=115ms
+  [storm t+117s] storm: adds=1895 complete=1854 running=19 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=27 LSF_PEND=0 status_rpc=202ms
+  [storm t+128s] storm: adds=2127 complete=2090 running=20 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=26 LSF_PEND=0 status_rpc=93ms
+  [storm t+140s] storm: adds=2368 complete=2322 running=20 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=26 LSF_PEND=0 status_rpc=270ms
+--- killing manager pid 1752153 mid-storm (kill -9; the DB is left in place) ---
+killed our manager pid 1752153
+  aliveBeforeKill=1 aliveAfterKill=0 killProven=yes; staying down 12s
+--- restarting on the SAME db (3551907066 bytes) ---
+[32mINFO[0m[11-14|11:25:35] wr manager  started on 172.27.71.182:53494, pid 1834798 
+[32mINFO[0m[11-14|11:25:35] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53495/?token=[REDACTED] 
+  restarted manager pid 1834798 answered 39s after the kill
+  [post-restart t+204s] storm: adds=3764 complete=2558 running=24 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=24 LSF_PEND=0 status_rpc=2255ms
+  [post-restart t+214s] storm: adds=3983 complete=3029 running=27 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=30 LSF_PEND=0 status_rpc=61ms
+  [post-restart t+225s] storm: adds=4220 complete=3312 running=30 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=30 LSF_PEND=0 status_rpc=70ms
+  [post-restart t+235s] storm: adds=4458 complete=3581 running=26 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=30 LSF_PEND=0 status_rpc=83ms
+  [post-restart t+246s] storm: adds=4694 complete=3814 running=27 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=27 LSF_PEND=1 status_rpc=56ms
+  [post-restart t+256s] storm: adds=4934 complete=4060 running=28 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=29 LSF_PEND=1 status_rpc=56ms
+  [post-restart t+267s] storm: adds=5176 complete=4300 running=18 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=29 LSF_PEND=0 status_rpc=169ms
+  [post-restart t+278s] storm: adds=5412 complete=4539 running=25 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=27 LSF_PEND=0 status_rpc=53ms
+  [post-restart t+288s] storm: adds=5647 complete=4775 running=25 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=27 LSF_PEND=1 status_rpc=69ms
+  [post-restart t+298s] storm: adds=5881 complete=5010 running=24 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=30 LSF_PEND=0 status_rpc=62ms
+  [post-restart t+309s] storm: adds=6120 complete=5243 running=25 buried=0 | recovered: complete=20000 running=0 ready=0 dependent=0 buried=0 | kids=1000/1000 | LSF_RUN=27 LSF_PEND=1 status_rpc=97ms
+stopping adders (each finishes its in-flight add first, up to 90s)
+## MEASUREMENT
+  looked up 5510 acknowledged commands by key (status -f exit 0): found 5510, wr itself said 'nothing missing'
+  negative control: a command this run never added was 'found' 0 time(s), which must be 0; of the 842 adds the client was NOT told about, the manager has 0
+## VERDICT: adders=24 adds=6352 acked=5510 ackedPreKill=2569 inFlightAtKill=4 ackedInKillWindow=12 notAcked=842 presentAfterRestart=5510/5510 missingAcked=0 neverAddedFound=0 unackedInDb=0 stormJobsInDb=5510 killProven=yes oldPid=1752153 newPid=1834798 outage=39s measuredAdds=5498 p50=55ms p99=271ms max=402ms (max p50 5000ms) overSlow=0 mgrSlowRequests=1 mgrSlowAdds=0 maxLSFRun=109 maxLSFPend=12 stormCompleteAtKill=2322 stormComplete=5510 stormBuried=0 fixIncomplete=20000 fixCompleteAtKill=20000 fixComplete=20000 fixBuried=0 fixReadyNow=0 fixDependentNow=0 kidJobs=1000 kidComplete=1000 maxStatusRPC=2255ms
+PASS: all 5510 acknowledged adds (2569 of them before the kill, 4 in flight
+      at it) were still in the database after kill -9 of pid 1752153 and a restart as pid
+      1834798, and a command never added was correctly not found; the storm completed 5510
+      jobs and the fixture's recovered population 20000 (of 20000, 0 buried), which
+      themselves added 1000 jobs, all on real LSF runners (peak 109 in RUN);
+      the 5498 adds outside the kill window took p50 55ms / p99 271ms /
+      max 402ms, none over the manager's 10s slow-request threshold
+## CLEANUP
+  our manager stopped; wrpiso53494h343686705_* jobs left in LSF: 0
+  removed the working DB copy; the per-add logs are kept in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev4fix/root/addstormlsf-1794655346

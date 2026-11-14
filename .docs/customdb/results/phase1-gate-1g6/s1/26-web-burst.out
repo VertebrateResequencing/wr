@@ -1,0 +1,18 @@
+starting isolated dev manager (-s local) on :53480 / web :53481
+[32mINFO[0m[11-14|01:52:56] wr manager  started on 172.27.71.182:53480, pid 1298816 
+[32mINFO[0m[11-14|01:52:56] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53481/?token=[REDACTED] 
+pid 1298816   token [REDACTED]
+starting SLOW wsprobe (models a slow browser) then adding 10000 fast echo jobs
+Added 10000 new commands (0 were duplicates) to the queue using default identifier 'echo'
+waiting for CLI to reach complete=10000 and the slow web feed to converge...
+  CLI echo complete: 0 ; web feed still draining
+  CLI echo complete: 3078 ; web feed still draining
+  CLI echo complete: 6114 ; web feed still draining
+  CLI echo complete: 9144 ; web feed still draining
+  CLI echo complete: 10000 ; web feed still draining
+  CLI echo complete: 10000 ; web feed still draining
+  CLI echo complete: 10000 ; web feed still draining
+=== web feed (must show echo complete=10000; pre-fix it froze short) ===
+WEBUI rg="echo" counts=map[complete:10000]
+WEBUI rg="+all+" counts=map[complete:10000]
+WEBUI messages_applied=40002 slowReadMs=3

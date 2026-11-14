@@ -1,0 +1,286 @@
+=== build  () start 01:28:46 load=1.12 free=148G
+=== build rc=0 in 75s; tail:
+    building wr from 8b7ccade -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/wr
+    built wsprobe -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/wsprobe
+    OK
+=== status  () start 01:30:01 load=8.91 free=147G
+=== status rc=0 in 15s; tail:
+    dev  mgr pid:   (ports 53480/53481)
+    prod mgr pid:  (ports 53482/53483)
+    our wr manager processes:
+      (none)
+=== flicker-check  () start 01:30:16 load=8.43 free=147G
+=== flicker-check rc=0 in 16s; tail:
+    reconcile-harness: ALL SCENARIOS COHERENT AND CONVERGENT
+    (Playwright package not found at /nfs/hgi/wr/sb10-bigdb/customdb/1g6/home/.cache/wr-webui-playwright/node_modules/playwright; skipping browser fixtures.
+     Run 'make browser-test' once to install it, or set PLAYWRIGHT_PACKAGE_DIR.)
+    flicker-check: PASS
+=== status-seed-overlap  () start 01:30:32 load=7.14 free=147G
+=== status-seed-overlap rc=0 in 60s; tail:
+    status-seed-overlap: natural bracket=1/1 seed_walk=7.9ms at 478 starts/s
+    status-seed-overlap: natural overcount=0 (a boundary-blind client on the same recording:
+    status-seed-overlap:   0; a walk that was not a point in time could allow ~3.8)
+    status-seed-overlap: PASS (the seed and the live deltas count every transition once)
+=== overprovision-check  () start 01:31:32 load=5.05 free=147G
+=== overprovision-check rc=0 in 45s; tail:
+    scale: limit=2000 siblings=50 readyPerGroup=5000 (pre-fix code requests ~limit*siblings)
+      Sibling scheduler groups sharing one limit group share its capacity ✔    reliable3_overprovision_test.go:91: over-provision check: limit=2000 siblingGroups=50 readyPerGroup=5000 => summed runner request=2000 (buggy per-group accounting would give ~100000)
+    --- PASS: TestReliable3LimitGroupOverProvision (1.09s)
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	1.149s
+=== overcount-check  () start 01:32:17 load=4.11 free=147G
+=== overcount-check rc=0 in 30s; tail:
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	0.063s
+    ## VERDICT: limit=2000 uncappedCount=3500 finalCount=2000
+    PASS: an arrangement that reaches 3500 uncapped is held at 2000, within the 2000 limit,
+          and still requests runners for the work that fits
+=== limit-stall-check  () start 01:32:47 load=2.80 free=147G
+=== limit-stall-check rc=0 in 15s; tail:
+    ## VERDICT: scheduled=0 skipped=5000/5000; cannotConfirmWarned=true namesHost=true namesPid=true; keyFacetMeasured=yes (warned=true namesPath=true)
+    PASS: 5000 ready jobs behind a fully-held 2000 limit group were all skipped and none
+          scheduled, and the cannot-confirm warning named its host and pid
+          (and the unreadable private key warned, naming its path)
+=== priority-fairness-check  () start 01:33:02 load=2.54 free=147G
+=== priority-fairness-check rc=0 in 15s; tail:
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	0.040s
+    ## VERDICT: limit=2000 low(pri0).count=0 high(pri250).count=2000 high.skipped=500
+    PASS: the priority-250 sibling got the whole 2000-slot budget although the priority-0
+          sibling was scanned first
+=== backlog-rescan-check  () start 01:33:17 load=2.72 free=147G
+=== backlog-rescan-check rc=0 in 15s; tail:
+    scale: limit=2000 backlog=50000 (pre-fix scanWork == backlog; want <= limit+100)
+    ✔✔✔✔✔✔✔✔    reliable4_repro_test.go:172: BACKLOG-RESCAN-REPRO: limit=2000 backlog=50000 scanWork=2000 (want <= 2100); schedulable=2000 limitBlocked=48000
+    --- PASS: TestReliable4BacklogRescan (2.06s)
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	2.117s
+=== bkill-hygiene  () start 01:33:32 load=2.25 free=147G
+=== bkill-hygiene rc=0 in 90s; tail:
+    ##          killedReported=5 goneReported=5  hungBkillElapsedMs=75175 (max 90000)
+    PASS: the excess-runner kill is chunked to <= 1000 ids per bkill, time-bounded, backed off
+          and summarised in 363 bytes with a killed-vs-already-gone split
+    ## CLEANUP
+=== runner-started-timeout-check  () start 01:35:02 load=1.17 free=139G
+=== runner-started-timeout-check rc=0 in 15s; tail:
+    expect (pre-fix) markerWritten=false and 'I killed it due to a jobqueue server error'.
+        reliable4_repro_test.go:279: STARTED-TIMEOUT-REPRO: markerWritten=true startedCalls=2 execErr=""
+    --- PASS: TestReliable4StartedTimeoutKillsHealthyCommand (1.01s)
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	1.022s
+=== ttrmiss-check  () start 01:35:17 load=1.04 free=147G
+=== ttrmiss-check rc=0 in 15s; tail:
+        reliable4_ttrmiss_test.go:358: TTRMISS NO CHURN: all 60 jobs completed; 0 late archives rejected as duplicates (fine as long as each job completed once)
+    --- PASS: TestReliable4TtrMissChurn (5.51s)
+    PASS
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	5.522s
+=== confirm-dead-leak  () start 01:35:32 load=1.20 free=147G
+=== confirm-dead-leak rc=0 in 45s; tail:
+        reliable4_confirmdead_leak_test.go:121: CONFIRMDEAD-LEAK: 40 confirm-dead ssh checks to localhost -> ssh-client goroutines base=0 peak=0 settled=0 leaked=0 (after up to 5s to settle)
+    --- PASS: TestReliable4ConfirmDeadSSHLeak (33.34s)
+    PASS
+    ok  	github.com/VertebrateResequencing/wr/jobqueue/scheduler	33.352s
+=== report-storm  () start 01:36:17 load=1.19 free=147G
+=== report-storm rc=0 in 15s; tail:
+        reliable4_reportstorm_test.go:1029: REPORTSTORM NO CHURN: all 5000 jobs completed; archive rejections=0 timeouts=0 (the manager serviced every report within the client's 1m0s receive floor)
+    --- PASS: TestReliable4ReportStorm (5.64s)
+    PASS
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	5.670s
+=== report-storm-profile  () start 01:36:32 load=1.06 free=145G
+=== report-storm-profile rc=0 in 30s; tail:
+        reliable4_reportstorm_test.go:1029: REPORTSTORM NO CHURN: all 50000 jobs completed; archive rejections=0 timeouts=0 (the manager serviced every report within the client's 1m0s receive floor)
+    --- PASS: TestReliable4ReportStorm (12.06s)
+    PASS
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	12.122s
+=== remap-stall-check  () start 01:37:02 load=1.62 free=147G
+=== remap-stall-check rc=0 in 30s; tail:
+        prodsim_remap_stall_test.go:75: PRODSIM-REMAP crossesMmap=false backup=8.16s maxRead=0s maxWrite=29ms
+        prodsim_remap_stall_test.go:75: PRODSIM-REMAP crossesMmap=true backup=7.258s maxRead=0s maxWrite=41ms
+    PASS
+=== freelist-check  () start 01:37:32 load=1.55 free=147G
+=== freelist-check rc=0 in 45s; tail:
+        prodsim_freelist_test.go:125: PRODSIM-FREELIST-COST manager free_pages=262144 median_commit=2.03ms reopen=1.617s
+    --- PASS: TestProdsimFreelistCommitCost (27.12s)
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	32.305s
+    PASS
+=== selfconnect-check  () start 01:38:17 load=1.51 free=147G
+=== selfconnect-check rc=0 in 90s; tail:
+    --- PASS: TestManagerPortSelfConnect (15.37s)
+    --- PASS: TestManagerPortReservationRelease (0.76s)
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	77.456s
+    PASS
+=== idle-backlog-cpu  () start 01:39:47 load=0.95 free=147G
+=== idle-backlog-cpu rc=0 in 60s; tail:
+    ##          schedulerGroupSnapshot=210ms (31.34% of that total)
+    ##          15 rac cycles over 50000 ready jobs => 44ms manager CPU per cycle, 14ms of it in the snapshot
+    PASS: an idle 50000-job limit-blocked backlog costs ~no CPU; the derivation is memoised
+    ## CLEANUP
+=== control-rpc-history  () start 01:40:47 load=0.75 free=147G
+=== control-rpc-history rc=1 in 45s; tail:
+      pid 1209630
+      prod-start: wr manager start failed (exit 1)
+    control-rpc-history aborted - the prod-mode manager did not start
+    manager pid 1209630 already stopped
+=== dep-granularity-check  () start 01:41:33 load=1.47 free=147G
+=== dep-granularity-check rc=0 in 30s; tail:
+    killed our manager pid 1214824
+    DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=262 recoverySec=0.171 statusInWindow=starting addSec=0.298 errors=-
+    PASS: peakRssMb=262, recovery in 171ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 298ms
+    ## CLEANUP
+=== exec-impossible-retries  () start 01:42:03 load=1.57 free=147G
+=== exec-impossible-retries rc=0 in 15s; tail:
+    ##          counts: rgexecfail[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 20  ]
+    PASS: 20 unrunnable jobs cost exactly 20 exec attempts, all 20 are buried,
+          and all 20 give 'command line too long' as their problem
+    ## CLEANUP
+=== transient-start-retries  () start 01:42:18 load=1.98 free=146G
+=== transient-start-retries rc=0 in 180s; tail:
+    ##          counts: rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 20  ]
+    PASS: 20 jobs with --retries 2 cost exactly 60 exec attempts (== 60),
+          all 20 are buried, and all 20 give 'command failed to start' as their problem
+    ## CLEANUP
+=== runner-log-bytes  () start 01:45:18 load=3.36 free=143G
+=== runner-log-bytes rc=0 in 15s; tail:
+    PASS: 30 jobs with a ~20480-byte Cmd each cost 1415 runner-log bytes and
+          2317 manager-log bytes per job (<= 4096 / 8192), and no line in either log
+          carried the command line's tail
+    ## CLEANUP
+=== retention-check  () start 01:45:33 load=3.12 free=135G
+=== retention-check rc=0 in 90s; tail:
+      round 5: live=0 complete=1000 heapInuseMB=27
+      round 6: live=0 complete=1000 heapInuseMB=27
+    RETENTION rounds=6 jobsPerRound=1000 cmdKB=20 firstMB=26 lastMB=27 growthMB=1 bound=32
+    PASS: archived jobs are garbage
+=== web-burst  () start 01:47:03 load=6.40 free=91G
+01:48:18 DISK GUARD: /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1 has 39G < 40G, stopping web-burst
+=== web-burst rc=143 in 75s; tail:
+      CLI echo complete: 3026 ; web feed still draining
+      CLI echo complete: 6018 ; web feed still draining
+      CLI echo complete: 8946 ; web feed still draining
+    01:48:18 DISK GUARD: /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1 has 39G < 40G, stopping web-burst
+sweep done 01:48:18
+=== control-rpc-history  () start 01:50:21 load=1.91 free=139G
+=== control-rpc-history rc=0 in 150s; tail:
+      for all 199999 other commands, and the ungrouped 'wr status -i hsrg -z -o plain' cost
+      249ms and 0MB (refused=1, lines=0)
+    ## CLEANUP
+    killed our manager pid 1288366
+=== web-burst  () start 01:52:51 load=1.77 free=82G
+=== web-burst rc=0 in 150s; tail:
+    === web feed (must show echo complete=10000; pre-fix it froze short) ===
+    WEBUI rg="echo" counts=map[complete:10000]
+    WEBUI rg="+all+" counts=map[complete:10000]
+    WEBUI messages_applied=40002 slowReadMs=3
+=== backup-stall-fast  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 01:55:21 load=2.80 free=145G
+=== backup-stall-fast rc=0 in 255s; tail:
+        reliable4_backup_stall_test.go:383: NO STALL: every archive completed within the TTR (maxLat=731ms) - no churn
+    --- PASS: TestReliable4BackupStall (220.00s)
+    PASS
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	220.020s
+=== writestorm-freeze  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 01:59:37 load=2.37 free=145G
+=== writestorm-freeze rc=0 in 45s; tail:
+        reliable4_writestorm_freeze_test.go:174: NO FREEZE: max archive latency 6.659s stayed under the 1m0s client floor
+    --- PASS: TestReliable4WriteStormFreeze (31.13s)
+    PASS
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	31.207s
+=== archive-rate  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 02:00:22 load=2.86 free=145G
+=== archive-rate rc=0 in 210s; tail:
+    ok  	github.com/VertebrateResequencing/wr/jobqueue	200.231s
+    ## VERDICT: archives=30642 rate=170.2/s meanLatency=88ms p99=1210ms max=1781ms queueDepth mean=14 max=225 overClientFloor=0 archiveErrors=0 goExit=0
+    PASS: a sustained 660-archiver rate on a 4GB-class DB stays at 88ms mean / 1210ms p99 with the queue never deeper than 225
+    ## CLEANUP
+=== archive-ceiling  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine6 WRDEV_AC_WORK=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root) start 02:03:52 load=1.51 free=145G
+=== archive-ceiling rc=0 in 420s; tail:
+    PASS: 1143 archivers reached 384.08/s against 20 archivers' 8.74/s
+          (43.92x for 57.1x the concurrency),
+          worst archive 1654ms, none at the client floor, with 25991MB of backup copied
+    ## CLEANUP
+=== add-storm  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/prod.db WRDEV_AS_WORK=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root) start 02:10:52 load=2.58 free=145G
+=== add-storm rc=0 in 361s; tail:
+          (23.41x for 35.0x the concurrency),
+          median add 346ms, worst 4948ms, none over the slow-request threshold,
+          at 0.17 write transactions per job with 24484MB of backup copied
+    ## CLEANUP
+=== add-storm-fixture  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine6 WRDEV_ASL_FIXTURE=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db) start 02:16:53 load=2.09 free=145G
+=== add-storm-fixture rc=0 in 330s; tail:
+    PASS: use it with:  WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/developers/wrdev.sh add-storm-lsf
+    ## CLEANUP
+      our manager stopped; wrpiso53482h597924918_* jobs left in LSF: 0
+      kept the generated fixture; working files are in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/aslfixgen-1794622613
+=== unsuspend-burst  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 02:22:23 load=1.55 free=142G
+=== unsuspend-burst rc=1 in 120s; tail:
+    adding 100000 sleep-1 jobs in limit group burstlimit:0 (ready-but-blocked; NEVER run) rep_grp rgburst
+    [31mEROR[0m[11-14|02:24:19] could not read token file; has the manager been started? [open /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/.wr-prod_production/client.token: no such file or directory] 
+    unsuspend-burst aborted - could not add jobs (wr add exit 1; manager up?)
+    ## CLEANUP
+=== start lsf () start 02:24:23 load=1.74 free=142G
+=== start rc=0 in 15s; tail:
+    starting isolated dev manager (-s lsf) on :53480 / web :53481
+    [32mINFO[0m[11-14|02:24:28] wr manager  started on 172.27.71.182:53480, pid 1479923 
+    [32mINFO[0m[11-14|02:24:28] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53481/?token=[REDACTED] 
+    pid 1479923   token [REDACTED]
+=== probe  () start 02:24:38 load=1.49 free=142G
+=== probe rc=0 in 15s; tail:
+    WEBUI messages_applied=0 slowReadMs=0
+    WEBUI (no state messages received)
+=== churn  () start 02:24:54 load=1.62 free=141G
+=== churn rc=0 in 120s; tail:
+    t+4s RUN=2100 terminal=1902/40000 rgtrue(c=1869,b=0) rgfalse(b=33,c=0) badjob=0 notrun=0 status_rpc=101ms
+    t+49s RUN=7653 terminal=23901/40000 rgtrue(c=3908,b=0) rgfalse(b=19993,c=0) badjob=0 notrun=0 status_rpc=72ms
+    t+95s RUN=0 terminal=40000/40000 rgtrue(c=20000,b=0) rgfalse(b=20000,c=0) badjob=0 notrun=0 status_rpc=43ms
+    FULLY DRAINED
+=== monitor  () start 02:26:54 load=4.19 free=138G
+=== monitor rc=0 in 15s; tail:
+    t+0s RUN=0 terminal=40000/40000 rgtrue(c=20000,b=0) rgfalse(b=20000,c=0) badjob=0 notrun=0 status_rpc=48ms
+    FULLY DRAINED
+=== stop  () start 02:27:09 load=3.56 free=138G
+=== stop rc=0 in 15s; tail:
+    killed our manager pid 1479923
+=== limit-drain  () start 02:27:24 load=3.29 free=138G
+=== limit-drain rc=0 in 976s; tail:
+    t+864s complete=55994/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=130ms
+    t+909s complete=58031/60000 running=1971 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=151ms
+    t+954s complete=60000/60000 running=0 lost=0 LSF_RUN=0 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=119ms
+    FULLY DRAINED (complete=60000 buried=0)
+=== backup-stall-check  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 02:43:40 load=0.80 free=137G
+=== backup-stall-check rc=0 in 585s; tail:
+    ## VERDICT: maxDelayed=0 badjobDelta=0 maxStatusRPC=153ms
+    NO STALL: jobs drained cleanly despite backups (the fix works)
+    ## CLEANUP
+    if you launched LSF runners, bkill them by the exact jobid you recorded (never 'wrp_*').
+=== report-storm-lsf  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 02:53:25 load=2.11 free=137G
+=== report-storm-lsf rc=0 in 510s; tail:
+      GAP 42s ending T02:59:36
+      GAP 18s ending T02:59:54
+    ## VERDICT: badjobDelta=0 maxDelayed=0 maxLost=0 maxStatusRPC=1244ms
+    ## CLEANUP
+=== crash-recovery  () start 03:01:55 load=4.97 free=137G
+=== crash-recovery rc=0 in 45s; tail:
+      rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+      rgCR[complete: 1 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+    PASS: re-sent archive accepted (complete=1), command ran exactly once
+    killed our manager pid 1711227
+=== prodsim  () start 03:02:40 load=2.97 free=137G
+=== prodsim rc=0 in 7285s; tail:
+    db_mb                     0            0            0           +0.0/h
+    log_mb                    0            0            0           +0.0/h
+    ping_ms                   3            7            0           +0.1/h
+    load1                     3            4            2           -0.5/h
+=== prod-start local () start 05:04:05 load=1.26 free=136G
+=== prod-start rc=0 in 15s; tail:
+          that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+    [32mINFO[0m[11-14|05:04:05] wr manager  started on 172.27.71.182:53482, pid 2493568 
+    [32mINFO[0m[11-14|05:04:05] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53483/?token=[REDACTED] 
+    pid 2493568
+=== prod-stop  () start 05:04:20 load=1.06 free=136G
+=== prod-stop rc=0 in 15s; tail:
+    killed our manager pid 2493568
+    if you launched LSF runners, bkill them by the exact jobid you recorded (never 'wrp_*').
+=== dump local () start 05:04:35 load=0.83 free=136G
+=== dump rc=0 in 23s; tail:
+        grep -aE '^goroutine' /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/fg.out | sed -E 's/.*\[([^]]+)\].*/\1/' | sort | uniq -c | sort -rn
+    Look for many 'sync.RWMutex.RLock' waiters + a 'Lock' waiter (lock cycle), or
+    goroutines in os/exec (bsub/bjobs) holding a lock.
+    goroutines in SIGQUIT dump: 39
+=== clean  () start 05:04:58 load=0.95 free=136G
+=== clean rc=0 in 15s; tail:
+    0
+    active wrdiso53480h597924918_* jobs: 0
+    0
+    (any real --deployment production managers are left untouched)
+sweep done 05:05:13

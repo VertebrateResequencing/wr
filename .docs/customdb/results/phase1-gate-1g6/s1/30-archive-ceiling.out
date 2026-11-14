@@ -1,0 +1,46 @@
+reliable4 throughput-ceiling gate: 20 then 1143 archivers, 2300ms think time,
+  180s per phase, cmdBytes=256, backups=1, work=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root
+  DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine6 (3046572032 bytes; COPIED into /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root, never mutated in place)
+  prod symptom to reproduce: 20 runners -> 8.7/s, 1143 -> ~14/s (1.6x for 57x), archive
+  latency pinned at the 60s client floor, 470 final-state reports lost in one minute.
+  gate: throughputFactor >= 10x, no archive over 30000ms, 0 at/over the floor.
+  A MISSING or NON-DISCRIMINATING measurement is a FAIL, not a PASS.
+    reliable4_archive_ceiling_test.go:166: ARCHCEIL: copying big DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine6 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/archceil_work_db (mutated by the run)
+    reliable4_archive_ceiling_test.go:166: ARCHCEIL: copy took 19s
+    reliable4_archive_ceiling_test.go:166: ARCHCEIL: opened DB file=2.84GiB freelist=6 pages (~0MiB) backupsEnabled=true
+    reliable4_archive_ceiling_test.go:169: ARCHCEIL: lowArchivers=20 highArchivers=1143 think=2.3s window=3m0s cmdBytes=256 backups=true work=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/archceil_work_db clientFloor=1m0s (production: 20 runners -> 8.7/s, 1143 runners -> ~14/s with latency pinned at the floor and 470 reports lost in one minute, on ~25KB commands)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+15s depth=0 archived=133 (+133 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+30s depth=0 archived=258 (+125 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+45s depth=0 archived=386 (+128 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+60s depth=0 archived=519 (+133 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+75s depth=0 archived=656 (+137 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+90s depth=0 archived=791 (+135 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+105s depth=0 archived=915 (+124 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+120s depth=0 archived=1042 (+127 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+135s depth=1 archived=1175 (+133 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+150s depth=0 archived=1302 (+127 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+165s depth=0 archived=1438 (+136 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL: low t+180s depth=0 archived=1574 (+136 in the last 15s)
+    reliable4_archive_ceiling_test.go:177: ARCHCEIL-PHASE phase=low archivers=20 archives=1574 offeredRate=8.70/s achievedRate=8.74/s efficiency=1.006 meanMs=6 p50Ms=2 p99Ms=70 maxMs=342 meanDepth=0 maxDepth=2 overFloor=0 errors=0
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+15s depth=327 archived=5711 (+5711 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+30s depth=214 archived=11279 (+5568 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+45s depth=301 archived=16802 (+5523 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+60s depth=265 archived=22570 (+5768 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+75s depth=256 archived=28364 (+5794 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+90s depth=183 archived=34124 (+5760 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+105s depth=221 archived=39879 (+5755 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+120s depth=237 archived=45412 (+5533 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+135s depth=128 archived=51438 (+6026 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+150s depth=223 archived=57042 (+5604 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+165s depth=328 archived=62506 (+5464 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL: high t+180s depth=273 archived=68860 (+6354 in the last 15s)
+    reliable4_archive_ceiling_test.go:178: ARCHCEIL-PHASE phase=high archivers=1143 archives=69135 offeredRate=496.96/s achievedRate=384.08/s efficiency=0.773 meanMs=682 p50Ms=716 p99Ms=1286 maxMs=1654 meanDepth=257 maxDepth=589 overFloor=0 errors=0
+    reliable4_archive_ceiling_test.go:182: ARCHCEIL-SUMMARY lowArchivers=20 lowRate=8.74 highArchivers=1143 highRate=384.08 concurrencyFactor=57.1 throughputFactor=43.92 lowMaxMs=342 highMaxMs=1654 lowP99Ms=70 highP99Ms=1286 overFloor=0 errors=0 archives=70709 cmdBytes=256 backupCopies=9 backupMb=25991 backupMbPerSec=72.0
+--- PASS: TestReliable4ArchiveCeiling (411.80s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	411.822s
+## VERDICT: low=20@8.74/s high=1143@384.08/s throughputFactor=43.92x (min 10x) lowMax=342ms highMax=1654ms (max 30000ms) overClientFloor=0 archives=70709 archiveErrors=0 backupMb=25991 goExit=0
+PASS: 1143 archivers reached 384.08/s against 20 archivers' 8.74/s
+      (43.92x for 57.1x the concurrency),
+      worst archive 1654ms, none at the client floor, with 25991MB of backup copied
+## CLEANUP

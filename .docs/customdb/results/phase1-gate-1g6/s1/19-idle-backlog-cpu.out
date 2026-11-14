@@ -1,0 +1,36 @@
+reliable4 FINDING 3 idle-backlog CPU gate: 50000 ready-but-blocked jobs (limit group idlelimit:0),
+no runners, 25s CPU profile of the manager while one rac cycle is driven every 2s.
+prod pre-fix numbers to beat: 19640ms per 25s (0.79 cores), 41.8% of it (8210ms) in
+schedulerGroupSnapshot; prod empty-backlog floor: 80ms per 25s.
+Gate: total <= 2500ms and schedulerGroupSnapshot <= 800ms per 25s. The gate is on
+ABSOLUTE cpu, not on the snapshot SHARE: post-fix the pre-pass is still O(backlog) CHEAP
+field reads (the memo is read under each job's read lock), so it stays a large share of a
+tiny total - a share threshold would flag a manager that is doing almost nothing.
+A MISSING measurement (no profile, no samples, no rac cycles) is a FAIL, not a PASS.
+starting isolated dev manager (-s local, pprof localhost:6063); dev mode wipes the DB
+[32mINFO[0m[11-14|01:39:52] wr manager  started on 172.27.71.182:53480, pid 1202652 
+[32mINFO[0m[11-14|01:39:52] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53481/?token=[REDACTED] 
+pid 1202652
+adding 50000 jobs in limit group idlelimit:0 (rep_grp rgidle); they can NEVER be scheduled
+Added 50000 new commands (0 were duplicates) to the queue using default identifier 'rgidle'
+ready backlog: complete: 0 running: 0 ready: 50000 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  
+rac-cycle driver pid 1204175 (one extra blocked job every 2s => one rac cycle each)
+=== sampling 25s CPU profile of the manager ===
+## profile top (also saved to /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/idle-backlog-cpu.top):
+Duration: 25s, Total samples = 670ms ( 2.68%)
+         0     0%     0%      400ms 59.70%  github.com/VertebrateResequencing/wr/queue.(*Queue).runReadyAddedCb
+         0     0%     0%      310ms 46.27%  github.com/VertebrateResequencing/wr/jobqueue.(*Server).createQueue.func1
+         0     0%     0%      310ms 46.27%  github.com/VertebrateResequencing/wr/jobqueue.(*Server).readyAddedCallback
+         0     0%     0%      270ms 40.30%  github.com/VertebrateResequencing/wr/jobqueue.(*Server).buildSchedulerGroups
+         0     0%     0%      250ms 37.31%  github.com/VertebrateResequencing/wr/jobqueue.(*Server).snapshotReadyJobs
+         0     0%     0%      240ms 35.82%  runtime.systemstack
+      10ms  1.49%  1.49%      210ms 31.34%  github.com/VertebrateResequencing/wr/jobqueue.(*Job).schedulerGroupSnapshot
+      30ms  4.48%  5.97%      200ms 29.85%  github.com/VertebrateResequencing/wr/jobqueue.(*Job).memoisedSchedulerGroupSnapshot
+         0     0%  5.97%      200ms 29.85%  runtime.gcBgMarkWorker
+         0     0%  5.97%      200ms 29.85%  runtime.gcBgMarkWorker.func2
+      10ms  1.49%  7.46%      200ms 29.85%  runtime.gcDrain
+## VERDICT: totalCPU=670ms per 25s (2.68% of one core)
+##          schedulerGroupSnapshot=210ms (31.34% of that total)
+##          15 rac cycles over 50000 ready jobs => 44ms manager CPU per cycle, 14ms of it in the snapshot
+PASS: an idle 50000-job limit-blocked backlog costs ~no CPU; the derivation is memoised
+## CLEANUP

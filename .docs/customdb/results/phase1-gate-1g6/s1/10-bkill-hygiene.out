@@ -1,0 +1,17 @@
+reliable4 FINDING 4 bkill hygiene gate: 1900 excess LSF array elements, fake bjobs/bkill
+(farm-safe: no manager, no bsub, no real bkill), hanging-bkill case sleeps 120s.
+Gate: maxArgv <= 1000 AND uniqueIDs == 1900 AND logBytes <= 4096 AND cycle2RepeatedIDs == 0
+      AND killedReported/goneReported both >= 0 AND a hung bkill returns within 90000ms.
+prod pre-fix: one ~1,900-id argv, ~104KB of log per cycle, the same ids re-killed every cycle.
+    reliable4_bkill_scale_test.go:186: BKILL-HYGIENE-CHUNK: elements=1900 invocations=2 maxArgv=1000 uniqueIDs=1900 logBytes=363
+    reliable4_bkill_scale_test.go:186: BKILL-HYGIENE-REPEAT: cycle2Invocations=0 cycle2RepeatedIDs=0
+    reliable4_bkill_scale_test.go:187: BKILL-HYGIENE-OUTCOME: elements=10 killedReported=5 goneReported=5
+    reliable4_bkill_scale_test.go:188: BKILL-HYGIENE-HANG: hangSeconds=120 elapsedMs=75175
+--- PASS: TestReliable4BkillHygieneScale (75.23s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue/scheduler	75.240s
+## VERDICT: maxArgv=1000 (cap 1000)  invocations=2  uniqueIDs=1900/1900
+##          logBytes=363 (max 4096)  cycle2RepeatedIDs=0
+##          killedReported=5 goneReported=5  hungBkillElapsedMs=75175 (max 90000)
+PASS: the excess-runner kill is chunked to <= 1000 ids per bkill, time-bounded, backed off
+      and summarised in 363 bytes with a killed-vs-already-gone split
+## CLEANUP

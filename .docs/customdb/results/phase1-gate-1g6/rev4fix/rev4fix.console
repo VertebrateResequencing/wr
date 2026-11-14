@@ -1,0 +1,5 @@
+rev4fix: src 8b7ccade dirty:  M .docs/customdb/phases/incidentals.md  M .docs/customdb/phases/phase1-gate.md  M developers/soak/sweep.sh  M developers/wrdev.sh  M jobqueue/db.go  M jobqueue/reliable4_history_seed_test.go  M jobqueue/store_convert.go  M jobqueue/store_convert_test.go  M jobqueue/store_lock_test.go ?? .claude/ ?? .docs/bugfixes/261114-wrdev-scenarios-a9b41fdc.md ?? .docs/customdb/results/phase1-gate-1g6.md ?? .docs/customdb/results/phase1-gate-1g6/ 
+rev4fix: wrdev.sh md5 da20b00abcfe jobqueue diff md5 c76cf475e982 binary md5 4ea1f24558f6 start Sat 14 Nov 11:22:25 UTC 2026
+01 add-storm-lsf (s3 directory fixture) rc=0 in 336s
+rev4fix: wrdev.sh md5 da20b00abcfe jobqueue diff md5 678780780ac4 binary md5 4ea1f24558f6 end Sat 14 Nov 11:28:02 UTC 2026
+left in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev4fix/root/.wr-prod_production: ca.pem cert.pem client.token key.pem log manager.addr pid 

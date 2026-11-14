@@ -1,0 +1,9 @@
+# N10 triage: is dbUpgradeReporter.phaseDetail ever read after setPhaseTotal?
+# Probe (scratch copy only): setPhaseTotal sets a new afterTotal flag, startPhase
+# clears it, and the only two reads of phaseDetail (completePhase when passed an
+# empty detail, and finish(nil) while a phase is active) panic when it is set.
+# setPhaseTotal's own sidecar write uses its detail argument, not phaseDetail.
+$ go test -tags netgo ./jobqueue/ -run 'Convert|Upgrade' -count=1
+ok  	github.com/VertebrateResequencing/wr/jobqueue	30.713s
+# No probe panic: N10 (dropping `r.phaseDetail = detail`) cannot change any
+# sidecar write or log line on the tested paths; equivalent.

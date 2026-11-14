@@ -1,0 +1,6 @@
+✔    port_selfconnect_repro_test.go:75: SELFCONNECT-TIMEWAIT port=43329: the manager published after 1m1s
+--- PASS: TestManagerStartsOverSelfConnectTimeWait (61.28s)
+--- PASS: TestManagerPortSelfConnect (15.37s)
+--- PASS: TestManagerPortReservationRelease (0.76s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	77.456s
+PASS

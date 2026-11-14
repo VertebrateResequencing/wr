@@ -1,0 +1,8 @@
+copying pristine DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/.wr-prod_production/db (mutated by this run)
+db size: 4337278976 bytes; scheduler=local (limit 0 => 0 LSF jobs)
+starting isolated PROD-mode manager (backups ON, pprof localhost:6062) on the big DB
+pid 1470239
+adding 100000 sleep-1 jobs in limit group burstlimit:0 (ready-but-blocked; NEVER run) rep_grp rgburst
+[31mEROR[0m[11-14|02:24:19] could not read token file; has the manager been started? [open /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/.wr-prod_production/client.token: no such file or directory] 
+unsuspend-burst aborted - could not add jobs (wr add exit 1; manager up?)
+## CLEANUP

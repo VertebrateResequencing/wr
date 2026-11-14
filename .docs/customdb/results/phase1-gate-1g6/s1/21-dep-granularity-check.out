@@ -1,0 +1,14 @@
+dep-granularity scale gate: 30000 waiters on a 3000-member dep group, 6300 groups in total
+  prod pre-fix: 150,472 live jobs, ~19,000 retained keys each, 97.55% of a 15.65GB heap in
+  recoveredItemDef, 42m56s to recover, five OOM kills at ~180GB.
+  gate: peakRssMb <= 700, recoverySec <= 1, addSec <= 2,
+  statusInWindow must be 'starting' or 'up', never 'nonresponsive' and never '-' twice.
+=== fixture ===
+  DEPGRAN-FIXTURE waiters=30000 members=3000 groups=6300 liveJobs=39299 dtk=9299 dtkBigGroup=3000 rdtk=69299 depGroups=6300 bytes=103419904 seconds=17.1 db=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/depgran_fixture_db
+=== starting the isolated prod-mode manager on a copy of it ===
+  manager pid 1214824, foreground output /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/dep-granularity-manager.out, manager log /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/.wr-prod_production/log
+  'wr manager status' was fired inside the window and took 43ms to answer 'starting'
+killed our manager pid 1214824
+DEPGRAN-SUMMARY waiters=30000 members=3000 peakRssMb=262 recoverySec=0.171 statusInWindow=starting addSec=0.298 errors=-
+PASS: peakRssMb=262, recovery in 171ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 298ms
+## CLEANUP

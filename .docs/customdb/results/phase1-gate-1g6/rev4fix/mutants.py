@@ -1,0 +1,107 @@
+# The 1g.6 review mutants against fix round 4's code: round 2's M1-M8, round
+# 3's N1-N10 and round 4's R1-R11. Baseline first.
+# Usage: python3 mutants.py <scratch copy of the repo> [label ...]
+import os
+import shutil
+import subprocess
+import sys
+
+W = sys.argv[1]
+SC = "jobqueue/store_convert.go"
+DB = "jobqueue/db.go"
+JC = ("\tif b.upgrade.progressDue(n) {\n\t\tb.upgrade.writeProgress(internal.DBUpgradeConvertState,\n"
+      "\t\t\tfmt.Sprintf(\"counting the jobs to convert (%d counted)\", n), n)\n\t}")
+WP = ("b.upgrade.writeProgress(internal.DBUpgradeConvertState,\n"
+      "\t\t\tfmt.Sprintf(\"counting the jobs to convert (%d counted)\", n), n)")
+RESET = "\tr.phaseProcessed = 0\n\n\tr.writeStatus(r.phaseState, detail, r.phaseProcessed)"
+GUARD = "\t\t\tif !counted || v == nil {\n\t\t\t\treturn nil\n\t\t\t}\n"
+HOOK = "\t\t\tb.jobCounted(n)\n\n\t\t\treturn callConvertHook(convertAtCounted)"
+TOTAL = ("\tr.phaseTotal = total\n\tr.phaseDetail = detail\n\tr.phaseProcessed = 0\n\n"
+         "\tr.writeStatus(r.phaseState, detail, r.phaseProcessed)")
+
+muts = [
+    ("baseline", SC, "func (b *storeBuild) jobCounted(n int) {", "func (b *storeBuild) jobCounted(n int) {"),
+    # round 2
+    ("M1-no-count-progress", SC, "\t\t\tb.jobCounted(n)\n", ""),
+    ("M2-no-reset", DB, RESET, "\n\tr.writeStatus(r.phaseState, detail, r.phaseProcessed)"),
+    ("M3-detail-no-count", SC, 'fmt.Sprintf("counting the jobs to convert (%d counted)", n), n)',
+     'fmt.Sprint("counting the jobs to convert", n*0), n)'),
+    ("M4-writeStatus-not-log", SC, WP,
+     "b.upgrade.phaseProcessed = n\n\t\tb.upgrade.writeStatus(internal.DBUpgradeConvertState,\n"
+     "\t\t\tfmt.Sprintf(\"counting the jobs to convert (%d counted)\", n), n)"),
+    ("M5-progress-total-in-count", SC, '(%d counted)", n), n)', '(%d counted)", n), n/2)'),
+    ("M6-reset-after-write", DB, RESET,
+     "\n\tr.writeStatus(r.phaseState, detail, r.phaseProcessed)\n\tr.phaseProcessed = 0"),
+    ("M7-count-runstate-progress-only", SC, GUARD,
+     "\t\t\tif v != nil {\n\t\t\t\tb.upgrade.progress(internal.DBUpgradeConvertState, "
+     "fmt.Sprintf(\"counting the jobs to convert (%d counted)\", n), n)\n\t\t\t}\n\n" + GUARD),
+    ("M8-convert-no-log", SC,
+     "\t\tb.upgrade.writeProgress(internal.DBUpgradeConvertState, b.progressDetail(), b.processed)",
+     "\t\tb.upgrade.phaseProcessed = b.processed\n"
+     "\t\tb.upgrade.writeStatus(internal.DBUpgradeConvertState, b.progressDetail(), b.processed)"),
+    # round 3
+    ("N1-log-not-sidecar", SC, JC, JC.replace("writeProgress", "logProgress")),
+    ("N2-sidecar-processed-0", SC, JC,
+     JC[:-3] + "\n\t\tb.upgrade.writeStatus(internal.DBUpgradeConvertState, \"counting the jobs to convert\", 0)\n\t}"),
+    ("N3-count-nested", SC, "\t\t\tif !counted || v == nil {", "\t\t\tif !counted {"),
+    ("N4-count-runstate", SC, "\t\tcounted := !bytes.Equal(name, bucketJobRunState)", "\t\tcounted := true"),
+    ("N5-report-before-inc", SC, "\t\t\tn++\n\n\t\t\tb.jobCounted(n)", "\t\t\tb.jobCounted(n)\n\n\t\t\tn++"),
+    ("N6-wrong-state", SC, "\t\tb.upgrade.writeProgress(internal.DBUpgradeConvertState,\n\t\t\tfmt.Sprintf(\"counting",
+     "\t\tb.upgrade.writeProgress(internal.DBUpgradeJobLookupState,\n\t\t\tfmt.Sprintf(\"counting"),
+    ("N7-no-total", DB, "\tr.phaseTotal = total\n\tr.phaseDetail = detail\n", "\tr.phaseDetail = detail\n"),
+    ("N8-no-time-progress", SC, "\tif b.upgrade.progressDue(n) {", "\tif n%dbUpgradeProgressEntries == 0 {"),
+    ("N9-swallow-err", SC, "\t\tif err != nil {\n\t\t\treturn 0, err\n\t\t}\n\t}\n\n\treturn n, nil",
+     "\t\t_ = err\n\t}\n\n\treturn n, nil"),
+    ("N10-keep-detail", DB, "\tr.phaseTotal = total\n\tr.phaseDetail = detail\n", "\tr.phaseTotal = total\n"),
+    # round 4
+    ("R1-count-always-due", SC, "\tif b.upgrade.progressDue(n) {", "\tif b.upgrade.active() {"),
+    ("R2-hook-before-report", SC, HOOK,
+     "\t\t\tif err := callConvertHook(convertAtCounted); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\n"
+     "\t\t\tb.jobCounted(n)\n\n\t\t\treturn nil"),
+    ("R3-hook-err-swallowed", SC, "\t\t\treturn callConvertHook(convertAtCounted)",
+     "\t\t\t_ = callConvertHook(convertAtCounted)\n\n\t\t\treturn nil"),
+    ("R4-processed-is-total", DB, TOTAL, TOTAL.replace("r.phaseProcessed = 0", "r.phaseProcessed = total")),
+    ("R5-due-at-n-plus-1", SC, "\tif b.upgrade.progressDue(n) {", "\tif b.upgrade.progressDue(n + 1) {"),
+    ("R6-no-step-writes", SC, "\tif b.upgrade.progressDue(n) {",
+     "\tif b.upgrade.active() && b.upgrade.now().Sub(b.upgrade.lastWrite) >= dbUpgradeProgressInterval {"),
+    ("R7-start-detail", SC, 'b.upgrade.startPhase(internal.DBUpgradeConvertState, "counting the jobs to convert")',
+     'b.upgrade.startPhase(internal.DBUpgradeConvertState, "counting jobs")'),
+    ("R8-no-set-total", SC, "\tb.upgrade.setPhaseTotal(b.progressDetail(), b.total)\n", ""),
+    ("R9-hook-in-runstate-walk", SC, GUARD,
+     "\t\t\tif !counted || v == nil {\n\t\t\t\treturn callConvertHook(convertAtCounted)\n\t\t\t}\n"),
+    ("R10-stale-detail", DB, TOTAL,
+     "\tr.phaseTotal = total\n\tr.phaseProcessed = 0\n\n"
+     "\tr.writeStatus(r.phaseState, r.phaseDetail, r.phaseProcessed)\n\tr.phaseDetail = detail"),
+    ("R11-jobdone-always-due", SC, "\tif b.upgrade.progressDue(b.processed) {", "\tif b.upgrade.active() {"),
+]
+
+sel = sys.argv[2:]
+env = dict(os.environ, CGO_ENABLED="1")
+
+for label, f, old, new in muts:
+    if sel and label not in sel:
+        continue
+
+    p = f"{W}/{f}"
+    src = open(p).read()
+
+    if src.count(old) != 1:
+        print("INVALID(match)", label, src.count(old), flush=True)
+        continue
+
+    shutil.copy(p, p + ".bak")
+    open(p, "w").write(src.replace(old, new))
+
+    try:
+        r = subprocess.run(["go", "vet", "-tags", "netgo", "./jobqueue/"], cwd=W, capture_output=True, text=True,
+                           env=env)
+        if r.returncode:
+            print("INVALID", label, r.stderr[-400:], flush=True)
+            continue
+
+        r = subprocess.run(["go", "test", "-tags", "netgo", "./jobqueue/", "-run", "Convert|Upgrade", "-count=1",
+                            "-timeout", "1500s"], cwd=W, capture_output=True, text=True, env=env)
+        fails = [line for line in r.stdout.splitlines() if line.startswith("--- FAIL")]
+        print("KILLED" if r.returncode else "SURVIVED", label, fails[:5], flush=True)
+    finally:
+        shutil.move(p + ".bak", p)

@@ -1,0 +1,4 @@
+starting isolated dev manager (-s lsf) on :53480 / web :53481
+[32mINFO[0m[11-14|02:24:28] wr manager  started on 172.27.71.182:53480, pid 1479923 
+[32mINFO[0m[11-14|02:24:28] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53481/?token=[REDACTED] 
+pid 1479923   token [REDACTED]

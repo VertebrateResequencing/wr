@@ -1,0 +1,15 @@
+--- PASS: TestManagerDBCommitFreelistCost (0.32s)
+--- PASS: TestManagerDBFreelistCrashSafety (0.88s)
+--- PASS: TestManagerDBStaleFreelist (3.94s)
+    prodsim_freelist_test.go:107: PRODSIM-FREELIST-COST free_pages=0 freelist_bytes=0KB median_commit=1.46ms reopen=4ms
+    prodsim_freelist_test.go:114: PRODSIM-FREELIST-COST NoFreelistSync free_pages=0 median_commit=1.32ms reopen=3ms
+    prodsim_freelist_test.go:125: PRODSIM-FREELIST-COST manager free_pages=0 median_commit=1.36ms reopen=29ms
+    prodsim_freelist_test.go:107: PRODSIM-FREELIST-COST free_pages=65536 freelist_bytes=523KB median_commit=13.05ms reopen=86ms
+    prodsim_freelist_test.go:114: PRODSIM-FREELIST-COST NoFreelistSync free_pages=65536 median_commit=2.5ms reopen=146ms
+    prodsim_freelist_test.go:125: PRODSIM-FREELIST-COST manager free_pages=65536 median_commit=3.32ms reopen=401ms
+    prodsim_freelist_test.go:107: PRODSIM-FREELIST-COST free_pages=262144 freelist_bytes=2098KB median_commit=26.57ms reopen=375ms
+    prodsim_freelist_test.go:114: PRODSIM-FREELIST-COST NoFreelistSync free_pages=262144 median_commit=1.83ms reopen=540ms
+    prodsim_freelist_test.go:125: PRODSIM-FREELIST-COST manager free_pages=262144 median_commit=2.03ms reopen=1.617s
+--- PASS: TestProdsimFreelistCommitCost (27.12s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	32.305s
+PASS

@@ -1,0 +1,6 @@
+reliable4 #3 Started() timeout kills a healthy command (deterministic, in-process):
+a transient post-exec Started() RPC failure must NOT destroy a healthy running command.
+expect (pre-fix) markerWritten=false and 'I killed it due to a jobqueue server error'.
+    reliable4_repro_test.go:279: STARTED-TIMEOUT-REPRO: markerWritten=true startedCalls=2 execErr=""
+--- PASS: TestReliable4StartedTimeoutKillsHealthyCommand (1.01s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	1.022s

@@ -1,0 +1,19 @@
+reliable4 FINDING 7 web status count divergence (deterministic, in-process):
+the running bar a NEVER-RECONNECTING status client shows must equal the truth.
+scale: forced overlap=120, natural backlog=20000 (defaults 120 / 20000)
+  SEED-OVERLAP-REPRO seed_new_to_running=161 live_ready_to_running=121 overlap_set=121
+✔✔✔✔✔✔✔✔✔✔✔✔  SEED-OVERLAP-REPRO live_running_to_complete=157 mass_exit_size=157 (nothing dropped)
+  SEED-OVERLAP-REPRO forced true_running=4 shown_running=4 true_ready=239 shown_ready=239
+  SEED-OVERLAP-REPRO all_bar=map[ready:239 running:4] rg_bar=map[complete:157 ready:239 running:4]
+--- PASS: TestReliable4StatusSeedOverlap (5.82s)
+  SEED-OVERLAP-REPRO natural ramp_started=1434 true_running=4 shown_running=4 all_bar=map[ready:18566 running:4]
+  SEED-OVERLAP-REPRO natural bracket=1/1 queue=18570 seedwalk_ms=7.9 jobswalk_ms=36.4 starts_per_s=478 residual_predicted=3.8
+  SEED-OVERLAP-REPRO natural overcount_boundary_aware=0 overcount_boundary_blind=0
+--- PASS: TestReliable4StatusSeedOverlapNaturalRace (9.31s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	15.162s
+status-seed-overlap: forced  true_running=4 shown_running=4 (the discriminating shape)
+status-seed-overlap: natural true_running=4 shown_running=4 (ramp started 1434)
+status-seed-overlap: natural bracket=1/1 seed_walk=7.9ms at 478 starts/s
+status-seed-overlap: natural overcount=0 (a boundary-blind client on the same recording:
+status-seed-overlap:   0; a walk that was not a point in time could allow ~3.8)
+status-seed-overlap: PASS (the seed and the live deltas count every transition once)

@@ -1,0 +1,25 @@
+manager pid 966151 already stopped
+starting ISOLATED prod-mode manager (-s lsf) on :53490 / web :53491
+NOTE: our prod-mode LSF runners are wrpiso53490h2597091805_* (WR_JOBNAME_TOKEN=iso53490h2597091805);
+      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+[32mINFO[0m[11-14|10:00:28] wr manager  started on 172.27.71.182:53490, pid 973820 
+[32mINFO[0m[11-14|10:00:28] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53491/?token=[REDACTED] 
+pid 973820
+Added 1 new commands (0 were duplicates) to the queue using default identifier 'rgCR'
+start wait over at t+66s: manager reports the command running on node-13-08; marker=1 my wrp_ jobid=268100
+--- killing prod manager mid-run (LSF runner 268100 survives), then restarting (DB preserved) ---
+killed our manager pid 973820
+starting ISOLATED prod-mode manager (-s lsf) on :53490 / web :53491
+NOTE: our prod-mode LSF runners are wrpiso53490h2597091805_* (WR_JOBNAME_TOKEN=iso53490h2597091805);
+      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+[32mINFO[0m[11-14|10:01:48] wr manager  started on 172.27.71.182:53490, pid 987977 
+[32mINFO[0m[11-14|10:01:48] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53491/?token=[REDACTED] 
+pid 987977
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 1 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+PASS: re-sent archive accepted (complete=1), command ran exactly once
+killed our manager pid 987977

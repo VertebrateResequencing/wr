@@ -1,0 +1,9 @@
+retention-check: 6 rounds x 1000 jobs with 20KB commands, each round under its own limit group
+  round 1: live=0 complete=1000 heapInuseMB=26
+  round 2: live=0 complete=1000 heapInuseMB=26
+  round 3: live=0 complete=1000 heapInuseMB=26
+  round 4: live=0 complete=1000 heapInuseMB=27
+  round 5: live=0 complete=1000 heapInuseMB=27
+  round 6: live=0 complete=1000 heapInuseMB=27
+RETENTION rounds=6 jobsPerRound=1000 cmdKB=20 firstMB=26 lastMB=27 growthMB=1 bound=32
+PASS: archived jobs are garbage

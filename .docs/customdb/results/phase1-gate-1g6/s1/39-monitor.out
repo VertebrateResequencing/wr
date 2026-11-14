@@ -1,0 +1,2 @@
+t+0s RUN=0 terminal=40000/40000 rgtrue(c=20000,b=0) rgfalse(b=20000,c=0) badjob=0 notrun=0 status_rpc=48ms
+FULLY DRAINED

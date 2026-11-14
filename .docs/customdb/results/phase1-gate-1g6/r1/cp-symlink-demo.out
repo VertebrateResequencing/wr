@@ -1,0 +1,6 @@
+== cp -rf (as 1g.6 wrote it)
+dir  fixture: run copy is a SYMLINK; pristine now: orig|manager write|
+file fixture: run copy is a SYMLINK; pristine now: orig|manager write|
+== cp -RLf (the fix)
+dir  fixture: run copy is a real copy; pristine now: orig|
+file fixture: run copy is a real copy; pristine now: orig|

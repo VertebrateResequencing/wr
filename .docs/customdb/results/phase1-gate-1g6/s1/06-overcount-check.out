@@ -1,0 +1,14 @@
+reliable3 2b over-count gate (deterministic, in-process): a group's summed count must stay
+within its limit group's limit even when reserves land between the early capacity read and
+the later running snapshot.
+scale: limit=2000 initialRunning=300 windowReserves=1500
+Gate: uncappedCount > 2000 (the arrangement really over-counts) AND 0 < finalCount <= 2000.
+prod pre-fix: count=3313 for a 2000 limit. A MISSING measurement is a FAIL, not a PASS.
+  A group's count stays within its limit when reserves land between the capacity read and the running snapshot ✔✔✔✔    reliable3_repro_test.go:243: OVERCOUNT-REPRO: limit=2000 cappedReady=1700 running=1800 => uncappedCount=3500 (over the limit by 1500) finalCount=2000 (over the limit by 0)
+    the arrangement really does over-count before the cap ✔✔✔✔✔    reliable3_repro_test.go:243: OVERCOUNT-REPRO: limit=2000 cappedReady=1700 running=1800 => uncappedCount=3500 (over the limit by 1500) finalCount=2000 (over the limit by 0)
+    the final count does not exceed the limit (the 2b over-count is capped) ✔✔✔✔✔    reliable3_repro_test.go:243: OVERCOUNT-REPRO: limit=2000 cappedReady=1700 running=1800 => uncappedCount=3500 (over the limit by 1500) finalCount=2000 (over the limit by 0)
+--- PASS: TestReliable3OverCountRunningSnapshot (0.05s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	0.063s
+## VERDICT: limit=2000 uncappedCount=3500 finalCount=2000
+PASS: an arrangement that reaches 3500 uncapped is held at 2000, within the 2000 limit,
+      and still requests runners for the work that fits

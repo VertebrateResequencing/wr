@@ -115,7 +115,7 @@ func TestStoreOpenLocked(t *testing.T) {
 			plantRestoreLeftovers(cfg.dbFile)
 
 			Convey("a second open fails with ErrDBLocked, touches no file, and the holder still works", func() {
-				before := storeDirIdentity(t, dir)
+				before := settledStoreDirIdentity(t, holder, dir)
 
 				result := openStoreBounded(ctx, cfg)
 				closeOpenResult(ctx, result)
@@ -131,7 +131,7 @@ func TestStoreOpenLocked(t *testing.T) {
 			Convey("with no backup, a second open still fails with ErrDBLocked, touching no file", func() {
 				So(os.RemoveAll(cfg.dbBkFile), ShouldBeNil)
 
-				before := storeDirIdentity(t, dir)
+				before := settledStoreDirIdentity(t, holder, dir)
 
 				result := openStoreBounded(ctx, cfg)
 				closeOpenResult(ctx, result)
@@ -240,6 +240,21 @@ func plantRestoreLeftovers(dbFile string) {
 	So(os.Mkdir(restoring, dbUnreadableDirMode), ShouldBeNil)
 	So(os.WriteFile(filepath.Join(restoring, "VERSION"), []byte("wr-store 1\n"), dbFilePermission), ShouldBeNil)
 	So(os.WriteFile(dbFile+".corrupt", []byte("corrupt"), dbFilePermission), ShouldBeNil)
+}
+
+// settledStoreDirIdentity returns storeDirIdentity of dir once the store s,
+// open on it, has written all it will with no further calls: its pending
+// writes are done and, for a log store, its log is folded to the end. The
+// log store's folder makes its first pass a foldInterval after open and
+// commits there the new wal file the open started, so without this a
+// snapshot taken before that pass differs from one taken after it, whether
+// or not anything else touched dir.
+func settledStoreDirIdentity(t *testing.T, s store, dir string) map[string]string {
+	t.Helper()
+
+	So(inspectorOf(s).flush(), ShouldBeNil)
+
+	return storeDirIdentity(t, dir)
 }
 
 // storeDirIdentity returns, for every file and directory under dir, its type,

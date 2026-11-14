@@ -1,0 +1,2 @@
+wrdev: set WRDEV_PRISTINE_DB to a fixture built by '.../wrdev-head.sh add-storm-fixture'
+exit 1

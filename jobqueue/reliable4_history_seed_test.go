@@ -202,7 +202,8 @@ func seedHistoryRepGroup(tx *bolt.Tx, testDB *db, repGroup string, encoded []byt
 	}
 
 	for i := range n {
-		key := []byte(repGroup + "-" + strconv.Itoa(i))
+		// a job key, as the log store's conversion of this file refuses any other
+		key := []byte(byteKey([]byte(repGroup + "-" + strconv.Itoa(i))))
 
 		if err := completeBucket.Put(key, encoded); err != nil {
 			return err

@@ -1,0 +1,58 @@
+== client calls over 2.0 h (ms; q1 = first quarter of the run, q4 = last)
+(slow = calls, failed or not, that took at least the Go clients' Timeout of 2m0s, as one waiting through a manager outage does; slow_s = seconds spent in them; 0 for ops slow by design, such as submit_and_wait)
+actor/op                                    n  errs  slow  slow_s      p50      p95       max     q1p95     q4p95     meanN
+fofn/add_fofn                              84     0     0       0        6       20        43        20        12       181
+fofn/connect                                1     0     0       0       21       21        21        21        -1         0
+fofn/find_incomplete_prefix               240     0     0       0      107      171       201        77       188      5321
+fofn/getlct_prefix                        240     0     0       0        0        1         3         0         1        17
+fofn/remove_buried                         86     0     0       0        1        2       470         1         2         1
+ibserver/add_put                         1199     0     0       0        2        3      1624         3         3        10
+ibserver/connect                            1     0     0       0       18       18        18        18        -1         0
+main/connect                                1     0     0       0       15       15        15        15        -1         0
+main/setlimit                               3     0     0       0        1        1         1         1        -1        83
+operator/kill_fofn                          2     2     0       0       -1       -1        -1        -1        -1        54
+operator/limit_list                         2     0     0       0       27       27        32        -1        -1        36
+operator/limit_portal                       6     0     0       0       27       29        34        28        27         4
+operator/retry_portal                       2     2     0       0       -1       -1        -1        -1        -1        54
+operator/status_plain                       3     0     0       0      123      123       184        56       123    105930
+portal/add_portal_compress                 60     0     0       0      120      167       231       151       173      1000
+portal/add_portal_dedupe                   60     0     0       0      127      173       201       198       159      1000
+portal/connect                              1     0     0       0       15       15        15        15        -1         0
+sampler/connect                             1     0     0       0       17       17        17        17        -1         0
+status/manager_status                    1185     0     0       0       29       36      6127        36        36       271
+status/status_buried                       58     0     0       0       39       52        54        53        52       699
+status/status_counts                      611     0     0       0       32       54       756        51        55       103
+status/status_fofn_z                      121     0     0       0       62       86       590        52        99      2779
+status/status_portal_summary               80     0     0       0      422      564       745       313       684      1239
+waiter/connect                              1     0     0       0       21       21        21        21        -1         0
+waiter/submit_and_wait                     48     0     0       0    25214    28585     54526     28585     26200         5
+web*/ws_details_first                     236     0     0       0        0      370      1916       125      1759         0
+web*/ws_dial                              104     0     0       0        4        5        17        10         4         0
+web*/ws_seed                              104     0     0       0       12       78       132        59        91        68
+web*/ws_session_deltas                    104     0     0       0        0        0         0         0         0     13318
+wrstat/add_combine                          4     0     0       0        2        3         5         2         3        12
+wrstat/add_tidy                             4     0     0       0        3        3         7         2         3        12
+wrstat/add_walk                             4     0     0       0        3        3         4         3         3        12
+wrstat/connect                              1     0     0       0       17       17        17        17        -1         0
+wrstat/find_dependent_prefix               48     0     0       0        0        0         6         0         0         0
+wrstatui/add_0                             16    16     0       0       -1       -1        -1        -1        -1         0
+wrstatui/add_2                              3     0     0       0        3        3         3        -1         3         2
+wrstatui/connect                            1     0     0       0       17       17        17        17        -1         0
+
+== last error per op
+operator/kill_fofn                     exit status 1
+operator/retry_portal                  exit status 1
+wrstatui/add_0                         jobqueue add(): bad request (missing arguments?)
+
+== manager health (first / peak / last; slope per hour over the second half)
+rss_mb                   27         2272         1739         +579.7/h
+hwm_mb                   27         2396         2396         +594.0/h
+threads                  13           20           20           +0.0/h
+fds                      28          457          281          -92.6/h
+goroutines               65          882          567         -187.1/h
+heap_inuse_mb             6         1129          409         +210.0/h
+heap_objects          11724      4164491      1248678      +837057.5/h
+db_mb                     0            0            0           +0.0/h
+log_mb                    0            0            0           +0.0/h
+ping_ms                   3            7            0           +0.1/h
+load1                     3            4            2           -0.5/h

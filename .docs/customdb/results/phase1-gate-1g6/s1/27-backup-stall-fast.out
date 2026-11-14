@@ -1,0 +1,50 @@
+copying pristine DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/stall_work_db (mutated by the run)
+in-process backup-stall: archivers=50 seconds=180 pauseMs=100
+  EXP knobs: NOFREELISTSYNC= BACKUP_K= THROTTLE_MBPS= PREGROW_MB= ARCHIVEDB=
+    reliable4_backup_stall_test.go:231: STALL: opened DB file=4.04GiB freelist=6 pages (~0MiB) pending=2
+    reliable4_backup_stall_test.go:155: STALL: 50 archivers, pause 100ms, for 180s, TTR=30s; backup path=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/stall_work_db_bk
+    reliable4_backup_stall_test.go:313: STALL t+  5s archives=1734 (347/s) windowMaxLat=242ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 10s archives=3828 (419/s) windowMaxLat=41ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:347: BACKUP#1 copy took 13.793s
+    reliable4_backup_stall_test.go:313: STALL t+ 15s archives=5769 (388/s) windowMaxLat=70ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 20s archives=7967 (440/s) windowMaxLat=117ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 25s archives=10274 (461/s) windowMaxLat=32ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 30s archives=12618 (469/s) windowMaxLat=35ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 35s archives=14809 (438/s) windowMaxLat=34ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 40s archives=15734 (185/s) windowMaxLat=731ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 45s archives=16890 (231/s) windowMaxLat=208ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 50s archives=18069 (236/s) windowMaxLat=138ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 55s archives=19224 (231/s) windowMaxLat=136ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 60s archives=20409 (237/s) windowMaxLat=143ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:347: BACKUP#2 copy took 15.54s
+    reliable4_backup_stall_test.go:313: STALL t+ 65s archives=21831 (284/s) windowMaxLat=573ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 70s archives=23045 (243/s) windowMaxLat=199ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 75s archives=24230 (237/s) windowMaxLat=201ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 80s archives=25442 (242/s) windowMaxLat=192ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 85s archives=26673 (246/s) windowMaxLat=200ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 90s archives=27845 (234/s) windowMaxLat=175ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+ 95s archives=28981 (227/s) windowMaxLat=225ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+100s archives=30139 (232/s) windowMaxLat=205ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:347: BACKUP#3 copy took 14.285s
+    reliable4_backup_stall_test.go:313: STALL t+105s archives=31447 (262/s) windowMaxLat=189ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+110s archives=32740 (259/s) windowMaxLat=558ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+115s archives=33932 (238/s) windowMaxLat=149ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+120s archives=35144 (242/s) windowMaxLat=188ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+125s archives=36373 (246/s) windowMaxLat=197ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+130s archives=37541 (234/s) windowMaxLat=203ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+135s archives=38782 (248/s) windowMaxLat=206ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+140s archives=39908 (225/s) windowMaxLat=229ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+145s archives=41068 (232/s) windowMaxLat=145ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+150s archives=42276 (242/s) windowMaxLat=201ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:347: BACKUP#4 copy took 15.517s
+    reliable4_backup_stall_test.go:313: STALL t+155s archives=43666 (278/s) windowMaxLat=531ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+160s archives=44903 (247/s) windowMaxLat=191ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+165s archives=46109 (241/s) windowMaxLat=150ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+170s archives=47259 (230/s) windowMaxLat=227ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+175s archives=48509 (250/s) windowMaxLat=121ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:313: STALL t+180s archives=49725 (243/s) windowMaxLat=118ms overSoft=0 overHard=0 errors=0 backup=true
+    reliable4_backup_stall_test.go:374: STALL VERDICT: archives=49759 maxLat=731ms overSoft(>5s)=0 overHard(>TTR 30s)=0 errors=0
+    reliable4_backup_stall_test.go:383: NO STALL: every archive completed within the TTR (maxLat=731ms) - no churn
+--- PASS: TestReliable4BackupStall (220.00s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	220.020s

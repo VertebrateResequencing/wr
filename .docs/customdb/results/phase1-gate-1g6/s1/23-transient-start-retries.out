@@ -1,0 +1,39 @@
+reliable4 ITEM A transient-start gate: 20 jobs with --retries 2 whose cmd.Start()
+fails with ENOEXEC every time (a bare-name 'newgrp' on the runner's PATH that is executable
+but not a valid executable format), on an isolated dev manager (-s local, --max_cores 2,
+--runner_filelog). ENOEXEC is deliberately TRANSIENT, so these are released, not buried at once.
+Gate: buried == 20 AND execAttempts == 60 (jobs*(retries+1)) AND all 20 give
+'command failed to start' as their problem.
+Pre-fix: buried == 0 and attempts climb past 60 without bound (UntilBuried never decrements
+for a job that never reported a start, so the retry ceiling is never reached).
+A MISSING measurement (no runner logs, 0 attempts, dead manager) is a FAIL, not a PASS.
+starting isolated dev manager (-s local) with /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/tsfail-path prepended to PATH; dev mode wipes the DB
+[32mINFO[0m[11-14|01:42:22] wr manager  started on 172.27.71.182:53480, pid 1218048 
+[32mINFO[0m[11-14|01:42:22] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53481/?token=[REDACTED] 
+pid 1218048
+generating 20 jobs -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/tsfail.json
+Added 20 new commands (0 were duplicates) to the queue using default identifier 'rgtransientstart'
+waiting up to 300s for all 20 to be buried (post-fix: after exactly 3 attempts each).
+NB: the release backoff starts at ClientReleaseDelayMin (30s) and doubles, so the expected
+    post-fix wall time is ~2 backoffs (~90-150s); a longer window only helps a pre-fix run climb.
+  t=10s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=20 (want 60)
+  t=20s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=20 (want 60)
+  t=30s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=20 (want 60)
+  t=40s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=26 (want 60)
+  t=50s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=33 (want 60)
+  t=60s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=40 (want 60)
+  t=70s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=40 (want 60)
+  t=80s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=40 (want 60)
+  t=90s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 20 buried: 0  ] attempts=40 (want 60)
+  t=100s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 19 buried: 1  ] attempts=41 (want 60)
+  t=110s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 14 buried: 6  ] attempts=46 (want 60)
+  t=120s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 10 buried: 10  ] attempts=50 (want 60)
+  t=130s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 7 buried: 13  ] attempts=53 (want 60)
+  t=140s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 3 buried: 17  ] attempts=57 (want 60)
+  t=150s rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 20  ] attempts=60 (want 60)
+## VERDICT: buried=20/20  execAttempts=60 (want 60)  runnerLogFiles=28
+##          failReason 'command failed to start' on 20/20 reported jobs
+##          counts: rgtransientstart[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 20  ]
+PASS: 20 jobs with --retries 2 cost exactly 60 exec attempts (== 60),
+      all 20 are buried, and all 20 give 'command failed to start' as their problem
+## CLEANUP

@@ -1,0 +1,21 @@
+reliable4 FINDING 5 exec-impossible gate: 20 jobs whose Cmd is ~130KB (over the 128KB
+MAX_ARG_STRLEN single-argv cap), on an isolated dev manager (-s local, --max_cores 2,
+--runner_filelog). Such a command can never exec on any host at any time.
+prod pre-fix: 608 'argument list too long' events / 150 runner logs / 25min, 109 from one runner.
+Gate: buried == 20 AND attempts == 20 (exactly one runner slot and one attempt per job),
+and all 20 give 'command line too long' as their problem (buried for the RIGHT reason).
+A MISSING measurement (no runner logs, 0 attempts, dead manager) is a FAIL, not a PASS.
+starting isolated dev manager (-s local); dev mode wipes the DB
+[32mINFO[0m[11-14|01:42:07] wr manager  started on 172.27.71.182:53480, pid 1216279 
+[32mINFO[0m[11-14|01:42:07] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53481/?token=[REDACTED] 
+pid 1216279
+generating 20 jobs with a ~130KB Cmd -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/execfail.json
+Added 20 new commands (0 were duplicates) to the queue using default identifier 'rgexecfail'
+waiting up to 120s for all 20 to reach a terminal state (post-fix: buried on attempt 1)
+  t=5s rgexecfail[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 20  ] attempts=20
+## VERDICT: buried=20/20  execAttempts=20  runnerLogFiles=2
+##          failReason 'command line too long' on 20/20 reported jobs
+##          counts: rgexecfail[complete: 0 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 20  ]
+PASS: 20 unrunnable jobs cost exactly 20 exec attempts, all 20 are buried,
+      and all 20 give 'command line too long' as their problem
+## CLEANUP

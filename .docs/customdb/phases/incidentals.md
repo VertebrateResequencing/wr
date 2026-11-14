@@ -1812,7 +1812,7 @@ called ready, or explicitly deferred with the owner.
   ([results/phase1-gate-1g3.md](../results/phase1-gate-1g3.md)). It does
   not cover `$WRDEV_PROD_BKFILE*` or other scenarios (the next entry).
 
-- [ ] (from 1g.3) `developers/wrdev.sh` still runs `rm -f` on paths that
+- [x] (from 1g.3) `developers/wrdev.sh` still runs `rm -f` on paths that
   are now log-store directories, so with the log store the default they
   fail silently and leave the directory behind:
   - `$WRDEV_PROD_BKFILE*`, in prodsim's cleanup (line 4807) and
@@ -1830,6 +1830,18 @@ called ready, or explicitly deferred with the owner.
   at line 3641 follows `rm -rf "$PROD_RUN"` at line 3640. Found by
   reading, not run. Fix: `rm -rf` on those paths, guarded as prodsim's
   cleanup is. Owner: 1g.6, which runs every `wrdev.sh` scenario.
+  Done in 1g.6: each of those lines now runs `rm -rf` on `"${pr:?}/db"`,
+  `"${pr:?}/db".*` and `"${pr:?}/db_bk"*` (`$PROD_RUN/...` in
+  `asl_cleanup` and prodsim's cleanup, and
+  `"${WRDEV_PROD_BKFILE:?}" "${WRDEV_PROD_BKFILE:?}".*` for the backup).
+  The `db.*` glob is needed too: a conversion keeps the bbolt file as
+  `db.bolt-pre-<version>` beside the store, and a leftover one makes the
+  next run's conversion fail (`checkPreFree`, `errBoltPreExists`).
+  Every scenario then ran
+  ([results/phase1-gate-1g6.md](../results/phase1-gate-1g6.md)). The
+  dangling-symlink entry below trips no `wrdev.sh` scenario: only prodsim
+  with `WRDEV_PRODSIM_DBDIR` links `$PROD_RUN/db`, and it has made the
+  target directory since 1g.3.
 
 - [ ] (from 1g.3) A `managerdbfile` that is a dangling symlink worked on
   bbolt (the file was created at the link's target) but fails a log-store
@@ -1881,3 +1893,162 @@ called ready, or explicitly deferred with the owner.
   time) on a cold multi-GB history. Whether the 60s criterion stays in
   1g.3, so this fix must land before a rerun, or moves to 2b with that
   test, is for the owner to rule on.
+  1g.6 adds a small-history data point. `wrdev.sh control-rpc-history`
+  times an ungated count-only warm-up, `wr status -i hsrg -z -o counts`
+  over 200,000 complete jobs, just after the manager converted them: it
+  took 31,022ms (31,744ms in a rerun) against 434ms on d1a4b6d7's bbolt,
+  about 71x, and 52% of the 60s client floor, with about 29s to spare.
+  Neither store decodes a record on this path, but the log store's
+  `historyRead.addStatus` `Get`s each key's folded record from
+  `history.bolt` (`folded`) only to test that it exists, so the count
+  pages in every record; that is the likely cost, not yet profiled.
+  The mode's gated history query
+  (`--limit 1`) stayed near bbolt's (1,294ms against 1,062ms)
+  ([results/phase1-gate-1g6.md](../results/phase1-gate-1g6.md)).
+
+- [ ] (from 1g.6) prodsim's `db_mb` and `dbbk_mb` samples read 0 for the
+  log store: `developers/prodsim/sampler.go` line 158 takes
+  `fileMB(<runDir>/db)` and `fileMB(<runDir>/db_bk)`, which are
+  directories now, so `report.txt` no longer shows store or backup growth
+  (0/0/0 in the 1g.6 sweep's 2h prodsim, and in the 1g.3 soak). The
+  same holds for `restarts.tsv`: `developers/wrdev.sh`'s
+  `prodsim_start_manager` and its stop line write `db_mb=` from
+  `stat -L -c %s "$PROD_RUN/db"`, a directory's own size (0MB), and the
+  start line's `freelistAtOpen=` comes from `prodsim_freelist_state`, a
+  bbolt-only probe that reads `unreadable` on a store. Fix: sum the
+  files under a directory (wal, checkpoints and `history.bolt`
+  separately would be more useful) in both places, and drop or replace
+  the freelist probe. Proposed owner: 2e.1 (retire bbolt), or sooner if
+  a soak needs the numbers.
+
+- [ ] (from 1g.6) prodsim's manager RSS stays about 0.9GB above its heap
+  in use after the second of its 40,000-job submission bursts, and is
+  not explained. In the 1g.6 sweep's 2h prodsim
+  (`s1/root/prodsim-1794625360` under the 1g.6 work directory) RSS
+  steps up at each burst (t=0, about 62m and about 111m) and is flat
+  between them: 520-565MB after the first, 998-1052MB after the second.
+  The live heap does not grow between bursts: `go tool pprof -base` of
+  the heap profiles gives 75.2MB at t=1235s, 59.6MB at t=4980s and
+  60.6MB at t=5918s. The 6fcbf4ed release run steps the same way
+  (529-617MB, then 1048-1162MB apart from one 1422MB sample) and had
+  only two bursts in its 2h.
+  Neither run says whether the gap is heap the runtime holds idle and
+  has not returned to the OS, or file-backed pages (the mmap of
+  `history.bolt`). What would settle it: sample `/proc/<pid>/smaps_rollup`
+  (`Anonymous` against file-backed `Rss`) and the runtime's
+  `HeapIdle`/`HeapReleased` alongside RSS. Proposed owner: 2e.1, with
+  the sampler fix above.
+
+- [ ] (from 1g.6) Seven `wrdev.sh` scenarios drive bbolt's `db` directly in
+  process (`initDB` on a copied fixture), so they pass without measuring
+  the default store: backup-stall-fast, writestorm-freeze, archive-rate,
+  archive-ceiling, add-storm, remap-stall-check and freelist-check. In
+  phase 1 bbolt still holds the history, so they still guard
+  `history.bolt`'s path, but no longer the hot path they were written
+  for. The log store's equivalents are covered by the 1g.3 and 1g.5
+  soaks and `TestAddLatency1000`. unsuspend-burst's headline signal is
+  bbolt-only too: `bw` counts goroutines blocked in
+  `bbolt.(*DB).Batch`, which is 0 by construction on the log store. 1g.6
+  gave it a store-neutral verdict as well (every status RPC under the
+  60s client floor, every status call answered, all jobs un-suspended;
+  [bugfixes/261114-wrdev-scenarios-a9b41fdc.md](../../bugfixes/261114-wrdev-scenarios-a9b41fdc.md)).
+  Proposed owner: 2e.1, which must replace or retire them with bbolt.
+
+- [ ] (from 1g.6) A `wrdev.sh` cleanup can leave an empty `db/`
+  directory in the prod run directory. After 1g.6 review round 2's
+  unsuspend-burst on a symlinked store, `.wr-prod_production/db/` under
+  that run's root was empty, its mtime the cleanup's (07:51), and
+  again after fix round 2's report-storm-lsf (09:36). The
+  cleanups run `cmd_prod_stop`, whose `safe_kill` sends `kill -9` and
+  returns without waiting, then `rm -rf "${pr:?}/db"` at once. The
+  likely cause, not confirmed: the manager still had store files open,
+  so NFS renamed them to `.nfs*` files, `rmdir` failed on those, and they
+  went when the process exited. The next start's `rm -rf` removes it,
+  so no scenario fails. Fix: have `safe_kill` wait, bounded, for the pid
+  to exit (every mode stops its manager through it), then rerun the
+  modes it touches. The same wait matters to crash-recovery's exits
+  (1g.6 review round 4): each runs `cr_bkill_ours` right after
+  `safe_kill`, so the manager may still be alive, and able to submit a
+  runner, while `bjobs` lists the prefix's jobs. Proposed owner: 2e.1,
+  with the other `wrdev.sh` store follow-ups.
+
+- [x] (from 1g.6) The first start on a bbolt file is silent for most of
+  its conversion: on pristine10 (3,000,000 jobs, 4.3GB, NFS) the manager
+  logged "counting the jobs to convert" and then nothing for 5m47s, and
+  converted all 3,000,000 jobs in the next 1m15s (7m03s in all; 6m29s in
+  a second run). An operator upgrading production sees no progress for
+  most of the wait, and a start wrapper with a short timeout gives up
+  (as three `wrdev.sh` modes did, fixed in
+  [bugfixes/261114-wrdev-scenarios-a9b41fdc.md](../../bugfixes/261114-wrdev-scenarios-a9b41fdc.md)).
+  Counting may be a full cold read of the file. This broke spec E1's
+  "with progress shown", which shipped in 1f, so 1g.6 fixed it as a bug
+  rather than leave it to 2d.1: counting now reports how many jobs it
+  has counted as the phase's progress, in the sidecar and in the
+  default log's "still running" line every 30s, as converting does
+  ([bugfixes/261114-wrdev-scenarios-a9b41fdc.md](../../bugfixes/261114-wrdev-scenarios-a9b41fdc.md)).
+  How long counting takes is unchanged; nothing in E1 bounds it.
+
+- [ ] (from 1g.6) No conversion test has a nested bucket under
+  `jobslive` or `jobscomplete`, so nothing checks that `countJobs`
+  (`jobqueue/store_convert.go`) counts only values. 1g.6 review round
+  3's mutant N3, `if counted && v != nil` changed to `if counted` (the
+  guard is now `if !counted || v == nil`), survives the `Convert|Upgrade`
+  tests. Such a mutant would count a nested bucket as a job, so the
+  sidecar's Total would exceed the jobs converted, which skip it
+  (`copyCompletes` and the live walk skip a nil value). The guard came
+  with 1f.2 (fb894fb1) and 1g.6 only moved it into a `storeBuild`
+  method. Fix: give a conversion fixture a nested bucket under each and
+  assert the counted total and the final Processed. Proposed owner:
+  2d.1, with the other conversion follow-ups.
+
+- [x] (from 1g.6) `asl_cleanup` (`developers/wrdev.sh`) printed "jobs
+  left in LSF" from every row `bjobs -J <prefix>*` lists, which includes
+  the prefix's recently finished DONE, EXIT and ZOMBI jobs, so a clean
+  teardown could report jobs left. Fixed in 1g.6 fix round 3: it counts
+  only PEND, RUN and the three SUSP states, and add-storm-lsf ran its
+  cleanup on the final code
+  ([results/phase1-gate-1g6.md](../results/phase1-gate-1g6.md)). Review
+  round 4 noted that the count left out LSF's other states of a job not
+  yet finished, PROV, WAIT and UNKWN; fix round 4 added them, as the
+  count only feeds the printed line, and add-storm-lsf ran its cleanup
+  again on that code.
+
+- [ ] (from 1g.6) `prodsim_cleanup` (`developers/wrdev.sh`) counts "jobs
+  left in LSF" from every row `bjobs -J <prefix>*` lists, as
+  `asl_cleanup` did before 1g.6 fix round 3, so it counts the prefix's
+  recently finished DONE, EXIT and ZOMBI jobs. It polls up to 12 times,
+  10s apart, for that count to reach 0, so finished jobs can hold it for
+  the full 2 minutes and then report them as left. Fix: count only the
+  states of a job not yet finished (PEND, PROV, RUN, WAIT, UNKWN and the
+  three SUSP states), as `asl_cleanup` now does. Proposed owner: 2e.1,
+  with the other `wrdev.sh` store follow-ups.
+
+- [x] (from 1g.6) `TestStoreOpenLocked`'s log store case "with no
+  backup, a second open still fails with ErrDBLocked, touching no file"
+  (`jobqueue/store_lock_test.go` line 140) failed once, in 1g.6 fix
+  round 3's first `make race`. The only file that differed between the
+  test's before and after snapshots was the holder's own
+  `queue.db/history.bolt`: same inode and size, its mtime about 1.1s
+  later and its content changed. The second open failed with
+  `ErrDBLocked` as it should. Cause (1g.6 review round 4): a test race.
+  The holder's folder makes its first pass `foldInterval` (1s) after
+  open, and as the open started a new wal file, that pass commits to
+  `history.bolt`. The test's snapshots around the bounded open (up to
+  500ms) straddle that pass when the open or the snapshot is slow, as
+  under `make race`. A 700ms sleep after the first snapshot fails the
+  case every time, and the first case ("a second open fails with
+  ErrDBLocked, touches no file, ...") the same way. Resolved by 1g.6
+  fix round 4, as checklist item 9 of
+  [bugfixes/261114-wrdev-scenarios-a9b41fdc.md](../../bugfixes/261114-wrdev-scenarios-a9b41fdc.md):
+  both cases flush the holder (pending writes done, log folded to the
+  end) before the first snapshot, so the holder writes nothing more
+  while the second open runs, and passes with 700ms or 3s sleeps
+  injected.
+
+- [x] (from 1g.6) `TestStoreConvertShowsStartBeforeCounting`
+  (`jobqueue/store_convert_test.go`) read the sidecar at the start of
+  counting but checked only its State and Total, not the start
+  phase's Detail, `counting the jobs to convert` (review round 4's
+  mutant R7, a changed start detail, survived the round 3 tests).
+  Proposed owner was 2d.1; as one assertion, fix round 4 added it, and
+  `TestStoreConvertSidecarShowsCounting` now checks that detail too.

@@ -1,0 +1,5 @@
+WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root  binary=present
+dev  mgr pid:   (ports 53480/53481)
+prod mgr pid:  (ports 53482/53483)
+our wr manager processes:
+  (none)

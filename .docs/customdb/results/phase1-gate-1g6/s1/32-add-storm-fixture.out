@@ -1,0 +1,41 @@
+building an add-storm-lsf fixture: 20000 jobs (5% of them self-adding), 200 dep
+  groups, all in limit group aslblock:0 so none can run; safe prefix 'echo aslfix'
+  base /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine6 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db (+ /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db.aslmanifest); its jobs will run under /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db.jobcwd
+copying base (3046572032 bytes)
+  copied in 9s
+starting the generator's manager: -s local --max_cores 1 --max_ram 1, so no job of any
+  size can be dispatched and no bsub is ever issued
+[32mINFO[0m[11-14|02:21:51] wr manager  started on 172.27.71.182:53482, pid 1439678 
+[32mINFO[0m[11-14|02:21:51] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53483/?token=[REDACTED] 
+base check: 0 incomplete jobs, so every incomplete job in the fixture is one this command made
+generating 20000 job definitions -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/aslfixgen-1794622613/fixjobs.json
+  20000 definitions, 3797838 bytes; 1000 of them self-adding
+adding them (ONE request; they are blocked by aslblock:0 the moment they land)
+Added 20000 new commands (0 were duplicates) to the queue
+  add exit 0 in 1s
+fixture state: incomplete=20000  aslblock limit=0  rep group rgaslfix counts: complete: 0 running: 0 ready: 10000 dependent: 10000 suspended: 0 lost contact: 0 delayed: 0 buried: 0
+command audit: 20000 incomplete commands read, 0 of them NOT a form this generator writes
+stopping the manager cleanly so the fixture closes consistent
+[32mINFO[0m[11-14|02:22:04] wr manager (pid 1439678) is still shutting down; waiting up to 3m1s in all for it to finish (its log, /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/.wr-prod_production/log, shows its progress) 
+[32mINFO[0m[11-14|02:22:12] wr manager running on port 53482 was gracefully shut down 
+## FIXTURE: /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db (146 bytes, 20000 incomplete jobs, all in aslblock:0)
+  aslfixture 2
+  db /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db
+  size 146
+  mtime 1794622911
+  incomplete 20000
+  prefix echo aslfix
+  blockgroup aslblock
+  repgroup rgaslfix
+  kidrepgroup rgaslfixkid
+  jobcwd /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db.jobcwd
+  base /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine6
+  jobs 20000
+  selfaddpct 5
+  depgroups 200
+  generated 2026-11-14T02:22:12+00:00
+  generator 8b7ccade
+PASS: use it with:  WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/aslfixture-sweep.db /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/developers/wrdev.sh add-storm-lsf
+## CLEANUP
+  our manager stopped; wrpiso53482h597924918_* jobs left in LSF: 0
+  kept the generated fixture; working files are in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/aslfixgen-1794622613

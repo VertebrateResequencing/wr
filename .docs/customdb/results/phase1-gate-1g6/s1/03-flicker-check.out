@@ -1,0 +1,10 @@
+=== flicker count-level reproducer (deterministic) ===
+reconcile-harness: handler=../../../../../../../users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/static/js/wr/websocket-handler.js
+  [PASS] A/connected-burst-out-of-order: worstRepGroupTotalError=0 worstAllOvercount=0 worstAllNegative=0 convergeFailures=0/120
+  [PASS] B/connect-mid-burst-seed-race: worstPerBucketError=0 (boundary-blind client on the same stream: 8) inexactTrials=0/120 convergeFailures=0/120
+  [PASS] B2/seed-race-residual-under-emission-jitter: worstPerBucketError=9 (boundary-blind: 14) lateDuplicates<=14 madeWorse=0/120 overResidualBound=0/120
+  [PASS] C/mixed-workload-rerun-cycles: worstRepGroupTotalError=0 worstAllOvercount=0 finalMismatches=0/120
+reconcile-harness: ALL SCENARIOS COHERENT AND CONVERGENT
+(Playwright package not found at /nfs/hgi/wr/sb10-bigdb/customdb/1g6/home/.cache/wr-webui-playwright/node_modules/playwright; skipping browser fixtures.
+ Run 'make browser-test' once to install it, or set PLAYWRIGHT_PACKAGE_DIR.)
+flicker-check: PASS

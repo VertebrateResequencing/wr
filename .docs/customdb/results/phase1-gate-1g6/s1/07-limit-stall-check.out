@@ -1,0 +1,16 @@
+reliable3 §1 limit-slot + loud-confirmation gate (deterministic, in-process).
+scale: limit=2000 heldSlots=2000 newReady=5000 (all new ready jobs must be skipped).
+Gate: scheduled == 0 AND skipped == 5000; the cannot-confirm warning present, naming the
+host and pid; and where LSF is usable, the unreadable-private-key warning naming the path.
+A MISSING measurement is a FAIL, not a PASS; a skipped facet is reported as unmeasured.
+  A limit group whose slots are all held skips every new ready job ✔✔✔    reliable3_repro_test.go:312: LIMIT-STALL-REPRO: limit=2000 heldSlots=2000 newReady=5000 => scheduled=0 skipped=5000
+--- PASS: TestReliable3LimitSlotStall (0.02s)
+  ProcessNotRunningOnHost warns when it cannot confirm whether the process is alive ✔    reliable3_repro_test.go:365: CONFIRM-LOUD-REPRO: cannotConfirmWarned=true namesHost=true namesPid=true notRunning=false log="t=2026-11-14T01:32:51+0000 lvl=warn msg=\"could not confirm whether a lost job's process is still running on its host\" host=unreachable-host pid=12345 reason=\"could not get the host to ssh to\"\n"
+    it still reports the job as maybe-running (false), i.e. does not confirm death ✔✔    reliable3_repro_test.go:365: CONFIRM-LOUD-REPRO: cannotConfirmWarned=true namesHost=true namesPid=true notRunning=false log="t=2026-11-14T01:32:51+0000 lvl=warn msg=\"could not confirm whether a lost job's process is still running on its host\" host=unreachable-host pid=12345 reason=\"could not get the host to ssh to\"\n"
+  lsf.initialize warns when the configured private key cannot be read     reliable3_repro_test.go:401: KEY-WARN-REPRO: keyWarnMeasured=true keyWarned=true namesPath=true log="t=2026-11-14T01:32:51+0000 lvl=warn msg=\"could not read the private key needed to confirm lost jobs are dead via ssh\" schedulertype=lsf path=/nonexistent/wr-reliable3-repro-key err=\"open /nonexistent/wr-reliable3-repro-key: no such file or directory\"\n"
+--- PASS: TestReliable3ConfirmFailureIsLoud (0.22s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	0.271s
+## VERDICT: scheduled=0 skipped=5000/5000; cannotConfirmWarned=true namesHost=true namesPid=true; keyFacetMeasured=yes (warned=true namesPath=true)
+PASS: 5000 ready jobs behind a fully-held 2000 limit group were all skipped and none
+      scheduled, and the cannot-confirm warning named its host and pid
+      (and the unreadable private key warned, naming its path)

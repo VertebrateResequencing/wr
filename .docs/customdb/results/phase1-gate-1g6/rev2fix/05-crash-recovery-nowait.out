@@ -1,0 +1,12 @@
+manager pid 57700 already stopped
+starting ISOLATED prod-mode manager (-s lsf) on :53486 / web :53487
+NOTE: our prod-mode LSF runners are wrpiso53486h442292666_* (WR_JOBNAME_TOKEN=iso53486h442292666);
+      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+[32mINFO[0m[11-14|08:26:00] wr manager  started on 172.27.71.182:53486, pid 62329 
+[32mINFO[0m[11-14|08:26:00] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53487/?token=[REDACTED] 
+pid 62329
+Added 1 new commands (0 were duplicates) to the queue using default identifier 'rgCR'
+start wait over at t+2s: manager reports the command running on none; marker=0 my wrp_ jobid=
+FAIL (NOT MEASURED): within 1s the manager did not report the job running with
+  its command's pid, so a manager kill would not test recovery of a running job
+killed our manager pid 62329

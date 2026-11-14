@@ -1,0 +1,55 @@
+prodsim: 0.1h real, 1 sim minute = 6s, scale 1, scheduler lsf, pprof :6072
+  isolated prod-mode manager :53482 web :53483, LSF jobs wrpiso53482h2013413628_*, output /nfs/hgi/wr/sb10-bigdb/customdb/1g6/r1/root/prodsim-1794640486
+t+5m rss=964MB goroutines=565 heap=614MB fds=279 db=0MB ping=0ms submitted=40688
+## prodsim CLEANUP
+  killed 0 leftover local runner/job processes
+  our manager stopped; wrpiso53482h2013413628_* jobs left in LSF: 0
+  removed the working DB; outputs kept in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/r1/root/prodsim-1794640486
+== client calls over 0.1 h (ms; q1 = first quarter of the run, q4 = last)
+(slow = calls, failed or not, that took at least the Go clients' Timeout of 2m0s, as one waiting through a manager outage does; slow_s = seconds spent in them; 0 for ops slow by design, such as submit_and_wait)
+actor/op                                    n  errs  slow  slow_s      p50      p95       max     q1p95     q4p95     meanN
+fofn/add_fofn                               4     0     0       0        6        8        14        14         6       154
+fofn/connect                                1     0     0       0       14       14        14        14        -1         0
+fofn/find_incomplete_prefix                12     0     0       0       18       24        33        24        15        70
+fofn/getlct_prefix                         12     0     0       0        0        1         3         1         0         1
+fofn/remove_buried                          5     0     0       0        1        1         2         1         1         1
+ibserver/add_put                           60     0     0       0        2        4        14         9         2        10
+ibserver/connect                            1     0     0       0       13       13        13        13        -1         0
+main/connect                                1     0     0       0       10       10        10        10        -1         0
+main/setlimit                               3     0     0       0        1        1         1         1        -1        83
+portal/add_portal_compress                 20     0     0       0      122      192       219       192        -1      1000
+portal/add_portal_dedupe                   20     0     0       0      132      157       181       157        -1      1000
+portal/connect                              1     0     0       0       29       29        29        29        -1         0
+sampler/connect                             1     0     0       0       12       12        12        12        -1         0
+status/manager_status                      58     0     0       0       29       40        69        36        36       271
+status/status_buried                        2     0     0       0       51       51        63        -1        -1       939
+status/status_counts                       28     0     0       0       47       61        87        55        45       107
+status/status_fofn_z                        5     0     0       0       35       37        38        33        37      2788
+status/status_portal_summary                4     0     0       0      138      153       163        -1       153       911
+waiter/connect                              1     0     0       0       14       14        14        14        -1         0
+waiter/submit_and_wait                      3     0     0       0    24857    24857     27488        -1     21224         5
+web*/ws_details_first                      11     0     0       0        1       30        36         0        36         0
+web*/ws_dial                                7     0     0       0        5       14        14        14         4         0
+web*/ws_seed                                7     0     0       0       57       61        66         0        61        32
+web*/ws_session_deltas                      7     0     0       0        0        0         0        -1         0     33123
+wrstat/add_combine                          1     0     0       0        4        4         4         4        -1        12
+wrstat/add_tidy                             1     0     0       0        6        6         6         6        -1        12
+wrstat/add_walk                             1     0     0       0        4        4         4         4        -1        12
+wrstat/connect                              1     0     0       0       14       14        14        14        -1         0
+wrstat/find_dependent_prefix               12     0     0       0        0        2         3         2        -1         0
+wrstatui/connect                            1     0     0       0       17       17        17        17        -1         0
+
+== last error per op
+
+== manager health (first / peak / last; slope per hour over the second half)
+rss_mb                   27         1072          941        -2382.4/h
+hwm_mb                   27         1077         1077           -0.0/h
+threads                  13           19           19           +0.0/h
+fds                      31          286          279         -179.6/h
+goroutines               64          582          582           -0.1/h
+heap_inuse_mb             6          921          409        -3698.0/h
+heap_objects          14867      1704829       942903     -7958127.1/h
+db_mb                     0            0            0           +0.0/h
+log_mb                    0            0            0           +0.0/h
+ping_ms                   0            1            1          +23.9/h
+load1                     2            2            2          -12.0/h

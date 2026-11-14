@@ -1,0 +1,6 @@
+starting ISOLATED prod-mode manager (-s local) on :53482 / web :53483
+NOTE: our prod-mode LSF runners are wrpiso53482h597924918_* (WR_JOBNAME_TOKEN=iso53482h597924918);
+      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+[32mINFO[0m[11-14|05:04:05] wr manager  started on 172.27.71.182:53482, pid 2493568 
+[32mINFO[0m[11-14|05:04:05] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53483/?token=[REDACTED] 
+pid 2493568

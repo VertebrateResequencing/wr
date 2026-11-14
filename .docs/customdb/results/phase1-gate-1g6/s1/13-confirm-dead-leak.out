@@ -1,0 +1,4 @@
+    reliable4_confirmdead_leak_test.go:121: CONFIRMDEAD-LEAK: 40 confirm-dead ssh checks to localhost -> ssh-client goroutines base=0 peak=0 settled=0 leaked=0 (after up to 5s to settle)
+--- PASS: TestReliable4ConfirmDeadSSHLeak (33.34s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue/scheduler	33.352s

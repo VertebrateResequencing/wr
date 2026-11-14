@@ -1,0 +1,19 @@
+in-process report-storm: jobs=50000 runners=1000 limit=2000 seconds=240 bigDB=none
+  knobs: WR_RS_TTR_MS=60000 WR_RS_CMD_MS=0 WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root
+  status_pollers=0 (interval 500ms) profile=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root
+    reliable4_reportstorm_test.go:469: REPORTSTORM: jobs=50000 runners=1000 limit=reportstorm:2000 TTR=1m0s cmd=0s groups=4 bigDB="" deadline=240s
+    reliable4_reportstorm_test.go:382: REPORTSTORM: profiling ON -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/reportstorm_j50000_r1000_l2000.{cpu,mutex,block}.pprof
+    reliable4_reportstorm_test.go:979: REPORTSTORM t+  5s completed=26591/50000 (5318/s) live=23405[ready=22632 run=773 delay=0 bury=0] reserves=26911 reconnects=0 maxArchLat=185ms inflightNow=80ms
+    reliable4_reportstorm_test.go:984: REPORTSTORM t+  5s   started[accepted=26905 badjob=0 mustReserve=0 timeout=0 otherErr=0] archive[accepted=26593 badjob=0 mustReserve=0 timeout=0 otherErr=0] touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+    reliable4_reportstorm_test.go:979: REPORTSTORM t+ 10s completed=50000/50000 (4682/s) live=0[ready=0 run=0 delay=0 bury=0] reserves=50000 reconnects=0 maxArchLat=202ms inflightNow=0s
+    reliable4_reportstorm_test.go:984: REPORTSTORM t+ 10s   started[accepted=50000 badjob=0 mustReserve=0 timeout=0 otherErr=0] archive[accepted=50000 badjob=0 mustReserve=0 timeout=0 otherErr=0] touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+    reliable4_reportstorm_test.go:413: REPORTSTORM: profiles written to /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/reportstorm_j50000_r1000_l2000.{cpu,mutex,block}.pprof
+    reliable4_reportstorm_test.go:1007: REPORTSTORM VERDICT: completed=50000/50000 live=0[ready=0 run=0 delay=0 bury=0] reserves=50000 reconnects=0
+    reliable4_reportstorm_test.go:1010: REPORTSTORM VERDICT: started[accepted=50000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+    reliable4_reportstorm_test.go:1011: REPORTSTORM VERDICT: archive[accepted=50000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+    reliable4_reportstorm_test.go:1012: REPORTSTORM VERDICT: touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+    reliable4_reportstorm_test.go:1013: REPORTSTORM VERDICT: archive latency max=202ms p50=<=50ms p99=<=200ms; max in-flight report RPC=156ms
+    reliable4_reportstorm_test.go:1029: REPORTSTORM NO CHURN: all 50000 jobs completed; archive rejections=0 timeouts=0 (the manager serviced every report within the client's 1m0s receive floor)
+--- PASS: TestReliable4ReportStorm (12.06s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	12.122s

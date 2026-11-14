@@ -1,0 +1,34 @@
+reliable4 FINDING 1 control-RPC gate: 200000 archived jobs over 20 rep groups,
+  5000 live ready-but-blocked jobs (hslimit:0, so no runner and no LSF job is ever created),
+  then the REAL 'wr limit', 'wr suspend -i hsrg0' and 'wr resume -i hsrg -z' are timed.
+  Then 'wr status -i hsrg -z --limit 1' is timed separately (reliable4 ITEM B): it wants the
+  history but can only return one job per status group, so it must cost O(limit), not O(history).
+  prod pre-fix: 'wr resume -i portal -z' timed out at 120s, kept scanning for 12+ min,
+  manager heap 348MB -> 12143MB. Gate: each control command <= 5000ms, peak-RSS growth
+  <= 512MB; status -z --limit 1 <= 5000ms and <= 128MB of its own peak-RSS growth.
+  A MISSING measurement (no seed, dead manager, no reference scan) is a FAIL, not a PASS,
+  as is a history too small to gate on (>= 1000 per group and >= 100000 in total:
+  the pre-fix cost was proportional to it, so a small history passes pre-fix as well).
+=== seeding /nfs/hgi/wr/sb10-bigdb/customdb/1g6/ab-d1a4/root/.wr-prod_production/db ===
+  HISTORY-SEED archived=200000 groups=20 perGroup=10000 bytes=856211456 recordBytes=4281 seconds=4.5 db=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/ab-d1a4/root/.wr-prod_production/db
+=== starting the isolated prod-mode manager on that DB ===
+  starting ISOLATED prod-mode manager (-s local) on :53492 / web :53493
+  NOTE: our prod-mode LSF runners are wrpiso53492h1127154089_* (WR_JOBNAME_TOKEN=iso53492h1127154089);
+        that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+  [32mINFO[0m[11-14|05:32:21] wr manager  started on 172.27.71.182:53492, pid 2790923 
+  [32mINFO[0m[11-14|05:32:21] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53493/?token=[REDACTED] 
+  pid 2790923
+  added 5000 live jobs to hsrg0 (limit group hslimit:0)
+  count-only warm-up 'wr status -i hsrg -z -o counts' saw 200000 complete jobs in 434ms
+  'wr status -i hsrg -z --limit 1' took 1062ms and stood in for 199999 other commands
+  'wr status -i hsrg -z -o plain' took 303ms, printed 0 complete lines (refused=1)
+  reference 'wr status -i hsrg0' returned 10000 complete jobs in 679ms (it decodes them all)
+  counts after resuming: complete: 10000 running: 0 ready: 5000 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  
+## VERDICT: limit=29ms suspend=177ms (suspended=5000) resume -z=190ms (resumed=5000) peakRSSgrowth=47MB; status -z --limit 1=1062ms (similar=199999) peakRSSgrowth=2MB; status -z -o plain=303ms (lines=0 refused=1) peakRSSgrowth=2MB [count-only warm-up: 200000 jobs in 434ms] [reference history scan: 10000 jobs in 679ms]
+PASS: with 200000 archived jobs over 20 rep groups (a 679 ms scan when a request
+  actually asks for it), limit/suspend/resume -z cost 29/177/190ms and 47MB,
+  and 'wr status -i hsrg -z --limit 1' cost 1062ms and 2MB while still standing in
+  for all 199999 other commands, and the ungrouped 'wr status -i hsrg -z -o plain' cost
+  303ms and 2MB (refused=1, lines=0)
+## CLEANUP
+killed our manager pid 2790923

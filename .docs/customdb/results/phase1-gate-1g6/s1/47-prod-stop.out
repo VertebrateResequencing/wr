@@ -1,0 +1,2 @@
+killed our manager pid 2493568
+if you launched LSF runners, bkill them by the exact jobid you recorded (never 'wrp_*').

@@ -1,0 +1,11 @@
+reliable3 2a priority fairness gate (deterministic, in-process): a low-priority sibling
+scanned first must not starve a higher-priority sibling of the shared limit-group budget.
+scale: limit=2000 readyPerGroup=2500
+Gate: high(pri250).count == 2000 AND low(pri0).count == 0.
+pre-fix: low(pri0).count=2000 high(pri250).count=0. A MISSING measurement is a FAIL.
+  A low-priority sibling scanned first does not starve a higher-priority one of the shared budget ✔    reliable3_repro_test.go:123: PRIORITY-FAIRNESS-REPRO: limit=2000 readyPerGroup=2500 low(pri0).count=0 high(pri250).count=2000 high.skipped=500
+--- PASS: TestReliable3PriorityFairness (0.02s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	0.040s
+## VERDICT: limit=2000 low(pri0).count=0 high(pri250).count=2000 high.skipped=500
+PASS: the priority-250 sibling got the whole 2000-slot budget although the priority-0
+      sibling was scanned first

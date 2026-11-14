@@ -1,0 +1,8 @@
+starting dev manager foreground (-f, pprof enabled), output -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/fg.out
+foreground manager pid: 2496720
+Reproduce the stall (e.g. '/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/developers/wrdev.sh churn'), then dump goroutines with:
+    kill -3 2496720          # SIGQUIT -> full stacks appended to /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/fg.out
+    grep -aE '^goroutine' /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/fg.out | sed -E 's/.*\[([^]]+)\].*/\1/' | sort | uniq -c | sort -rn
+Look for many 'sync.RWMutex.RLock' waiters + a 'Lock' waiter (lock cycle), or
+goroutines in os/exec (bsub/bjobs) holding a lock.
+goroutines in SIGQUIT dump: 39

@@ -1,0 +1,6 @@
+over-provisioning invariant (deterministic, prod-scale): summed runner request across
+sibling scheduler groups sharing one limit group must be <= the limit.
+scale: limit=2000 siblings=50 readyPerGroup=5000 (pre-fix code requests ~limit*siblings)
+  Sibling scheduler groups sharing one limit group share its capacity ✔    reliable3_overprovision_test.go:91: over-provision check: limit=2000 siblingGroups=50 readyPerGroup=5000 => summed runner request=2000 (buggy per-group accounting would give ~100000)
+--- PASS: TestReliable3LimitGroupOverProvision (1.09s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	1.149s

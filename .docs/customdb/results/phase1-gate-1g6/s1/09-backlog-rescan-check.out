@@ -1,0 +1,6 @@
+reliable4 #1 rac backlog rescan (deterministic, in-process): a rac cycle's per-job
+scheduling work should be bounded by the schedulable count (~limit), not the ready backlog.
+scale: limit=2000 backlog=50000 (pre-fix scanWork == backlog; want <= limit+100)
+✔✔✔✔✔✔✔✔    reliable4_repro_test.go:172: BACKLOG-RESCAN-REPRO: limit=2000 backlog=50000 scanWork=2000 (want <= 2100); schedulable=2000 limitBlocked=48000
+--- PASS: TestReliable4BacklogRescan (2.06s)
+ok  	github.com/VertebrateResequencing/wr/jobqueue	2.117s

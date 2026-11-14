@@ -1,0 +1,9 @@
+in-process write-storm freeze: N=100000 archivers=8
+  DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10 (4337278976 bytes; COPIED to /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/wsfreeze_work_db, never mutated in place)
+    reliable4_writestorm_freeze_test.go:111: WSFREEZE: copying big DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/wsfreeze_work_db (mutated by the run)
+    reliable4_writestorm_freeze_test.go:111: WSFREEZE: opened DB file=4.04GiB freelist=6 pages (~0MiB)
+    reliable4_writestorm_freeze_test.go:165: WSFREEZE: N=100000 archivers=8 stormDrain=7s peakGoroutines(added)=1 archives=90 maxArchiveLat=6.659s overTTR(1m0s)=0
+    reliable4_writestorm_freeze_test.go:174: NO FREEZE: max archive latency 6.659s stayed under the 1m0s client floor
+--- PASS: TestReliable4WriteStormFreeze (31.13s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	31.207s

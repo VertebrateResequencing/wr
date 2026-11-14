@@ -1,0 +1,23 @@
+t=2026-11-14T08:12:25+0000 lvl=warn msg="database upgrade started" db=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev2fix/root/.wr-prod_production/db caller=clog.go:338
+t=2026-11-14T08:12:25+0000 lvl=warn msg="database upgrade step started" state="convert database" detail="counting the jobs to convert" processed=0 caller=clog.go:338
+t=2026-11-14T08:12:55+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (200000 counted)" processed=200000 took=30.086799729s caller=clog.go:338
+t=2026-11-14T08:13:26+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (430000 counted)" processed=430000 took=1m0.709928327s caller=clog.go:338
+t=2026-11-14T08:13:56+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (690000 counted)" processed=690000 took=1m30.73626038s caller=clog.go:338
+t=2026-11-14T08:14:26+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (990000 counted)" processed=990000 took=2m0.958278398s caller=clog.go:338
+t=2026-11-14T08:14:56+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (1280000 counted)" processed=1280000 took=2m31.08834576s caller=clog.go:338
+t=2026-11-14T08:15:27+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (1580000 counted)" processed=1580000 took=3m1.850085622s caller=clog.go:338
+t=2026-11-14T08:15:57+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (1880000 counted)" processed=1880000 took=3m31.922479253s caller=clog.go:338
+t=2026-11-14T08:16:27+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (2170000 counted)" processed=2170000 took=4m2.007966615s caller=clog.go:338
+t=2026-11-14T08:16:58+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (2480000 counted)" processed=2480000 took=4m32.357885155s caller=clog.go:338
+t=2026-11-14T08:17:28+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="counting the jobs to convert (2770000 counted)" processed=2770000 took=5m2.38832558s caller=clog.go:338
+t=2026-11-14T08:17:58+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="converting database (360000 of 3000000 jobs processed)" processed=360000 took=5m32.823168933s caller=clog.go:338
+t=2026-11-14T08:18:28+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="converting database (1990000 of 3000000 jobs processed)" processed=1990000 took=6m3.083774793s caller=clog.go:338
+t=2026-11-14T08:19:07+0000 lvl=warn msg="database upgrade step complete" state="convert database" detail="converting database (3000000 of 3000000 jobs processed)" processed=3000000 took=6m42.020836121s caller=clog.go:338
+t=2026-11-14T08:19:08+0000 lvl=warn msg="database upgrade complete" db=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev2fix/root/.wr-prod_production/db took=6m43.397709294s caller=clog.go:338
+t=2026-11-14T08:19:25+0000 lvl=warn msg="recovering: opened database" db=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/rev2fix/root/.wr-prod_production/db elapsed=7m0.653s caller=clog.go:338
+t=2026-11-14T08:19:25+0000 lvl=warn msg="recovering: decoded live jobs" jobs=0 runStates=0 elapsed=0s caller=clog.go:338
+t=2026-11-14T08:19:25+0000 lvl=warn msg="recovering: built dependency-group state" memberships=0 elapsed=0s caller=clog.go:338
+t=2026-11-14T08:19:25+0000 lvl=info msg="wr manager : created a new key and certificate for TLS"
+t=2026-11-14T08:19:25+0000 lvl=warn msg="recovering prior state" total=0 caller=clog.go:338
+t=2026-11-14T08:19:25+0000 lvl=warn msg="recovering: prior state recovered" restored=0 total=0 caller=clog.go:338
+t=2026-11-14T08:19:25+0000 lvl=info msg="wr manager  started on 172.27.71.182:53486, pid 4174790"

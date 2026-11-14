@@ -1,0 +1,5 @@
+1794632756	build	rc=0	secs=15	load0=0.83	load1=1.59	minfree=136G	guard=0
+1794632771	add-storm-fixture	rc=0	secs=345	load0=1.59	load1=1.86	minfree=129G	guard=0
+1794633116	add-storm-lsf	rc=0	secs=331	load0=1.86	load1=3.42	minfree=126G	guard=0
+1794633447	unsuspend-burst	rc=0	secs=570	load0=3.42	load1=0.86	minfree=121G	guard=0
+1794634017	crash-recovery	rc=0	secs=45	load0=0.86	load1=0.89	minfree=133G	guard=0

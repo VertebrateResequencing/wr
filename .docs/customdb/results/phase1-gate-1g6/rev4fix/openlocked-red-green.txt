@@ -1,0 +1,39 @@
+TestStoreOpenLocked: red and green, 1g.6 fix round 4 (2026-11-14, farm22-wrstat01)
+
+Red: jobqueue/store_lock_test.go as at 8b7ccade (1g.6 had not touched it) with one line added after the
+"with no backup" case's `before := storeDirIdentity(t, dir)`:
+
+    time.Sleep(700 * time.Millisecond) // RED-INJECT
+
+  CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue/ -run TestStoreOpenLocked
+  exit 1:
+
+  * .../jobqueue/store_lock_test.go
+  Line 141:
+  Expected: map[string]string{... "queue.db/history.bolt":"---------- ino=2359848 size=16805888 mod=1794654733183252402 sha256=be9f30c6..."}
+  Actual:   map[string]string{... "queue.db/history.bolt":"---------- ino=2359848 size=16805888 mod=1794654734191267006 sha256=85281b24..."}
+  (Should equal)!
+  --- FAIL: TestStoreOpenLocked (2.17s)
+
+  Every other entry (queue.db.lock, .corrupt, .restoring, the wal and ckpt
+  files, VERSION) is identical. history.bolt's mtime is 1.008s after the
+  holder's newest wal file (00000004.wal, mod=1794654733187252459), which
+  the holder's open created: its folder's first pass, foldInterval (1s)
+  after open, committing that file to history.bolt.
+
+  The same 700ms sleep after the first case's snapshot ("a second open
+  fails with ErrDBLocked, touches no file, and the holder still works")
+  fails it the same way, at line 127.
+
+Green: both cases take their first snapshot through
+settledStoreDirIdentity, which flushes the holder (inspector flush: pending
+writes done, log folded to the end) first.
+
+  With the 700ms sleep injected after the "with no backup" snapshot:
+    ok  github.com/VertebrateResequencing/wr/jobqueue  2.209s
+  With a 3s sleep injected after both cases' snapshots:
+    ok  github.com/VertebrateResequencing/wr/jobqueue  7.529s
+  With a 700ms sleep injected after both, -race -count 10:
+    ok  github.com/VertebrateResequencing/wr/jobqueue  32.696s
+  No injection, -race -count 50 (-run '^TestStoreOpenLocked$'):
+    ok  github.com/VertebrateResequencing/wr/jobqueue  88.004s, 0 failures

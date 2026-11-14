@@ -1,0 +1,96 @@
+# 1g.6 s1 prodsim: RSS, heap in use and jobs submitted every ~3 min (samples.tsv),
+# then each heap profile's in-use space, and -base comparisons
+t_s     rss_mb  heap_inuse_mb  submitted
+0.1     27      6              0
+180.4   1024    743            40756
+391.0   863     351            41455
+571.7   735     356            42510
+752.5   567     94             43435
+933.3   522     63             44192
+1114.2  527     68             45192
+1325.3  544     77             46546
+1506.3  536     70             47192
+1687.4  644     77             47628
+1868.5  545     61             48559
+2049.6  555     92             49057
+2260.7  561     83             50089
+2441.8  548     64             50707
+2622.9  556     74             51007
+2804.1  557     89             51777
+2985.3  551     75             52580
+3196.5  550     59             53371
+3377.7  565     98             53835
+3558.9  563     86             54226
+3740.3  1598    601            94681
+3921.7  1317    410            95506
+4133.2  1017    143            95909
+4314.6  1028    127            97075
+4496.1  1020    136            97611
+4677.6  1015    123            98032
+4859.2  998     81             98451
+5070.8  1038    150            98944
+5252.3  1046    145            99508
+5433.9  1052    157            100912
+5615.6  1020    120            101367
+5797.2  1051    162            101818
+6009.0  1019    98             102433
+6190.6  1012    97             102821
+6372.3  1012    92             103486
+6554.0  1038    115            105126
+6735.7  1993    779            145698
+6947.5  2105    1051           146471
+7129.4  1760    370            147080
+
+# submission bursts (submitted rose by > 5000 between samples)
+burst between t=0.1s and t=30.1s (+40156)
+burst between t=3710.0s and t=3740.3s (+40050)
+burst between t=6675.1s and t=6705.4s (+39050)
+
+# heap profiles, inuse_space total
+000301.heap.pprof 344.77MB total
+001235.heap.pprof 75.18MB total
+002170.heap.pprof 47.21MB total
+003106.heap.pprof 47.90MB total
+004043.heap.pprof 170.47MB total
+004980.heap.pprof 59.63MB total
+005918.heap.pprof 60.63MB total
+006857.heap.pprof 573.17MB total
+007200.heap.pprof 269.92MB total
+
+# go tool pprof -sample_index=inuse_space -top -base 001235.heap.pprof 005918.heap.pprof
+Type: inuse_space
+Time: 2026-11-14 03:23:31 GMT
+Showing nodes accounting for -27.63MB, 32.28% of 85.58MB total
+Dropped 5 nodes (cum <= 0.43MB)
+Showing top 5 nodes out of 197
+      flat  flat%   sum%        cum   cum%
+  -25.52MB 29.82% 29.82%   -25.52MB 29.82%  github.com/ugorji/go/codec.(*decoderBase).detach2Str (inline)
+   10.37MB 12.11% 17.71%    10.37MB 12.11%  slices.Grow[go.shape.[]uint8,go.shape.uint8]
+   -7.02MB  8.20% 25.90%   -33.04MB 38.60%  github.com/ugorji/go/codec.fastpathDTBincBytes.DecSliceStringY
+   -2.96MB  3.46% 29.36%   -40.05MB 46.80%  github.com/VertebrateResequencing/wr/jobqueue.jobStatuses
+
+# 6fcbf4ed release sweep prodsim (release-6fcbf4ed/sweep/logs/45-prodsim.out)
+t+5m rss=1263MB heap=459MB submitted=41061
+t+10m rss=916MB heap=354MB submitted=42118
+t+15m rss=571MB heap=56MB submitted=43323
+t+20m rss=529MB heap=33MB submitted=44593
+t+25m rss=537MB heap=38MB submitted=47174
+t+30m rss=571MB heap=48MB submitted=51103
+t+35m rss=617MB heap=90MB submitted=53333
+t+40m rss=615MB heap=102MB submitted=54372
+t+45m rss=586MB heap=68MB submitted=55218
+t+50m rss=585MB heap=70MB submitted=55874
+t+55m rss=574MB heap=61MB submitted=56644
+t+60m rss=561MB heap=58MB submitted=57431
+t+65m rss=1843MB heap=730MB submitted=98567
+t+70m rss=1558MB heap=394MB submitted=99272
+t+75m rss=1190MB heap=163MB submitted=100190
+t+80m rss=1066MB heap=80MB submitted=101660
+t+85m rss=1082MB heap=80MB submitted=102720
+t+90m rss=1422MB heap=447MB submitted=104400
+t+95m rss=1065MB heap=73MB submitted=105548
+t+100m rss=1048MB heap=81MB submitted=106048
+t+105m rss=1108MB heap=59MB submitted=107939
+t+110m rss=1159MB heap=160MB submitted=109434
+t+115m rss=1153MB heap=133MB submitted=110526
+t+120m rss=1162MB heap=150MB submitted=111803

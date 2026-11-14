@@ -1,0 +1,22 @@
+manager pid 1660486 already stopped
+starting ISOLATED prod-mode manager (-s lsf) on :53482 / web :53483
+NOTE: our prod-mode LSF runners are wrpiso53482h597924918_* (WR_JOBNAME_TOKEN=iso53482h597924918);
+      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+[32mINFO[0m[11-14|03:01:56] wr manager  started on 172.27.71.182:53482, pid 1709370 
+[32mINFO[0m[11-14|03:01:56] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53483/?token=[REDACTED] 
+pid 1709370
+Added 1 new commands (0 were duplicates) to the queue using default identifier 'rgCR'
+/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/developers/wrdev.sh: line 4920: /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/cr_count: No such file or directory
+job running; marker=0 my wrp_ jobid=
+--- killing prod manager mid-run (LSF runner  survives), then restarting (DB preserved) ---
+killed our manager pid 1709370
+starting ISOLATED prod-mode manager (-s lsf) on :53482 / web :53483
+NOTE: our prod-mode LSF runners are wrpiso53482h597924918_* (WR_JOBNAME_TOKEN=iso53482h597924918);
+      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+[32mINFO[0m[11-14|03:02:14] wr manager  started on 172.27.71.182:53482, pid 1711227 
+[32mINFO[0m[11-14|03:02:14] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53483/?token=[REDACTED] 
+pid 1711227
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 1 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+PASS: re-sent archive accepted (complete=1), command ran exactly once
+killed our manager pid 1711227

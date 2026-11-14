@@ -2260,6 +2260,8 @@ func recommendedReqGroupStat(bdb *bolt.DB, statBucket []byte, reqGroup string, r
 
 // setPhaseTotal records total, how many entries the current phase processes,
 // once it is known, which its status then reports as its Total, with detail.
+// Processed starts again from 0: what the phase reported before, counting the
+// entries, is not progress through them.
 func (r *dbUpgradeReporter) setPhaseTotal(detail string, total int) {
 	if r == nil || !r.phaseActive {
 		return
@@ -2267,6 +2269,7 @@ func (r *dbUpgradeReporter) setPhaseTotal(detail string, total int) {
 
 	r.phaseTotal = total
 	r.phaseDetail = detail
+	r.phaseProcessed = 0
 
 	r.writeStatus(r.phaseState, detail, r.phaseProcessed)
 }

@@ -1,0 +1,31 @@
+add-path latency gate: 20 then 700 clients each adding ONE job per 2000ms,
+  120s per phase, cmdBytes=256, backups=1, work=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root
+  DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/prod.db (5111070720 bytes; COPIED into /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root, never mutated in place)
+  prod symptom to reproduce: 28,815 slow adds in 23min, p50 12.8s / max 40.0s, 20,524 of
+  them adding ONE job; 763 goroutines parked in DB.Batch, 29 queued in beginRWTx.
+  gate: overSlow == 0, highP50 <= 5000ms, throughputFactor >= 10x,
+  txnsPerAdd <= 1.00. A MISSING or NON-DISCRIMINATING measurement is a FAIL.
+    reliable4_addstorm_test.go:255: ADDSTORM: copying big DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/prod.db -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/addstorm_work_db (mutated by the run)
+    reliable4_addstorm_test.go:255: ADDSTORM: copy took 29s
+    reliable4_addstorm_test.go:281: ADDSTORM: DB file=4.76GiB freePages=5 (0.0% of the file, 0MiB, so 0.0MiB of freelist is written per commit) backupsEnabled=true (production 2026-08-27: 9.10GiB, 99,443 free pages = 4.2%, 0.8MiB per commit)
+    reliable4_addstorm_test.go:282: ADDSTORM: bbolt batching left at its defaults (MaxBatchDelay=10ms MaxBatchSize=1000)
+    reliable4_addstorm_test.go:285: ADDSTORM: lowClients=20 highClients=700 think=2s window=2m0s cmdBytes=256 backups=true slowThreshold=10s clientFloor=1m0s (production 2026-08-27: 28,815 slow adds in 23min, p50 12.8s / max 40.0s, 20,524 of them adding ONE job; 763 goroutines in DB.Batch, 29 in beginRWTx)
+    reliable4_addstorm_test.go:294: ADDSTORM: low t+30s inFlightAdds=0 added=304 (+304 in the last 30s) parkedInBatch=0 queuedInBeginRWTx=0 goroutines=4173
+    reliable4_addstorm_test.go:294: ADDSTORM: low t+60s inFlightAdds=0 added=604 (+300 in the last 30s) parkedInBatch=0 queuedInBeginRWTx=0 goroutines=4180
+    reliable4_addstorm_test.go:294: ADDSTORM: low t+90s inFlightAdds=0 added=912 (+308 in the last 30s) parkedInBatch=0 queuedInBeginRWTx=0 goroutines=4180
+    reliable4_addstorm_test.go:294: ADDSTORM: low t+120s inFlightAdds=0 added=1226 (+314 in the last 30s) parkedInBatch=0 queuedInBeginRWTx=0 goroutines=4179
+    reliable4_addstorm_test.go:294: ADDSTORM-PHASE phase=low clients=20 adds=1226 offeredRate=10.00/s achievedRate=10.22/s efficiency=1.022 meanMs=17 p50Ms=6 p99Ms=292 maxMs=769 meanDepth=0 maxDepth=1 writeTxns=1203 txnsPerAdd=0.98 maxBatchParked=0 maxBeginRWTx=0 overSlow=0 overFloor=0 timedOut=0 errors=0
+    reliable4_addstorm_test.go:298: ADDSTORM: high t+30s inFlightAdds=1 added=6678 (+6678 in the last 30s) parkedInBatch=0 queuedInBeginRWTx=0 goroutines=6899
+    reliable4_addstorm_test.go:298: ADDSTORM: high t+60s inFlightAdds=394 added=15284 (+8606 in the last 30s) parkedInBatch=0 queuedInBeginRWTx=0 goroutines=7265
+    reliable4_addstorm_test.go:298: ADDSTORM: high t+90s inFlightAdds=565 added=22007 (+6723 in the last 30s) parkedInBatch=0 queuedInBeginRWTx=0 goroutines=7443
+    reliable4_addstorm_test.go:298: ADDSTORM-PHASE phase=high clients=700 adds=28698 offeredRate=350.00/s achievedRate=239.15/s efficiency=0.683 meanMs=890 p50Ms=346 p99Ms=4303 maxMs=4948 meanDepth=215 maxDepth=696 writeTxns=4867 txnsPerAdd=0.17 maxBatchParked=0 maxBeginRWTx=0 overSlow=0 overFloor=0 timedOut=0 errors=0
+    reliable4_addstorm_test.go:302: ADDSTORM-SUMMARY lowClients=20 lowRate=10.22 highClients=700 highRate=239.15 concurrencyFactor=35.0 throughputFactor=23.41 lowP50Ms=6 highP50Ms=346 highP99Ms=4303 highMaxMs=4948 overSlow=0 overFloor=0 timedOut=0 errors=0 adds=29924 txnsPerAdd=0.17 maxBatchParked=0 maxBeginRWTx=0 queueSize=148768 cmdBytes=256 backupCopies=5 backupMb=24484 backupMbPerSec=98.8
+--- PASS: TestReliable4AddStorm (349.50s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	349.624s
+## VERDICT: low=20@10.22/s high=700@239.15/s throughputFactor=23.41x (min 10x) lowP50=6ms highP50=346ms (max 5000ms) highP99=4303ms highMax=4948ms overSlow=0 overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.17 (max 1.00) maxBatchParked=0 maxBeginRWTx=0 adds=29924 addErrors=0 backupMb=24484 goExit=0
+PASS: 700 clients reached 239.15/s against 20 clients' 10.22/s
+      (23.41x for 35.0x the concurrency),
+      median add 346ms, worst 4948ms, none over the slow-request threshold,
+      at 0.17 write transactions per job with 24484MB of backup copied
+## CLEANUP

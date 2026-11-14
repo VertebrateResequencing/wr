@@ -1,0 +1,32 @@
+reliable4 FINDING 2 archive-rate gate: 660 archivers, 3800ms think time, 180s window
+  DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10 (4337278976 bytes; COPIED to /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/archrate_work_db, never mutated in place)
+  prod pre-fix numbers to beat: queue ~600 deep, ~12 archives/s, mean block 43000ms, tail >60000ms
+  gate: mean <= 5000ms, p99 <= 60000ms, 0 archives over the 60s client floor
+    reliable4_archive_rate_test.go:129: ARCHRATE: copying big DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/archrate_work_db (mutated by the run)
+    reliable4_archive_rate_test.go:129: ARCHRATE: opened DB file=4.04GiB freelist=6 pages (~0MiB)
+    reliable4_archive_rate_test.go:132: ARCHRATE: archivers=660 thinkTime=3.8s window=3m0s (production: ~660 runners, ~3.8s jobs, queue ~600 deep, ~12 archives/s, mean block 43.0s of the 1m0s client floor)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+10s depth=35 archived=1631 (+1631 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+20s depth=90 archived=3276 (+1645 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+30s depth=0 archived=4984 (+1708 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+40s depth=0 archived=6682 (+1698 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+50s depth=0 archived=8384 (+1702 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+60s depth=1 archived=10083 (+1699 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+70s depth=1 archived=11762 (+1679 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+80s depth=1 archived=13476 (+1714 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+90s depth=2 archived=15204 (+1728 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+100s depth=0 archived=16957 (+1753 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+110s depth=0 archived=18672 (+1715 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+120s depth=1 archived=20445 (+1773 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+130s depth=2 archived=22152 (+1707 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+140s depth=15 archived=23910 (+1758 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+150s depth=4 archived=25579 (+1669 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+160s depth=0 archived=27265 (+1686 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+170s depth=1 archived=29001 (+1736 in the last 10s)
+    reliable4_archive_rate_test.go:151: ARCHRATE: t+180s depth=0 archived=30642 (+1641 in the last 10s)
+    reliable4_archive_rate_test.go:156: ARCHRATE-SUMMARY archivers=660 archives=30642 errors=0 rate=170.2/s meanMs=88 p50Ms=4 p99Ms=1210 maxMs=1781 meanDepth=14 maxDepth=225 overFloor=0
+--- PASS: TestReliable4ArchiveRate (200.21s)
+PASS
+ok  	github.com/VertebrateResequencing/wr/jobqueue	200.231s
+## VERDICT: archives=30642 rate=170.2/s meanLatency=88ms p99=1210ms max=1781ms queueDepth mean=14 max=225 overClientFloor=0 archiveErrors=0 goExit=0
+PASS: a sustained 660-archiver rate on a 4GB-class DB stays at 88ms mean / 1210ms p99 with the queue never deeper than 225
+## CLEANUP

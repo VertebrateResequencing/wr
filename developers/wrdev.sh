@@ -19,6 +19,9 @@ PROD_PORT="${PROD_PORT:-51782}"     # isolated prod-mode manager RPC / web
 PROD_WEB="${PROD_WEB:-51783}"
 QUEUE="${QUEUE:-normal}"            # LSF queue to force jobs to
 MEM_GROUPS="${MEM_GROUPS:-100}"     # spread jobs across this many memory groups
+# how long a manager may take to start on a copied big fixture DB: the default (log) store converts
+# a bbolt file at its first start, which took 7m on NFS for pristine10 (3,000,000 jobs)
+BIGDB_START_TIMEOUT="${WRDEV_BIGDB_START_TIMEOUT:-3600}"
 
 # WR_JOBNAME_TOKEN for our ISOLATED prod-mode manager: its LSF jobs are named
 # wrp<token>_* instead of wrp_*, so they can NEVER be confused with (or bkilled
@@ -388,16 +391,16 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   # (badjob delta, delayed, freezes) reflect only this run. dbGB must be big enough
   # that each backup CopyFile takes long enough to stall archives past the TTR - the
   # threshold depends on your storage speed, so raise dbGB (or lower it once fixed).
-  mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  mkdir -p "$pr"; rm -rf "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* "${pr:?}/log" 2>/dev/null
   # A record-dense DB is what reproduces: ~$records real complete-job records + a
   # large persisted freelist (~${flgb}GB) so every archive commit rewrites a big
   # freelist AND the full-file backup copies GBs. Padding-only DBs (few big values,
   # ~empty freelist) do NOT reproduce even when larger - see the generator header.
   # Set WRDEV_PRISTINE_DB to a pre-generated big DB to COPY it (fast) instead of
   # regenerating (2.1M records takes ~20min); that pristine copy is never mutated.
-  if [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ]; then
+  if [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -e "${WRDEV_PRISTINE_DB}" ]; then
     echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db"
-    cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -f "$pr/db"; die "could not copy pristine DB"; }
+    cp -RLf "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -rf "${pr:?}/db"; die "could not copy pristine DB"; }
   else
     echo "inflating a fresh record-dense DB at $pr/db ($records records, ~${dbgb}GB, ~${flgb}GB freelist)"
     WR_INFLATE_DB="$pr/db" WR_INFLATE_RECORDS="$records" WR_INFLATE_GB="$dbgb" WR_INFLATE_FREELIST_GB="$flgb" \
@@ -406,14 +409,14 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
         -timeout "${WRDEV_INFLATE_TIMEOUT:-2400}s" >/dev/null 2>&1 \
       || die "DB inflation failed (is $WRDEV_ROOT on a disk with room for ~2x ${dbgb}GB?)"
   fi
-  echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes"
+  echo "db size: $(du -sb "$pr/db" 2>/dev/null | cut -f1) bytes"
   echo "starting isolated PROD-mode manager (backups ON) on the big DB"
   local startout
-  if ! startout=$(cmd_prod_start lsf 2>&1); then
+  if ! startout=$(PROD_START_TIMEOUT=$BIGDB_START_TIMEOUT cmd_prod_start lsf 2>&1); then
     printf '%s\n' "$startout" | tail -2
     echo "backup-stall-check aborted - the prod-mode manager did not start" >&2
     cmd_prod_stop >/dev/null 2>&1
-    rm -f "$pr/db" "$pr/db_bk"* 2>/dev/null
+    rm -rf "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* 2>/dev/null
     return 1
   fi
   printf '%s\n' "$startout" | tail -1; sleep 5
@@ -453,7 +456,7 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   prod_bkill_ok
   timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
   bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
-  rm -f "$WRDEV_ROOT/bkjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+  rm -rf "$WRDEV_ROOT/bkjobs.json" "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* 2>/dev/null
   return "$verdict"
 }
 
@@ -1165,6 +1168,9 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   { [ -n "$base" ] && [ -f "$base" ]; } \
     || die "set WRDEV_PRISTINE_DB to a big COMPLETE-ONLY base database (eg. a copy of /nfs/hgi/wr/sb10-bigdb/pristine6 made with '$0 compact-fixture', or make one with '$0 backup-stall-check'); this command adds the incomplete jobs itself"
   case "$n$selfpct$dgroups" in (*[!0-9]*) die "jobs, selfAddPct and depGroups must be numbers" ;; esac
+  # the default (log) store is a directory, which mv would move INTO an earlier fixture's
+  # directory, and a file there is an earlier fixture too: never replace either
+  [ -e "$out" ] && die "$out exists (an earlier fixture?); remove it, and its .aslmanifest, first"
   { [ "$n" -gt 0 ] && [ "$dgroups" -gt 0 ] && [ "$selfpct" -ge 0 ] && [ "$selfpct" -le 100 ]; } \
     || die "need jobs > 0, depGroups > 0 and 0 <= selfAddPct <= 100"
   ensure_config
@@ -1183,7 +1189,7 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   cmd_prod_stop >/dev/null 2>&1
   sleep 2
   mkdir -p "$pr"
-  rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  rm -rf "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* "${pr:?}/log" 2>/dev/null
   local cp0
   cp0=$(date +%s)
   echo "copying base ($(stat -c %s "$base") bytes)"
@@ -1259,10 +1265,10 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   fi
 
   mv -f "$pr/db" "$out" || die "could not move the fixture to $out"
-  rm -f "$pr/db_bk"* 2>/dev/null
+  rm -rf "${pr:?}/db".* "${pr:?}/db_bk"* 2>/dev/null
   ASL_KEEP_DB=1
   asl_manifest_write "$out" "$n" "$prefix" "$block" "$base" "$n" "$selfpct" "$dgroups" "$rg" "$kidrg" "$jobcwd"
-  echo "## FIXTURE: $out ($(stat -c %s "$out") bytes, $n incomplete jobs, all in $block:0)"
+  echo "## FIXTURE: $out ($(asl_db_stamp "$out" | cut -d' ' -f1) bytes, $n incomplete jobs, all in $block:0)"
   sed 's/^/  /' "$out.aslmanifest"
   echo "PASS: use it with:  WRDEV_ROOT=$WRDEV_ROOT WRDEV_PRISTINE_DB=$out $0 add-storm-lsf"
   return 0
@@ -1307,6 +1313,18 @@ asl_write_wradd() {  # <jobCwd> - (re)write <jobCwd>/wradd.sh so the fixture's s
   } > "$tmp" && chmod 755 "$tmp" && mv -f "$tmp" "$w" || { rm -f "$tmp"; return 1; }
 }
 
+asl_db_stamp() {  # <db> - "<size> <mtime>" of a bbolt file, or of a log store directory (the default
+  # store, which add-storm-fixture now writes): the summed size of its files and the newest file's mtime,
+  # so a write to any file of the store changes the stamp. A symlinked fixture is stamped by what
+  # it points to, which is what add-storm-lsf copies (cp -RLf)
+  if [ -d "$1" ]; then
+    find -L "$1" -type f -printf '%s %T@\n' 2>/dev/null \
+      | awk '{ s += $1; t = int($2); if (t > m) m = t } END { if (NR) print s, m }'
+  else
+    stat -L -c '%s %Y' "$1" 2>/dev/null
+  fi
+}
+
 asl_manifest_write() {  # <fixture> <incomplete> <prefix> <blockGroup> <base> <jobs> <selfPct> <depGroups> <repGrp> <kidRepGrp> <jobCwd>
   # the sidecar that makes a fixture usable: add-storm-lsf refuses to open a database whose
   # manifest is missing, or whose size/mtime no longer match the file beside it, BEFORE it starts
@@ -1316,8 +1334,8 @@ asl_manifest_write() {  # <fixture> <incomplete> <prefix> <blockGroup> <base> <j
   cat > "$f.aslmanifest" <<EOF
 aslfixture 2
 db $f
-size $(stat -c %s "$f")
-mtime $(stat -c %Y "$f")
+size $(asl_db_stamp "$f" | cut -d' ' -f1)
+mtime $(asl_db_stamp "$f" | cut -d' ' -f2)
 incomplete $2
 prefix $3
 blockgroup $4
@@ -1446,7 +1464,7 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   # Knobs: WRDEV_PRISTINE_DB (REQUIRED, a stamped fixture), WRDEV_DEBUG=1 (manager --debug, like
   # prod), WRDEV_ASL_RESUME_LIMIT (how many recovered jobs may run at once; defaults to `limit`),
   # WRDEV_ASL_RUNSEC (storm job length, 1), WRDEV_ASL_DOWN_SEC (outage, 12),
-  # WRDEV_ASL_ADD_TIMEOUT (per add `timeout`, 90), WRDEV_ASL_START_TIMEOUT (300),
+  # WRDEV_ASL_ADD_TIMEOUT (per add `timeout`, 90), WRDEV_ASL_START_TIMEOUT (WRDEV_BIGDB_START_TIMEOUT),
   # WRDEV_ASL_MAX_P50_MS (5000), WRDEV_ASL_MIN_COMPLETE (1), WRDEV_ASL_MIN_FIX_COMPLETE (1),
   # WRDEV_ASL_MIN_KID_JOBS (1).
   #
@@ -1458,12 +1476,12 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   need_bin
   local adders="${1:-24}" prekill="${2:-120}" postrestart="${3:-120}" limit="${4:-30}" thinkms="${5:-1000}"
   local runsec="${WRDEV_ASL_RUNSEC:-1}" downsec="${WRDEV_ASL_DOWN_SEC:-12}"
-  local ato="${WRDEV_ASL_ADD_TIMEOUT:-90}" sto="${WRDEV_ASL_START_TIMEOUT:-300}"
+  local ato="${WRDEV_ASL_ADD_TIMEOUT:-90}" sto="${WRDEV_ASL_START_TIMEOUT:-$BIGDB_START_TIMEOUT}"
   local maxp50="${WRDEV_ASL_MAX_P50_MS:-5000}" mincomplete="${WRDEV_ASL_MIN_COMPLETE:-1}"
   local minfix="${WRDEV_ASL_MIN_FIX_COMPLETE:-1}" minkid="${WRDEV_ASL_MIN_KID_JOBS:-1}"
   local resume="${WRDEV_ASL_RESUME_LIMIT:-$limit}"
   local rg="rgasl" pr="$PROD_RUN" plog="$PROD_RUN/log" db="${WRDEV_PRISTINE_DB:-}"
-  { [ -n "$db" ] && [ -f "$db" ]; } \
+  { [ -n "$db" ] && { [ -f "$db" ] || [ -d "$db" ]; }; } \
     || die "set WRDEV_PRISTINE_DB to a fixture built by '$0 add-storm-fixture'"
 
   # LAYER 1, before any manager exists: the fixture must be stamped, and the stamp must still
@@ -1481,8 +1499,7 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   mjobcwd=$(asl_manifest_field "$mf" jobcwd)
   msize=$(asl_manifest_field "$mf" size)
   mmtime=$(asl_manifest_field "$mf" mtime)
-  asize=$(stat -c %s "$db" 2>/dev/null)
-  amtime=$(stat -c %Y "$db" 2>/dev/null)
+  read -r asize amtime <<<"$(asl_db_stamp "$db")"
   [ "$msize" = "$asize" ] || die "REFUSING to open $db: its manifest was written for a $msize-byte database but the file is $asize bytes, so the stamp does not describe it. Regenerate the fixture"
   [ "$mmtime" = "$amtime" ] || die "REFUSING to open $db: its manifest records mtime $mmtime but the file's is $amtime, so it has been written to since it was stamped. Regenerate the fixture"
   case "${minc:-}" in (''|*[!0-9]*) die "REFUSING to open $db: its manifest's incomplete count '${minc:-}' is not a number" ;; esac
@@ -1541,11 +1558,11 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   cmd_prod_stop >/dev/null 2>&1
   sleep 2
   mkdir -p "$pr"
-  rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  rm -rf "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* "${pr:?}/log" 2>/dev/null
   local cp0
   echo "copying fixture $db ($asize bytes) -> $pr/db (mutated by this run; the fixture is not)"
   cp0=$(date +%s)
-  cp -f "$db" "$pr/db" || die "could not copy the fixture (room for ~2x $asize bytes under $WRDEV_ROOT?)"
+  cp -RLf "$db" "$pr/db" || die "could not copy the fixture (room for ~2x $asize bytes under $WRDEV_ROOT?)"
   echo "  copied in $(( $(date +%s) - cp0 ))s"
 
   echo "starting isolated PROD-mode manager (backups ON, -s lsf, debug=${WRDEV_DEBUG:-0})"
@@ -1610,7 +1627,7 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   echo "  aliveBeforeKill=$alivebefore aliveAfterKill=$aliveafter killProven=$killproven;" \
        "staying down ${downsec}s"
   sleep "$downsec"
-  echo "--- restarting on the SAME db ($(stat -c %s "$pr/db" 2>/dev/null) bytes) ---"
+  echo "--- restarting on the SAME db ($(asl_db_stamp "$pr/db" | cut -d' ' -f1) bytes) ---"
   asl_start_manager "$sto"
   pid2=$(mgr_pid "$pr")
   upms2=$(asl_wait_up 900)
@@ -1806,12 +1823,14 @@ asl_cleanup() {  # idempotent add-storm-lsf/fixture teardown: adders, manager, O
   timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o jobid -noheader 2>/dev/null | sort -u \
     | while read -r j; do timeout 30 bkill -r "$j" >/dev/null 2>&1; done
   sleep 5
-  left=$(timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o stat -noheader 2>/dev/null | wc -l)
+  # bjobs also lists our recently finished jobs (DONE, EXIT, ZOMBI), which are not left behind
+  left=$(timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o stat -noheader 2>/dev/null \
+    | grep -cE '^(PEND|PROV|RUN|WAIT|UNKWN|[PUS]SUSP)$')
   echo "  our manager stopped; ${PROD_JOB_PREFIX}* jobs left in LSF: ${left:-0}"
   if [ "${ASL_KEEP_DB:-0}" = "1" ]; then
     echo "  kept the generated fixture; working files are in ${ASL_DIR:-?}"
   else
-    rm -f "$PROD_RUN/db" "$PROD_RUN/db_bk"* 2>/dev/null
+    rm -rf "${PROD_RUN:?}/db" "${PROD_RUN:?}/db".* "${PROD_RUN:?}/db_bk"* 2>/dev/null
     echo "  removed the working DB copy; the per-add logs are kept in ${ASL_DIR:-?}"
   fi
   if [ -n "${ASL_WRADD_OWNER:-}" ]; then
@@ -2104,18 +2123,18 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   [ -n "${WR_RS_BKDIR:-}" ] && export WRDEV_PROD_BKFILE="$WR_RS_BKDIR/db_bk_$PROD_JOBTOKEN"
   ensure_config
   [ -n "${WR_RS_BKDIR:-}" ] && echo "backup filesystem: $WRDEV_PROD_BKFILE (separate from DB on $pr/db)"
-  [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ] \
+  [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -e "${WRDEV_PRISTINE_DB}" ] \
     || die "set WRDEV_PRISTINE_DB to a big pre-generated DB (make one with: $0 backup-stall-check, or see its header)"
   cmd_prod_stop >/dev/null 2>&1; sleep 2
-  mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  mkdir -p "$pr"; rm -rf "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* "${pr:?}/log" 2>/dev/null
   echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db (mutated by this run)"
-  cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -f "$pr/db"; die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"; }
-  echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes; LSF jobs will be ${PROD_JOB_PREFIX}*"
+  cp -RLf "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -rf "${pr:?}/db"; die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"; }
+  echo "db size: $(du -sb "$pr/db" 2>/dev/null | cut -f1) bytes; LSF jobs will be ${PROD_JOB_PREFIX}*"
   local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
   local ppf=""; [ -n "${WR_RS_PPROF:-}" ] && ppf="WR_PPROF_ADDR=localhost:$WR_RS_PPROF"
   echo "starting isolated PROD-mode manager (backups ON) on the big DB; debug=${WRDEV_DEBUG:-0} pprof=${WR_RS_PPROF:-off}"
   # shellcheck disable=SC2086 # deliberate word-splitting of the optional env assignments
-  osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" $ppf timeout 90 "$WR" manager start --deployment production -s lsf $dbg 2>&1 \
+  osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" $ppf timeout "$BIGDB_START_TIMEOUT" "$WR" manager start --deployment production -s lsf $dbg 2>&1 \
     | grep -aE 'started on|token=' | head -2
   echo "pid $(mgr_pid "$PROD_RUN")"
   sleep 5
@@ -2162,8 +2181,8 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   prod_bkill_ok
   timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
   bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
-  rm -f "$WRDEV_ROOT/rsjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
-  [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -f "$WRDEV_PROD_BKFILE"* 2>/dev/null
+  rm -rf "$WRDEV_ROOT/rsjobs.json" "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* 2>/dev/null
+  [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -rf "${WRDEV_PROD_BKFILE:?}" "${WRDEV_PROD_BKFILE:?}".* 2>/dev/null
   return "$verdict"
 }
 
@@ -2223,7 +2242,10 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
   # PASS/FAIL: pre-fix -> bw explodes to ~N, bwmax climbs >=1min, status RPC and log
   # GAPs cross 60s => FREEZE REPRODUCED. After the bounded single-writer fix -> bw
   # stays low and drains fast, no bwmax growth, status stays responsive => NO FREEZE.
-  # This is the authoritative gate a /bugfix reviewer must re-run post-fix.
+  # This is the authoritative gate a /bugfix reviewer must re-run post-fix. bw is a bbolt-only
+  # signal (0 by construction on the log store), so the verdict also FAILS on the store-neutral
+  # effect: a status RPC at or past the 60s client floor, a status call that read no counts, or a
+  # burst that did not leave all N jobs ready.
   #
   # REQUIRES WRDEV_PRISTINE_DB = a big DB to copy: a copy of the real production copy
   # /nfs/hgi/wr/sb10-bigdb/prod.db made with 'wrdev.sh compact-fixture' (its version-0 original,
@@ -2236,15 +2258,15 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
   need_bin; ensure_config
   local n="${1:-100000}" pprof="${2:-6062}"
   local pr="$PROD_RUN" plog="$PROD_RUN/log"
-  [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ] \
+  [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -e "${WRDEV_PRISTINE_DB}" ] \
     || die "set WRDEV_PRISTINE_DB to a big DB (e.g. a copy of /nfs/hgi/wr/sb10-bigdb/pristine10 or .../prod.db made with '$0 compact-fixture')"
   cmd_prod_stop >/dev/null 2>&1; sleep 2
-  mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
+  mkdir -p "$pr"; rm -rf "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* "${pr:?}/log" 2>/dev/null
   echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db (mutated by this run)"
-  cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -f "$pr/db"; die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"; }
-  echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes; scheduler=local (limit 0 => 0 LSF jobs)"
+  cp -RLf "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -rf "${pr:?}/db"; die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"; }
+  echo "db size: $(du -sb "$pr/db" 2>/dev/null | cut -f1) bytes; scheduler=local (limit 0 => 0 LSF jobs)"
   echo "starting isolated PROD-mode manager (backups ON, pprof localhost:$pprof) on the big DB"
-  osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" WR_PPROF_ADDR="localhost:$pprof" timeout 90 "$WR" \
+  osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" WR_PPROF_ADDR="localhost:$pprof" timeout "$BIGDB_START_TIMEOUT" "$WR" \
     manager start --deployment production -s local 2>&1 | grep -aE 'started on|token=' | head -2
   echo "pid $(mgr_pid "$PROD_RUN")"
   sleep 8
@@ -2260,7 +2282,7 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
     || ! echo "$out" | grep -qE 'Added [1-9][0-9]* new commands'; then
     echo "unsuspend-burst aborted - could not add jobs (wr add exit $rc; manager up?)" >&2
     echo "## CLEANUP"; cmd_prod_stop >/dev/null 2>&1
-    rm -f "$WRDEV_ROOT/ubjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+    rm -rf "$WRDEV_ROOT/ubjobs.json" "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* 2>/dev/null
     return 1
   fi
   sleep 3
@@ -2310,11 +2332,25 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
   else
     echo "NO WRITE-STORM: best-effort writes stayed bounded (peak bw=${peakbw:-0}) - the single-writer fix works."
   fi
+  # bw counts goroutines blocked in bbolt.(*DB).Batch, so it is 0 by construction on the log store,
+  # which has no Batch. The store-neutral gate is the freeze's user-visible effect: a control RPC
+  # that reaches the client's 60s floor (ClientMinRequestTimeout) is one the client gives up on,
+  # which is how prod's freeze turned into churn. Every status call must also have read counts, and
+  # the burst must have un-suspended all n jobs. WRDEV_UB_MAX_STATUS_MS (60000) sets the bound.
+  local maxstatusms="${WRDEV_UB_MAX_STATUS_MS:-60000}"
+  echo "## VERDICT (control plane): maxStatusRPC=${UB_MAXRPC}ms (bound ${maxstatusms}ms) failedStatusCalls=$UB_FAILED readyAfterBurst=$UB_READY/$n"
+  if [ "$UB_MAXRPC" -ge "$maxstatusms" ] || [ "$UB_FAILED" -ne 0 ] || [ "$UB_READY" != "$n" ]; then
+    verdict=1
+    echo "CONTROL-PLANE FREEZE (or not measured): a status RPC took ${UB_MAXRPC}ms (bound ${maxstatusms}ms),"
+    echo "  $UB_FAILED status call(s) read no counts, or the burst left $UB_READY of $n jobs ready"
+  else
+    echo "CONTROL PLANE RESPONSIVE: every status RPC under ${maxstatusms}ms and all $n jobs un-suspended"
+  fi
   echo "## manager log freezes (gaps >5s; a gap >60s crosses the client receive floor):"
   grep -oaP 'T\d\d:\d\d:\d\d' "$plog" 2>/dev/null | uniq | awk -F: '{t=$1*3600+$2*60+$3} NR==1{p=t} {if(t-p>5)print "  GAP "(t-p)"s ending "$0; p=t}' | tail -10
 
   echo "## CLEANUP"; cmd_prod_stop >/dev/null 2>&1
-  rm -f "$WRDEV_ROOT/ubjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+  rm -rf "$WRDEV_ROOT/ubjobs.json" "${pr:?}/db" "${pr:?}/db".* "${pr:?}/db_bk"* 2>/dev/null
   return "$verdict"
 }
 
@@ -2376,18 +2412,22 @@ ub_sampler() {  # <pprofPort> <outdir>
 
 # ub_monitor watches control-plane responsiveness (status RPC latency) + queue state
 # for a few minutes after the burst.
-ub_monitor() {  # <pprofPort> <plog> <n>
-  local pprof="$1" plog="$2" n="$3"; local t0; t0=$(date +%s); local maxrpc=0
+ub_monitor() {  # <pprofPort> <plog> <n> - sets UB_MAXRPC (ms), UB_FAILED (status calls that read no counts), UB_READY (last)
+  local pprof="$1" plog="$2" n="$3"; local t0; t0=$(date +%s)
+  UB_MAXRPC=0; UB_FAILED=0; UB_READY=-1
   num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
   for _ in $(seq 1 40); do
     local st cr csu s e rpc
     s=$(date +%s%3N); st=$(osunset; timeout 65 "$WR" status --deployment production -i rgburst -o counts 2>/dev/null); e=$(date +%s%3N); rpc=$((e-s))
-    cr=$(num "$st" ready); csu=$(num "$st" suspended); cr=${cr:-0}; csu=${csu:-0}
-    [ "$rpc" -gt "$maxrpc" ] && maxrpc=$rpc
+    cr=$(num "$st" ready); csu=$(num "$st" suspended)
+    # a call that read no counts measured nothing (a fast refusal would otherwise look responsive)
+    if [ -z "$cr" ] || [ -z "$csu" ]; then UB_FAILED=$((UB_FAILED + 1)); cr=-1; csu=-1; fi
+    UB_READY=$cr
+    [ "$rpc" -gt "$UB_MAXRPC" ] && UB_MAXRPC=$rpc
     echo "t+$(( $(date +%s)-t0 ))s ready=$cr suspended=$csu status_rpc=${rpc}ms"
     sleep 3
   done
-  echo "## VERDICT: maxStatusRPC=${maxrpc}ms (prod froze control RPCs past the 60000ms client floor)"
+  echo "## VERDICT: maxStatusRPC=${UB_MAXRPC}ms failedStatusCalls=$UB_FAILED lastReady=$UB_READY/$n (prod froze control RPCs past the 60000ms client floor)"
 }
 
 cmd_probe() {  # probe [secs] [slowms]  - read the dev web /status_ws feed
@@ -3239,7 +3279,9 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
   done
 
   echo "=== starting the isolated prod-mode manager on that DB ==="
-  cmd_prod_start local 2>&1 | sed 's/^/  /'
+  # the default (log) store converts the seeded bbolt file at this start (75s for 200,000 jobs
+  # on NFS), longer than prod-start's 90s default allows for on a slow day
+  PROD_START_TIMEOUT=$BIGDB_START_TIMEOUT cmd_prod_start local 2>&1 | sed 's/^/  /'
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then
     echo "control-rpc-history aborted - the prod-mode manager did not start" >&2
     safe_kill "$(mgr_pid "$PROD_RUN")"
@@ -3586,8 +3628,7 @@ cmd_dep_granularity_check() {  # dep-granularity-check [waiters] [members] [grou
   fi
 
   echo "## CLEANUP"
-  rm -f "$PROD_RUN/db" "$PROD_RUN/db_bk" 2>/dev/null
-  rm -rf "$PROD_RUN" 2>/dev/null
+  rm -rf "${PROD_RUN:?}" 2>/dev/null
   return "$rc"
 }
 
@@ -4802,9 +4843,9 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
   echo "  our manager stopped; ${PROD_JOB_PREFIX}* jobs left in LSF: ${left:-0}"
   if [ "${WRDEV_PRODSIM_KEEP_DB:-0}" != "1" ]; then
     # the log store's db and its backup are directories
-    rm -rf "$PROD_RUN/db" "$PROD_RUN/db_bk"* 2>/dev/null
+    rm -rf "${PROD_RUN:?}/db" "${PROD_RUN:?}/db".* "${PROD_RUN:?}/db_bk"* 2>/dev/null
     [ -n "${WRDEV_PRODSIM_DBDIR:-}" ] && rm -rf "${WRDEV_PRODSIM_DBDIR:?}/db" 2>/dev/null
-    [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -f "$WRDEV_PROD_BKFILE"* 2>/dev/null
+    [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -rf "${WRDEV_PROD_BKFILE:?}" "${WRDEV_PROD_BKFILE:?}".* 2>/dev/null
     echo "  removed the working DB; outputs kept in ${PS_OUT:-?}"
   fi
 }
@@ -4870,7 +4911,7 @@ cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (prese
   # captured whole rather than piped, so the start's own exit status survives
   # (and head closing the pipe early cannot SIGPIPE it)
   local out rc pid
-  out=$(osunset ; WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout 90 "$WR" manager start --deployment production -s "$sched" $dbg 2>&1); rc=$?
+  out=$(osunset ; WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout "${PROD_START_TIMEOUT:-90}" "$WR" manager start --deployment production -s "$sched" $dbg 2>&1); rc=$?
   printf '%s\n' "$out" | grep -aE 'started on|token=' | head -2
   pid=$(mgr_pid "$PROD_RUN")
   echo "pid $pid"
@@ -4889,6 +4930,18 @@ cmd_prod_stop() {  # stop the isolated prod-mode manager only (verified pid); do
   echo "if you launched LSF runners, bkill them by the exact jobid you recorded (never 'wrp_*')."
 }
 
+cr_marker() {  # how many times crash-recovery's command has started (lines in its marker file)
+  if [ -f "$WRDEV_ROOT/cr_count" ]; then wc -l < "$WRDEV_ROOT/cr_count"; else echo 0; fi
+}
+
+cr_bkill_ours() {  # bkill, by exact jobid, every LSF job of our isolated manager's prefix (runner
+  # $jid and any the restarted manager submitted); the prefix can never match a real wrp_*. Callers
+  # stop the manager first, so it cannot submit another runner after the bjobs listing.
+  prod_bkill_ok
+  timeout 60 bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' \
+    | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
+}
+
 cmd_crash_recovery() {  # end-to-end Idea-1 crash-recovery on an isolated prod-mode LSF manager
   need_bin; ensure_config
   safe_kill "$(mgr_pid "$PROD_RUN")"; rm -rf "$PROD_RUN" 2>/dev/null; rm -f "$WRDEV_ROOT/cr_count"
@@ -4897,31 +4950,69 @@ cmd_crash_recovery() {  # end-to-end Idea-1 crash-recovery on an isolated prod-m
     safe_kill "$(mgr_pid "$PROD_RUN")"
     return 1
   fi
-  printf '{"cmd":"bash -c \\"echo ran >> %s/cr_count; sleep 30\\"","queue":"%s","memory":"500M"}\n' \
+  printf '{"cmd":"bash -c \\"echo ran >> %s/cr_count; sleep 60\\"","queue":"%s","memory":"500M"}\n' \
     "$WRDEV_ROOT" "$QUEUE" > "$WRDEV_ROOT/cr.json"
   osunset; timeout 40 "$WR" add -f "$WRDEV_ROOT/cr.json" --rep_grp rgCR --retries 0 --deployment production 2>&1 | tail -1
-  local r=0; for _ in $(seq 1 30); do sleep 5; r=$(timeout 20 "$WR" status --deployment production -i rgCR -o counts 2>/dev/null | grep -oE 'running: [0-9]+' | grep -oE '[0-9]+'); [ "${r:-0}" -ge 1 ] && break; done
-  local jid; jid=$(timeout 40 bjobs -o 'jobid job_name stat' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1 && $3=="RUN"{print $1; exit}')
-  echo "job running; marker=$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null || echo 0) my wrp_ jobid=$jid"
+  # The kill must land while the command runs under a live LSF runner, or a PASS proves nothing: a
+  # job the manager reports running may not have started its command yet, and a runner killed or
+  # not yet started could leave the restarted manager to run it fresh. So wait until the manager
+  # has the command's pid (set by the runner's Started call, as the command starts) for a job it
+  # reports as running (status prints Host and Pid for complete and lost jobs too) and the LSF job
+  # on that host is in RUN, and FAIL rather than kill without both. The marker file, written on
+  # the exec node, is not used as the start signal: its first appearance here over NFS may lag (a
+  # wait on it once found no runner left in RUN). It still counts the runs at the end, when it
+  # exists and each open revalidates it. WRDEV_CR_START_WAIT bounds the wait (150s).
+  local jid="" host="" st deadline t0
+  t0=$(date +%s); deadline=$(( t0 + ${WRDEV_CR_START_WAIT:-150} ))
+  while :; do
+    st=$(timeout 20 "$WR" status --deployment production -i rgCR 2>/dev/null)
+    host=""
+    grep -q '^Status: running' <<< "$st" \
+      && host=$(sed -nE 's/^Host: ([^ .]+)[^ ]* .*; Pid: [1-9][0-9]*$/\1/p' <<< "$st" | head -1)
+    jid=""
+    [ -n "$host" ] && jid=$(timeout 40 bjobs -o 'jobid job_name stat exec_host' -noheader 2>/dev/null \
+      | awk -v p="$PROD_JOB_PREFIX" -v h="$host" 'index($2,p)==1 && $3=="RUN" && cr_on_host($4,h){print $1; exit}
+          function cr_on_host(eh, h,   n, i, hs, x) {  # exec_host is host, N*host, or several joined by ":"
+            n = split(eh, hs, ":")
+            for (i = 1; i <= n; i++) { x = hs[i]; sub(/^[0-9]+\*/, "", x); sub(/\..*/, "", x); if (x == h) return 1 }
+            return 0
+          }')
+    { [ -n "$jid" ] || [ "$(date +%s)" -ge "$deadline" ]; } && break
+    sleep 2
+  done
+  echo "start wait over at t+$(( $(date +%s) - t0 ))s: manager reports the command running on ${host:-none}; marker=$(cr_marker) my wrp_ jobid=$jid"
+  if [ -z "$jid" ]; then
+    if [ -z "$host" ]; then
+      echo "FAIL (NOT MEASURED): within ${WRDEV_CR_START_WAIT:-150}s the manager did not report the job running with"
+      echo "  its command's pid, so a manager kill would not test recovery of a running job"
+    else
+      echo "FAIL (NOT MEASURED): the manager reported the command running on $host, but within"
+      echo "  ${WRDEV_CR_START_WAIT:-150}s bjobs showed no $PROD_JOB_PREFIX job in RUN there, so the kill could not"
+      echo "  be shown to leave a live runner"
+    fi
+    safe_kill "$(mgr_pid "$PROD_RUN")"
+    cr_bkill_ours
+    return 1
+  fi
   echo "--- killing prod manager mid-run (LSF runner $jid survives), then restarting (DB preserved) ---"
   safe_kill "$(mgr_pid "$PROD_RUN")"; sleep 12
   if ! cmd_prod_start lsf; then
     echo "crash-recovery aborted - the prod-mode manager did not restart" >&2
-    [ -n "$jid" ] && timeout 30 bkill "$jid" >/dev/null 2>&1  # exact jobid only, never 'wrp_*'
     safe_kill "$(mgr_pid "$PROD_RUN")"
+    cr_bkill_ours
     return 1
   fi
   local ok=0
-  for _ in $(seq 1 20); do sleep 8; local c m; c=$(timeout 20 "$WR" status --deployment production -i rgCR -o counts 2>/dev/null | tr '\n' ' '); m=$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null || echo 0); echo "  rgCR[$c] marker=$m"; echo "$c" | grep -qE 'complete: 1' && { ok=1; break; }; done
+  for _ in $(seq 1 25); do sleep 8; local c m; c=$(timeout 20 "$WR" status --deployment production -i rgCR -o counts 2>/dev/null | tr '\n' ' '); m=$(cr_marker); echo "  rgCR[$c] marker=$m"; echo "$c" | grep -qE 'complete: 1' && { ok=1; break; }; done
   local verdict=1
-  if [ "$ok" = 1 ] && [ "$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null)" = 1 ]; then
+  if [ "$ok" = 1 ] && [ "$(cr_marker)" = 1 ]; then
     verdict=0
     echo "PASS: re-sent archive accepted (complete=1), command ran exactly once"
   else
     echo "FAIL: check rgCR / marker above"
   fi
-  [ -n "$jid" ] && timeout 30 bkill "$jid" >/dev/null 2>&1  # exact jobid only, never 'wrp_*'
   safe_kill "$(mgr_pid "$PROD_RUN")"
+  cr_bkill_ours
   return "$verdict"
 }
 
@@ -5409,7 +5500,8 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         total) + control-RPC latency (defaults 100000 6062). REQUIRES
                         WRDEV_PRISTINE_DB=<big DB> (a compact-fixture copy of pristine10 or
                         prod.db). Post-fix gate: bw stays
-                        low, no bwmax growth, status stays responsive.
+                        low (bbolt only), and every status RPC answers under WRDEV_UB_MAX_STATUS_MS
+                        (60000, the client floor) with all N jobs un-suspended.
   exec-impossible-retries [jobs] [seconds] [cores]
                         reliable4 FINDING 5 SCALE GATE (real binary, farm-safe - -s local, no LSF job
                         ever submitted): N jobs whose Cmd is over Linux's 128KB MAX_ARG_STRLEN, so
@@ -5501,7 +5593,9 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart); WRDEV_DEBUG=1
                         adds --debug, which modes counting confirmed_dead need
   prod-stop             stop the isolated prod-mode manager (verified pid)
-  crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF); exits 1 on FAIL
+  crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF); exits 1 on FAIL,
+                        including when its command has not started under a RUN runner within
+                        WRDEV_CR_START_WAIT (150s), so the kill would test nothing
   dump [lsf|local]      run dev manager foreground for a SIGQUIT goroutine dump
   clean                 stop all our managers + bkill ${DEV_JOB_PREFIX}* (production untouched)
   status                show what is running
@@ -5511,6 +5605,8 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
 
 Env: WRDEV_ROOT (=$WRDEV_ROOT) WRDEV_REPO (checkout to build/test; default this one) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB
      DEV_JOBTOKEN/PROD_JOBTOKEN (iso<port>h<checksum of host and WRDEV_ROOT>) QUEUE MEM_GROUPS
+     WRDEV_BIGDB_START_TIMEOUT (3600s: a start on a copied bbolt WRDEV_PRISTINE_DB converts it to the
+     log store first; a WRDEV_PRISTINE_DB may also be a log store directory, copied whole)
 Safety: only kills processes running \$WRDEV_ROOT/wr; only pattern-bkills our isolated dev
 manager's ${DEV_JOB_PREFIX}* and our isolated prod-mode manager's ${PROD_JOB_PREFIX}*. Never touches a real --deployment production
 manager or its wrp_* jobs.

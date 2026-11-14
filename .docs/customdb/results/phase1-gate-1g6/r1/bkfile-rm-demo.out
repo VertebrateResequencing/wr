@@ -1,0 +1,3 @@
+before:            db_bk_tokA db_bk_tokA2 db_bk_tokAB db_bk_tokA_old db_bk_tokA.tmp 
+after old line:    
+after fixed line:  db_bk_tokA2 db_bk_tokAB db_bk_tokA_old 

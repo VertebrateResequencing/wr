@@ -1,0 +1,23 @@
+reliable4 ITEM C2 runner-log-bytes gate: 30 SUCCESSFUL jobs each with a ~20KB Cmd,
+on an isolated dev manager (-s local, --max_cores 2, --runner_filelog, --debug).
+prod pre-fix: 'reserved a job' p99 24,261 bytes, max 1,345,498 bytes, and 4 such lines per job.
+Gate: runner-log bytes/completed job <= 4096 AND manager-log bytes/completed job <= 8192
+      AND 0 lines in EITHER log carrying the Cmd's tail sentinel.
+A MISSING measurement (no runner logs, 0 bytes, jobs never completed, dead manager) is a FAIL.
+starting isolated dev manager (-s local, --debug); dev mode wipes the DB
+[32mINFO[0m[11-14|01:45:22] wr manager  started on 172.27.71.182:53480, pid 1239327 
+[32mINFO[0m[11-14|01:45:23] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53481/?token=[REDACTED] 
+pid 1239327
+generating 30 unique jobs with a ~20KB padded Cmd -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/runnerlog.json
+Added 30 new commands (0 were duplicates) to the queue using default identifier 'rgrunnerlog'
+waiting up to 180s for all 30 to complete
+  t=5s rgrunnerlog[complete: 30 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] runnerLogBytes=42470
+## VERDICT: complete=30/30  runnerLogBytes=42470  bytesPerJob=1415 (max 4096)
+##          tailSentinelLines=0 (want 0)  runnerLogFiles=2  cmdBytes~20480
+##          managerLogBytes=69521  mgrBytesPerJob=2317 (max 8192)
+##          mgrTailSentinelLines=0 (want 0)  managerLog=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s1/root/.wr_development/log
+##          counts: rgrunnerlog[complete: 30 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ]
+PASS: 30 jobs with a ~20480-byte Cmd each cost 1415 runner-log bytes and
+      2317 manager-log bytes per job (<= 4096 / 8192), and no line in either log
+      carried the command line's tail
+## CLEANUP

@@ -2001,6 +2001,7 @@ func TestStoreConvertShowsStartBeforeCounting(t *testing.T) {
 		So(s.close(ctx), ShouldBeNil)
 
 		So(counting.State, ShouldEqual, internal.DBUpgradeConvertState)
+		So(counting.Detail, ShouldEqual, "counting the jobs to convert")
 		So(counting.Total, ShouldEqual, 0)
 		So(logLinesContaining(logged, dbUpgradeStartLogMatch), ShouldHaveLength, 1)
 		So(logLinesForPhase(logged, dbUpgradeStepStartLogMatch, internal.DBUpgradeConvertState), ShouldHaveLength, 1)
@@ -2078,9 +2079,17 @@ func TestStoreLongConvertReportsProgress(t *testing.T) {
 		dbFile := filepath.Join(t.TempDir(), convertDBName)
 		writeProgressFixture(dbFile)
 
-		progress := logLinesContaining(openStoreLoggingAsManager(t, ctx, dbFile), dbUpgradeStillRunningLogMatch)
+		logged := openStoreLoggingAsManager(t, ctx, dbFile)
+
+		var progress []string
+
+		for _, line := range logLinesForPhase(logged, dbUpgradeStillRunningLogMatch, internal.DBUpgradeConvertState) {
+			if strings.Contains(line, `detail="converting database`) {
+				progress = append(progress, line)
+			}
+		}
+
 		So(len(progress), ShouldBeGreaterThanOrEqualTo, convertProgressJobs/dbUpgradeProgressEntries)
-		So(progress[0], ShouldContainSubstring, `state="`+internal.DBUpgradeConvertState+`"`)
 		So(logLineValue(progress[len(progress)-1], "processed"),
 			ShouldEqual, strconv.Itoa(convertProgressJobs/dbUpgradeProgressEntries*dbUpgradeProgressEntries))
 	})
@@ -2113,6 +2122,154 @@ func openStoreLoggingAsManager(t *testing.T, ctx context.Context, dbFile string)
 	So(s.close(ctx), ShouldBeNil)
 
 	return readLogFile(t, logPath)
+}
+
+func TestStoreConvertReportsCountingProgress(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("A conversion whose counting outlasts the log interval reports how many jobs it has counted in a "+
+		"default manager's log before it converts any, once per count, though it walks run-state records "+
+		"after the last job counted", t, func() {
+		previousInterval := dbUpgradeLogInterval
+
+		Reset(func() { dbUpgradeLogInterval = previousInterval })
+
+		dbUpgradeLogInterval = 0
+
+		jobs := 2 * dbUpgradeProgressEntries
+		dbFile := filepath.Join(t.TempDir(), convertDBName)
+		writeCountingFixture(dbFile, jobs)
+
+		logPath, serverCtx := managerLogContext(t, ctx)
+
+		var beforeFirstJob string
+
+		setConvertHook(func(at convertPoint) error {
+			if at == convertAtJob && beforeFirstJob == "" {
+				beforeFirstJob = readLogFile(t, logPath)
+			}
+
+			return nil
+		})
+
+		s := openStoreOf(serverCtx, dbFile, storeKindLog)
+		So(s.close(ctx), ShouldBeNil)
+
+		counting := logLinesForPhase(beforeFirstJob, dbUpgradeStillRunningLogMatch, internal.DBUpgradeConvertState)
+		So(len(counting), ShouldBeGreaterThanOrEqualTo, jobs/dbUpgradeProgressEntries)
+
+		last := counting[len(counting)-1]
+		So(last, ShouldContainSubstring, fmt.Sprintf(`detail="counting the jobs to convert (%d counted)"`, jobs))
+		So(logLineValue(last, "processed"), ShouldEqual, strconv.Itoa(jobs))
+
+		processed := make([]int, len(counting))
+
+		for i, line := range counting {
+			var err error
+
+			processed[i], err = strconv.Atoi(logLineValue(line, "processed"))
+			So(err, ShouldBeNil)
+		}
+
+		So(processed, ShouldResemble, slices.Compact(slices.Sorted(slices.Values(processed))))
+	})
+}
+
+func TestStoreConvertSidecarShowsCounting(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("While a conversion counts its jobs, the sidecar `wr manager start` prints from shows how many it has "+
+		"counted, both when the progress interval has passed and at each step of entries, and is not rewritten "+
+		"for a job counted before either", t, func() {
+		jobs := dbUpgradeProgressEntries
+		dbFile := filepath.Join(t.TempDir(), convertDBName)
+		writeCountingFixture(dbFile, jobs)
+
+		var (
+			counted        int
+			atFirst        internal.DBUpgradeStatus
+			afterInterval  internal.DBUpgradeStatus
+			atStep         internal.DBUpgradeStatus
+			afterTotal     internal.DBUpgradeStatus
+			afterTotalRead bool
+		)
+
+		setConvertHook(func(at convertPoint) error {
+			var err error
+
+			switch {
+			case at == convertAtCounted:
+				counted++
+
+				switch counted {
+				case 1:
+					atFirst, _, err = internal.ReadDBUpgradeStatus(dbFile)
+
+					// so that counting the next job is due by time alone, well short
+					// of a step of entries
+					time.Sleep(dbUpgradeProgressInterval)
+				case 2:
+					afterInterval, _, err = internal.ReadDBUpgradeStatus(dbFile)
+				case jobs:
+					atStep, _, err = internal.ReadDBUpgradeStatus(dbFile)
+				}
+			case at == convertAtJob && !afterTotalRead:
+				afterTotalRead = true
+				afterTotal, _, err = internal.ReadDBUpgradeStatus(dbFile)
+			}
+
+			return err
+		})
+
+		s := openStoreOf(ctx, dbFile, storeKindLog)
+		So(s.close(ctx), ShouldBeNil)
+
+		So(counted, ShouldEqual, jobs)
+		So(atFirst.State, ShouldEqual, internal.DBUpgradeConvertState)
+		So(atFirst.Detail, ShouldEqual, "counting the jobs to convert")
+		So(atFirst.Processed, ShouldEqual, 0)
+		So(afterInterval.State, ShouldEqual, internal.DBUpgradeConvertState)
+		So(afterInterval.Detail, ShouldEqual, "counting the jobs to convert (2 counted)")
+		So(afterInterval.Processed, ShouldEqual, 2)
+		So(atStep.State, ShouldEqual, internal.DBUpgradeConvertState)
+		So(atStep.Detail, ShouldEqual, fmt.Sprintf("counting the jobs to convert (%d counted)", jobs))
+		So(atStep.Processed, ShouldEqual, jobs)
+		So(atStep.Total, ShouldEqual, 0)
+		So(afterTotal.Detail, ShouldStartWith, "converting database")
+		So(afterTotal.Total, ShouldEqual, jobs)
+	})
+}
+
+// writeCountingFixture writes a bbolt file at dbFile holding jobs complete
+// jobs, as raw records, and a run-state record for each of the first ten of
+// them, which, with no live record under them, conversion drops.
+func writeCountingFixture(dbFile string, jobs int) {
+	complete := make(map[string][]byte, jobs)
+	runStates := make(map[string][]byte)
+	end := time.Unix(1_750_000_000, 0)
+
+	for i := range jobs {
+		job := completedTestJob(fmt.Sprintf("echo convert counting %d", i), end)
+		encoded := encodedTestJob(job)
+		complete[job.Key()] = encoded
+
+		if i < 10 {
+			runStates[job.Key()] = runStateRecord(encoded, []byte("orphaned"))
+		}
+	}
+
+	writeRawBoltDB(dbFile, schemaStamp(currentDBSchemaVersion), map[string]map[string][]byte{
+		string(bucketJobsComplete): complete,
+		string(bucketJobRunState):  runStates,
+	})
 }
 
 // logLinesForPhase returns the log lines containing both the given message

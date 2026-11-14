@@ -1,0 +1,3 @@
+    prodsim_remap_stall_test.go:75: PRODSIM-REMAP crossesMmap=false backup=8.16s maxRead=0s maxWrite=29ms
+    prodsim_remap_stall_test.go:75: PRODSIM-REMAP crossesMmap=true backup=7.258s maxRead=0s maxWrite=41ms
+PASS

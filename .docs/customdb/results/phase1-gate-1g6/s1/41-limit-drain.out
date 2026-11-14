@@ -1,0 +1,31 @@
+no dev manager running; starting one
+starting isolated dev manager (-s lsf) on :53480 / web :53481
+[32mINFO[0m[11-14|02:27:29] wr manager  started on 172.27.71.182:53480, pid 1505196 
+[32mINFO[0m[11-14|02:27:29] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53481/?token=[REDACTED] 
+pid 1505196   token [REDACTED]
+reliable4 STALL repro: 60000 jobs (sleep 30, cmd pad 0KB) in ONE limit group reprolimit:2000 across 100 mem groups
+manager debug=0 (WRDEV_DEBUG=1 matches production's --debug; change requires a fresh 'start')
+Added 60000 new commands (0 were duplicates) to the queue using default identifier 'rglimit'
+t+1s complete=0/60000 running=0 lost=0 LSF_RUN=0 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=135ms
+t+46s complete=2000/60000 running=1995 lost=0 LSF_RUN=3099 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=102ms
+t+92s complete=4000/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=107ms
+t+137s complete=7996/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=109ms
+t+182s complete=9999/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=109ms
+t+228s complete=13996/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=102ms
+t+273s complete=15998/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=115ms
+t+318s complete=19996/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=123ms
+t+364s complete=21998/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=150ms
+t+409s complete=25996/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=117ms
+t+455s complete=27997/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=116ms
+t+500s complete=31996/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=148ms
+t+546s complete=33997/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=135ms
+t+591s complete=37995/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=126ms
+t+636s complete=39997/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=136ms
+t+682s complete=43995/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=130ms
+t+727s complete=45998/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=140ms
+t+773s complete=49995/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=152ms
+t+818s complete=52012/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=139ms
+t+864s complete=55994/60000 running=2000 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=130ms
+t+909s complete=58031/60000 running=1971 lost=0 LSF_RUN=2000 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=151ms
+t+954s complete=60000/60000 running=0 lost=0 LSF_RUN=0 buried=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=119ms
+FULLY DRAINED (complete=60000 buried=0)

@@ -1,0 +1,23 @@
+copying pristine DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/root/.wr-prod_production/db
+db size: 4337278976 bytes
+starting isolated PROD-mode manager (backups ON) on the big DB
+pid 3501401
+adding 8000 sleep-30 jobs (limit 2000); they CANNOT fail, so delayed/lost/badjob == churn
+Added 8000 new commands (0 were duplicates) to the queue using default identifier 'rgbk'
+t+1s complete=0/8000 running=0 delayed=0 lost=0 LSF_RUN=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) badjob=0 status_rpc=103ms
+t+31s complete=0/8000 running=2000 delayed=0 lost=0 LSF_RUN=2000 confirmed_dead=n/a (needs WRDEV_DEBUG=1) badjob=0 status_rpc=53ms
+t+61s complete=2000/8000 running=2000 delayed=0 lost=0 LSF_RUN=2035 confirmed_dead=n/a (needs WRDEV_DEBUG=1) badjob=0 status_rpc=43ms
+t+91s complete=4000/8000 running=2000 delayed=0 lost=0 LSF_RUN=2000 confirmed_dead=n/a (needs WRDEV_DEBUG=1) badjob=0 status_rpc=46ms
+t+121s complete=6000/8000 running=2000 delayed=0 lost=0 LSF_RUN=2000 confirmed_dead=n/a (needs WRDEV_DEBUG=1) badjob=0 status_rpc=49ms
+t+152s complete=8000/8000 running=0 delayed=0 lost=0 LSF_RUN=215 confirmed_dead=n/a (needs WRDEV_DEBUG=1) badjob=0 status_rpc=53ms
+## manager log freezes (gaps) during the run:
+  GAP 31s ending T06:40:39
+  GAP 30s ending T06:41:09
+  GAP 28s ending T06:41:37
+  GAP 16s ending T06:41:53
+  GAP 59s ending T06:42:53
+  GAP 59s ending T06:43:53
+## VERDICT: maxDelayed=0 badjobDelta=0 maxStatusRPC=103ms
+NO STALL: jobs drained cleanly despite backups (the fix works)
+## CLEANUP
+if you launched LSF runners, bkill them by the exact jobid you recorded (never 'wrp_*').

@@ -1,0 +1,17 @@
+=== flicker count-level reproducer (deterministic) ===
+reconcile-harness: handler=../../../../../../users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/jobqueue/static/js/wr/websocket-handler.js
+  [PASS] A/connected-burst-out-of-order: worstRepGroupTotalError=0 worstAllOvercount=0 worstAllNegative=0 convergeFailures=0/120
+  [PASS] B/connect-mid-burst-seed-race: worstPerBucketError=0 (boundary-blind client on the same stream: 8) inexactTrials=0/120 convergeFailures=0/120
+  [PASS] B2/seed-race-residual-under-emission-jitter: worstPerBucketError=9 (boundary-blind: 14) lateDuplicates<=14 madeWorse=0/120 overResidualBound=0/120
+  [PASS] C/mixed-workload-rerun-cycles: worstRepGroupTotalError=0 worstAllOvercount=0 finalMismatches=0/120
+reconcile-harness: ALL SCENARIOS COHERENT AND CONVERGENT
+=== flicker browser fixtures (Playwright) ===
+--- repgroup-bar-flicker ---
+/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/.tmp/agent/webui-test/status-webui-repgroup-bar-flicker.png
+/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/.tmp/agent/webui-test/status-webui-repgroup-bar-flicker-trace.json
+  repgroup-bar-flicker PASS
+--- status-count-reconcile ---
+/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/.tmp/agent/webui-test/status-webui-count-reconcile.png
+/nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/.tmp/agent/webui-test/status-webui-count-reconcile-trace.json
+  status-count-reconcile PASS
+flicker-check: PASS

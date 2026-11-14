@@ -1,0 +1,65 @@
+copying pristine DB /nfs/hgi/wr/sb10-bigdb/customdb/1g6/r1/pristine10.link -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/r1/root/.wr-prod_production/db (mutated by this run)
+db size: 4517798177 bytes; scheduler=local (limit 0 => 0 LSF jobs)
+starting isolated PROD-mode manager (backups ON, pprof localhost:6062) on the big DB
+[32mINFO[0m[11-14|06:58:22] wr manager  started on 172.27.71.182:53482, pid 3631934 
+[32mINFO[0m[11-14|06:58:22] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53483/?token=[REDACTED] 
+pid 3631934
+adding 100000 sleep-1 jobs in limit group burstlimit:0 (ready-but-blocked; NEVER run) rep_grp rgburst
+Added 100000 new commands (0 were duplicates) to the queue using default identifier 'rgburst'
+STAGING: mass-suspend all 100000 jobs (ready -> suspended), then let the write goroutines settle
+  suspend-stage settled at total goroutines=28
+goroutine classifier pid 3664982 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/r1/root/ubprof/signals.tsv (every 3s)
+=== BURST: un-suspend all 100000 jobs at once (the prod trigger) ===
+resume RPC returned in 4395ms (the storm is now in the background write goroutines)
+t+0s ready=100000 suspended=0 status_rpc=167ms
+t+3s ready=100000 suspended=0 status_rpc=178ms
+t+6s ready=100000 suspended=0 status_rpc=169ms
+t+9s ready=100000 suspended=0 status_rpc=160ms
+t+13s ready=100000 suspended=0 status_rpc=223ms
+t+16s ready=100000 suspended=0 status_rpc=190ms
+t+19s ready=100000 suspended=0 status_rpc=140ms
+t+22s ready=100000 suspended=0 status_rpc=155ms
+t+25s ready=100000 suspended=0 status_rpc=154ms
+t+29s ready=100000 suspended=0 status_rpc=152ms
+t+32s ready=100000 suspended=0 status_rpc=142ms
+t+35s ready=100000 suspended=0 status_rpc=163ms
+t+38s ready=100000 suspended=0 status_rpc=185ms
+t+41s ready=100000 suspended=0 status_rpc=157ms
+t+44s ready=100000 suspended=0 status_rpc=146ms
+t+48s ready=100000 suspended=0 status_rpc=360ms
+t+51s ready=100000 suspended=0 status_rpc=431ms
+t+55s ready=100000 suspended=0 status_rpc=253ms
+t+58s ready=100000 suspended=0 status_rpc=255ms
+t+62s ready=100000 suspended=0 status_rpc=644ms
+t+66s ready=100000 suspended=0 status_rpc=632ms
+t+69s ready=100000 suspended=0 status_rpc=473ms
+t+72s ready=100000 suspended=0 status_rpc=251ms
+t+76s ready=100000 suspended=0 status_rpc=243ms
+t+79s ready=100000 suspended=0 status_rpc=229ms
+t+82s ready=100000 suspended=0 status_rpc=196ms
+t+85s ready=100000 suspended=0 status_rpc=199ms
+t+89s ready=100000 suspended=0 status_rpc=449ms
+t+92s ready=100000 suspended=0 status_rpc=161ms
+t+95s ready=100000 suspended=0 status_rpc=235ms
+t+99s ready=100000 suspended=0 status_rpc=192ms
+t+102s ready=100000 suspended=0 status_rpc=159ms
+t+105s ready=100000 suspended=0 status_rpc=165ms
+t+108s ready=100000 suspended=0 status_rpc=160ms
+t+111s ready=100000 suspended=0 status_rpc=154ms
+t+114s ready=100000 suspended=0 status_rpc=137ms
+t+118s ready=100000 suspended=0 status_rpc=147ms
+t+121s ready=100000 suspended=0 status_rpc=233ms
+t+124s ready=100000 suspended=0 status_rpc=152ms
+t+127s ready=100000 suspended=0 status_rpc=139ms
+## VERDICT: maxStatusRPC=644ms failedStatusCalls=0 lastReady=100000/100000 (prod froze control RPCs past the 60000ms client floor)
+## goroutine classifier peak signals:
+  peak total=33  peak bw(Batch-blocked)=0  peak bwmax=0min  peak in_commit=0
+## VERDICT (write-storm): peak bw(Batch-blocked goroutines)=0 peak bwmax=0min maxStatusRPC (see above)
+NO WRITE-STORM: best-effort writes stayed bounded (peak bw=0) - the single-writer fix works.
+## VERDICT (control plane): maxStatusRPC=644ms (bound 60000ms) failedStatusCalls=0 readyAfterBurst=100000/100000
+CONTROL PLANE RESPONSIVE: every status RPC under 60000ms and all 100000 jobs un-suspended
+## manager log freezes (gaps >5s; a gap >60s crosses the client receive floor):
+  GAP 49s ending T06:58:22
+  GAP 60s ending T06:59:22
+## CLEANUP
+  fixture stamp before=171751a94f146281c2ba5adcd0cdfb0d after=171751a94f146281c2ba5adcd0cdfb0d UNCHANGED

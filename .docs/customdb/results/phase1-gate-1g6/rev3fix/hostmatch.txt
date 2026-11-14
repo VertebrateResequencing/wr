@@ -1,0 +1,7 @@
+# exec_host match for h=node-5-1; awk: /usr/bin/gawk
+1 wrpX_a RUN node-5-1                    old=1  new=1
+2 wrpX_a RUN 4*node-5-12                 old=2  new=-
+3 wrpX_a RUN 2*node-5-2:2*node-5-1       old=3  new=3
+4 wrpX_a RUN node-5-1.example            old=4  new=4
+5 wrpX_a PEND node-5-1                   old=-  new=-
+6 other RUN node-5-1                     old=-  new=-

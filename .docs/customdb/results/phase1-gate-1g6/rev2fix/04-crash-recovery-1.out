@@ -1,0 +1,24 @@
+starting ISOLATED prod-mode manager (-s lsf) on :53486 / web :53487
+NOTE: our prod-mode LSF runners are wrpiso53486h442292666_* (WR_JOBNAME_TOKEN=iso53486h442292666);
+      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+[32mINFO[0m[11-14|08:22:43] wr manager  started on 172.27.71.182:53486, pid 43213 
+[32mINFO[0m[11-14|08:22:43] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53487/?token=[REDACTED] 
+pid 43213
+Added 1 new commands (0 were duplicates) to the queue using default identifier 'rgCR'
+start wait over at t+4s: manager reports the command running on node-13-17; marker=0 my wrp_ jobid=252195
+--- killing prod manager mid-run (LSF runner 252195 survives), then restarting (DB preserved) ---
+killed our manager pid 43213
+starting ISOLATED prod-mode manager (-s lsf) on :53486 / web :53487
+NOTE: our prod-mode LSF runners are wrpiso53486h442292666_* (WR_JOBNAME_TOKEN=iso53486h442292666);
+      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern.
+[32mINFO[0m[11-14|08:23:00] wr manager  started on 172.27.71.182:53486, pid 45003 
+[32mINFO[0m[11-14|08:23:00] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53487/?token=[REDACTED] 
+pid 45003
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+  rgCR[complete: 1 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+PASS: re-sent archive accepted (complete=1), command ran exactly once
+killed our manager pid 45003

@@ -1,0 +1,30 @@
+=== build  () start 05:05:56 load=0.83 free=136G
+=== build rc=0 in 15s; tail:
+    building wr from 8b7ccade -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s2/root/wr
+    built wsprobe -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s2/root/wsprobe
+    OK
+=== add-storm-fixture  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine6 WRDEV_ASL_FIXTURE=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s2/aslfixture-sweep.db) start 05:06:11 load=1.59 free=136G
+=== add-storm-fixture rc=0 in 345s; tail:
+    PASS: use it with:  WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s2/root WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s2/aslfixture-sweep.db /nfs/users/nfs_s/sb10/src/go/github.com/VertebrateResequencing/wr/developers/wrdev.sh add-storm-lsf
+    ## CLEANUP
+      our manager stopped; wrpiso53482h4065993733_* jobs left in LSF: 0
+      kept the generated fixture; working files are in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s2/root/aslfixgen-1794632771
+=== add-storm-lsf  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/s2/aslfixture-sweep.db ) start 05:11:57 load=1.86 free=133G
+=== add-storm-lsf rc=0 in 331s; tail:
+          max 178ms, none over the manager's 10s slow-request threshold
+    ## CLEANUP
+      our manager stopped; wrpiso53482h4065993733_* jobs left in LSF: 0
+      removed the working DB copy; the per-add logs are kept in /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s2/root/addstormlsf-1794633117
+=== unsuspend-burst  (WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10) start 05:17:27 load=3.42 free=133G
+=== unsuspend-burst rc=0 in 570s; tail:
+      GAP 40s ending T05:23:46
+      GAP 16s ending T05:24:02
+      GAP 60s ending T05:25:02
+    ## CLEANUP
+=== crash-recovery  () start 05:26:57 load=0.86 free=133G
+=== crash-recovery rc=0 in 45s; tail:
+      rgCR[complete: 0 running: 1 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+      rgCR[complete: 1 running: 0 ready: 0 dependent: 0 suspended: 0 lost contact: 0 delayed: 0 buried: 0  ] marker=1
+    PASS: re-sent archive accepted (complete=1), command ran exactly once
+    killed our manager pid 2761250
+sweep done 05:27:42

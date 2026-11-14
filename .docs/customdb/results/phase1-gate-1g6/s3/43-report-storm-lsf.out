@@ -1,0 +1,26 @@
+copying pristine DB /nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/pristine10 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g6/s3/root/.wr-prod_production/db (mutated by this run)
+db size: 4337278976 bytes; LSF jobs will be wrpiso53482h3171765268_*
+starting isolated PROD-mode manager (backups ON) on the big DB; debug=0 pprof=off
+[32mINFO[0m[11-14|06:51:24] wr manager  started on 172.27.71.182:53482, pid 3557386 
+[32mINFO[0m[11-14|06:51:24] wr's web interface can be reached at https://farm22-wrstat01.internal.sanger.ac.uk:53483/?token=[REDACTED] 
+pid 3557386
+adding 100000 sleep-1 jobs (limit reprolimit:2000, pad 0KB) across 100 mem groups
+Added 100000 new commands (0 were duplicates) to the queue using default identifier 'rgrs'
+t+1s complete=0/100000 running=0 delayed=0 lost=0 LSF_RUN=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=136ms
+t+45s complete=26742/100000 running=1883 delayed=0 lost=0 LSF_RUN=1947 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=1777ms
+t+75s complete=99999/100000 running=1 delayed=0 lost=0 LSF_RUN=2000 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=157ms
+t+106s complete=100000/100000 running=0 delayed=0 lost=0 LSF_RUN=0 badjob=0 confirmed_dead=n/a (needs WRDEV_DEBUG=1) archive_reject=0 status_rpc=208ms
+FULLY DRAINED (complete=100000 buried=0)
+## manager log freezes (gaps >5s) - a gap > 60s crosses the client receive floor:
+  GAP 30s ending T06:48:06
+  GAP 31s ending T06:48:37
+  GAP 31s ending T06:49:08
+  GAP 31s ending T06:49:39
+  GAP 30s ending T06:50:09
+  GAP 30s ending T06:50:39
+  GAP 26s ending T06:51:05
+  GAP 18s ending T06:51:23
+  GAP 59s ending T06:52:23
+  GAP 58s ending T06:53:23
+## VERDICT: badjobDelta=0 maxDelayed=0 maxLost=0 maxStatusRPC=1777ms
+## CLEANUP

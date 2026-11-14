@@ -1,0 +1,16 @@
+t=2026-11-14T02:25:10+0000 lvl=warn msg="could not reserve the web interface port yet, retrying" port=53493 err="bind: address already in use" caller=clog.go:338
+t=2026-11-14T02:25:13+0000 lvl=warn msg="stopped waiting for the web interface port" port=53493 waited=4s reserved=true caller=clog.go:338
+t=2026-11-14T02:25:15+0000 lvl=warn msg="database upgrade started" db=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/conv/.wr-prod_production/db caller=clog.go:338
+t=2026-11-14T02:25:15+0000 lvl=warn msg="database upgrade step started" state="convert database" detail="counting the jobs to convert" processed=0 caller=clog.go:338
+t=2026-11-14T02:31:03+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="converting database (10000 of 3000000 jobs processed)" processed=10000 took=5m47.785777096s caller=clog.go:338
+t=2026-11-14T02:31:33+0000 lvl=warn msg="database upgrade step still running" state="convert database" detail="converting database (1650000 of 3000000 jobs processed)" processed=1650000 took=6m17.85560941s caller=clog.go:338
+t=2026-11-14T02:32:17+0000 lvl=warn msg="database upgrade step complete" state="convert database" detail="converting database (3000000 of 3000000 jobs processed)" processed=3000000 took=7m2.06917863s caller=clog.go:338
+t=2026-11-14T02:32:17+0000 lvl=warn msg="database upgrade complete" db=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/conv/.wr-prod_production/db took=7m3.544848953s caller=clog.go:338
+t=2026-11-14T02:32:35+0000 lvl=warn msg="recovering: opened database" db=/nfs/hgi/wr/sb10-bigdb/customdb/1g6/conv/.wr-prod_production/db elapsed=7m21.713s caller=clog.go:338
+t=2026-11-14T02:32:35+0000 lvl=warn msg="recovering: decoded live jobs" jobs=0 runStates=0 elapsed=0s caller=clog.go:338
+t=2026-11-14T02:32:35+0000 lvl=warn msg="recovering: built dependency-group state" memberships=0 elapsed=0s caller=clog.go:338
+t=2026-11-14T02:32:35+0000 lvl=info msg="wr manager : created a new key and certificate for TLS"
+t=2026-11-14T02:32:35+0000 lvl=warn msg="recovering prior state" total=0 caller=clog.go:338
+t=2026-11-14T02:32:35+0000 lvl=warn msg="recovering: prior state recovered" restored=0 total=0 caller=clog.go:338
+t=2026-11-14T02:32:35+0000 lvl=info msg="wr manager  started on 172.27.71.182:53492, pid 1490006"
+t=2026-11-14T02:33:17+0000 lvl=info msg="wr manager on 172.27.71.182:53492 gracefully stopped (received SIGTERM)"

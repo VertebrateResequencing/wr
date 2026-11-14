@@ -1,0 +1,12 @@
+# sweep.sh add-storm-fixture run twice in one sweepdir with a stub wrdev.sh (sweep-rerun-stub-wrdev.sh)
+# that, like wrdev.sh, refuses an existing fixture path. head = 8b7ccade's sweep.sh, new = this item's.
+== head results.tsv (mode, rc)
+add-storm-fixture	rc=0
+add-storm-fixture	rc=1
+-- second run's last log line
+wrdev: <scratch>/sw2-head/aslfixture-sweep.db exists (an earlier fixture?); remove it, and its .aslmanifest, first
+== new results.tsv (mode, rc)
+add-storm-fixture	rc=0
+add-storm-fixture	rc=0
+-- second run's last log line
+fixture written
