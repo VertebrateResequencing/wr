@@ -71,6 +71,16 @@ const (
 	// reserves, standing in for the arrival rate of runners' requests.
 	kickResumeBenchReservePause = 50 * time.Microsecond
 
+	// slowReserveThreshold is how long a reserve must take to count as one the
+	// op delayed. It is Go's sync.Mutex starvation threshold: a waiter that has
+	// waited this long is handed the lock ahead of newcomers, so a reserve
+	// slower than this was kept from the queue's lock, not just queued behind
+	// the other reservers (a few microseconds each). In the 1g.4 runs the
+	// count of reserves over it per add was the same for an add twice as fast
+	// as base's (.docs/customdb/results/phase1-gate-1g4.md), so unlike a
+	// percentile it does not move with the size of the op's window.
+	slowReserveThreshold = time.Millisecond
+
 	kickResumeBenchAddBatch = 50
 	kickResumeBenchLetters  = "abcdefghijklmnopqrstuvwxyz"
 	kickResumeBenchRepGroup = "kick_resume_bench"
@@ -182,7 +192,7 @@ func benchKickResumeUnderReserveLoad(b *testing.B, prepare kickResumeBenchPrepar
 
 	ctx := context.Background()
 
-	var opTotal time.Duration
+	var opTotal, holdTotal time.Duration
 
 	latencies := make([]time.Duration, 0, b.N*kickResumeBenchFillers)
 
@@ -191,22 +201,24 @@ func benchKickResumeUnderReserveLoad(b *testing.B, prepare kickResumeBenchPrepar
 	for range b.N {
 		s, jobs, keys, stop := kickResumeBenchServer(ctx, b, prepare)
 
-		got, elapsed := kickResumeBenchRound(ctx, b, s, "", jobs, keys, op)
+		got, elapsed, hold := kickResumeBenchRound(ctx, b, s, "", jobs, keys, op)
 		latencies = append(latencies, got...)
 		opTotal += elapsed
+		holdTotal += hold
 
 		stop()
 	}
 
-	reportUnderReserveLoad(b, opTotal, latencies)
+	reportUnderReserveLoad(b, opTotal, holdTotal, latencies)
 }
 
-// kickResumeBenchRound starts the reservers, reserving from group, times op
-// over every target, stops the reservers, and returns the latencies of the
-// reserves that began while op ran and got a job, and how long op took.
+// kickResumeBenchRound starts the reservers, reserving from group, and a probe
+// of the queue's lock, times op over every target, stops them, and returns the
+// latencies of the reserves that began while op ran and got a job, how long op
+// took, and the longest hold of the queue's lock the probe saw meanwhile.
 func kickResumeBenchRound(ctx context.Context, b *testing.B, s *Server, group string, jobs []*Job,
 	keys []string, op kickResumeBenchOp,
-) ([]time.Duration, time.Duration) {
+) ([]time.Duration, time.Duration, time.Duration) {
 	b.Helper()
 
 	var (
@@ -215,7 +227,12 @@ func kickResumeBenchRound(ctx context.Context, b *testing.B, s *Server, group st
 		window  = make(chan struct{})
 		done    = make(chan struct{})
 		samples []time.Duration
+		hold    time.Duration
 	)
+
+	wg.Go(func() {
+		hold = kickResumeBenchLockProbe(s, window, done)
+	})
 
 	for range kickResumeBenchReservers {
 		wg.Go(func() {
@@ -246,7 +263,36 @@ func kickResumeBenchRound(ctx context.Context, b *testing.B, s *Server, group st
 		b.Fatalf("op handled %d of %d targets", n, len(keys))
 	}
 
-	return samples, elapsed
+	return samples, elapsed, hold
+}
+
+// kickResumeBenchLockProbe takes and releases the queue's read lock until done
+// is closed, pausing between takes as a reserver does, and returns the longest
+// it waited for the lock in a take that began after window was closed. A
+// reader waits only for the write hold under way when it asks (Go's RWMutex
+// lets waiting readers in before the next writer), so this approximates the
+// longest hold of the queue's write lock the probe saw while op ran, op's own
+// or a reserve's. It can fall short of that hold by up to the probe's period,
+// or miss a short hold entirely, and it adds the probe's own scheduling delay:
+// close for an add's hold of about 15ms, mostly that delay for the
+// microsecond holds of a per-item op.
+func kickResumeBenchLockProbe(s *Server, window, done <-chan struct{}) time.Duration {
+	var longest time.Duration
+
+	for !isClosed(done) {
+		inWindow := isClosed(window)
+		start := time.Now()
+
+		s.q.HasReady("")
+
+		if inWindow {
+			longest = max(longest, time.Since(start))
+		}
+
+		time.Sleep(kickResumeBenchReservePause)
+	}
+
+	return longest
 }
 
 // kickResumeBenchReserve reserves from group repeatedly until done is closed,
@@ -290,15 +336,28 @@ func isClosed(ch <-chan struct{}) bool {
 
 // reportUnderReserveLoad reports, per op, how long the op took in all and how
 // many reserves ran meanwhile, and the 50th, 99th and 100th percentiles of
-// their latencies.
-func reportUnderReserveLoad(b *testing.B, opTotal time.Duration, latencies []time.Duration) {
+// their latencies. The tail percentiles depend on how many reserves the op's
+// window held, so for developers/speed.sh's window-aware rule it also
+// reports, per op, the reserves slower than slowReserveThreshold
+// (slow-reserves/op), the median latency of those (slow-reserve-p50-us, 0 if
+// there were none) and the probe's estimate of the longest hold of the
+// queue's lock during an op (see kickResumeBenchLockProbe), averaged over the
+// ops (max-qlock-us); holdTotal is the sum of each op's estimate.
+func reportUnderReserveLoad(b *testing.B, opTotal, holdTotal time.Duration, latencies []time.Duration) {
 	b.Helper()
+
+	slow := slices.DeleteFunc(slices.Clone(latencies), func(d time.Duration) bool {
+		return d <= slowReserveThreshold
+	})
 
 	b.ReportMetric(float64(opTotal.Nanoseconds())/float64(b.N), "ns/op")
 	b.ReportMetric(float64(len(latencies))/float64(b.N), "reserves/op")
 	b.ReportMetric(durationPercentileMicros(latencies, percentile50), "reserve-p50-us")
 	b.ReportMetric(durationPercentileMicros(latencies, percentile99), "reserve-p99-us")
 	b.ReportMetric(durationPercentileMicros(latencies, percentileMax), "reserve-max-us")
+	b.ReportMetric(float64(len(slow))/float64(b.N), "slow-reserves/op")
+	b.ReportMetric(durationPercentileMicros(slow, percentile50), "slow-reserve-p50-us")
+	b.ReportMetric(float64(holdTotal.Nanoseconds())/float64(time.Microsecond)/float64(b.N), "max-qlock-us")
 }
 
 // durationPercentileMicros returns the pth percentile (nearest rank) of ds in
@@ -444,7 +503,8 @@ type kickResumeBenchOp func(ctx context.Context, s *Server, jobs []*Job, keys []
 // BenchmarkKickUnderReserveLoad measures kicking buried jobs with large commands
 // while reservers reserve from the same queue. ns/op is the time the kick of
 // every target takes; reserve-p50-us and reserve-p99-us are the latencies of
-// the reserves that began while the kick ran and got a job.
+// the reserves that began while the kick ran and got a job; the other figures
+// are as reportUnderReserveLoad describes.
 func BenchmarkKickUnderReserveLoad(b *testing.B) {
 	benchKickResumeUnderReserveLoad(b, kickResumeBenchBury,
 		func(ctx context.Context, s *Server, jobs []*Job, _ []string) int {
@@ -495,7 +555,7 @@ func benchAddManyUnderReserveLoad(b *testing.B, rc string) {
 
 	ctx := context.Background()
 
-	var opTotal time.Duration
+	var opTotal, holdTotal time.Duration
 
 	latencies := make([]time.Duration, 0, b.N*kickResumeBenchFillers)
 
@@ -516,7 +576,7 @@ func benchAddManyUnderReserveLoad(b *testing.B, rc string) {
 
 		jobs, keys := addManyBenchNewJobs(reqs)
 
-		got, elapsed := kickResumeBenchRound(ctx, b, s, item.ReserveGroup, jobs, keys,
+		got, elapsed, hold := kickResumeBenchRound(ctx, b, s, item.ReserveGroup, jobs, keys,
 			func(_ context.Context, _ *Server, jobs []*Job, _ []string) int {
 				inserts, _, errAdd := jq.Add(jobs, os.Environ(), true)
 				if errAdd != nil {
@@ -527,11 +587,12 @@ func benchAddManyUnderReserveLoad(b *testing.B, rc string) {
 			})
 		latencies = append(latencies, got...)
 		opTotal += elapsed
+		holdTotal += hold
 
 		stop()
 	}
 
-	reportUnderReserveLoad(b, opTotal, latencies)
+	reportUnderReserveLoad(b, opTotal, holdTotal, latencies)
 }
 
 // addManyBenchNewJobs returns addManyBenchJobs small jobs of the fillers'

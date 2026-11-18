@@ -118,8 +118,11 @@ those benchmarks by a deterministic, window-aware rule instead of the
 raw percentile delta. The rule regresses only if, compared with the
 base, the background operation slows, or it delays more reserves per
 operation, or its longest queue-lock hold grows, or the delayed reserves
-wait longer, each beyond the 10% bound or the benchmark's measured noise.
-Report the raw percentile alongside it. Test the rule
+wait longer, or (added by the orchestrator after review, 2026-11-18, as a
+stricter check) the median reserve wait (a median over thousands of
+samples per operation, which a shorter window does not skew the way it
+skews the tail) grows, each beyond the 10% bound or the benchmark's
+measured noise. Report the raw tail percentiles alongside it. Test the rule
 on recorded base and head outputs, including the 1g.4 runs in
 [results/phase1-gate-1g4.md](../results/phase1-gate-1g4.md), then rerun
 `make speed-full` with it.

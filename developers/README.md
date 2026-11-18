@@ -2,8 +2,9 @@
 
 Developer tooling for reliability work on wr. **Not part of the shipped
 binary.** Apart from shell scripts it holds the Go commands
-`prodsim/` and `soak/*/`. `make lint` lints them and `go build ./...` compiles
-them. Only `prodsim/` has tests, which `make test` runs.
+`prodsim/`, `speedjudge/` and `soak/*/`. `make lint` lints them and
+`go build ./...` compiles them. `prodsim/` and `speedjudge/` have tests, which
+`make test` runs.
 
 Start with [`../DEVELOPERS.md`](../DEVELOPERS.md), then use `wrdev.sh`:
 
@@ -23,7 +24,8 @@ binary. Everything it creates lives under `$WRDEV_ROOT` (default
 
 `speed.sh` is what `make speed` and `make speed-full` run. It benchmarks the
 hot paths and runs the local speed scenarios for this tree and a baseline, then
-compares them with benchstat. See
+compares them with benchstat, and `speedjudge/` judges benchstat's CSV for
+regressions. See
 [`../DEVELOPERS.md`](../DEVELOPERS.md) §5 for when it is required, and the
 script's header for its knobs.
 

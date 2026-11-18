@@ -1,0 +1,2 @@
+REGRESSION ScenarioDepGranularity peak-rss-B: +18.38% (p=0.002)
+REGRESSION ScenarioDepGranularity add-sec: +620.79% (p=0.002)

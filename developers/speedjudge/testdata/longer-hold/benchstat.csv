@@ -1,0 +1,53 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+"cpu: Intel Xeon Processor (Skylake, IBRS)"
+,base,,head,,,
+,sec/op,CI,sec/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0.5656000000000001,4%,0.5656000000000001,4%,~,p=1.000 n=6
+geomean,0.5656000000000001,,0.5656000000000001,,+0.00%,
+
+,base,,head,,,
+,reserves/op,CI,reserves/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,15150,4%,15150,4%,~,p=1.000 n=6
+geomean,15150.000000000013,,15150.000000000013,,+0.00%,
+
+,base,,head,,,
+,reserve-p50-us,CI,reserve-p50-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,6.5649999999999995,4%,6.5649999999999995,4%,~,p=1.000 n=6
+geomean,6.5649999999999995,,6.5649999999999995,,+0.00%,
+
+,base,,head,,,
+,reserve-p99-us,CI,reserve-p99-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,126.25,4%,126.25,4%,~,p=1.000 n=6
+geomean,126.25000000000003,,126.25000000000003,,+0.00%,
+
+,base,,head,,,
+,reserve-max-us,CI,reserve-max-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,18180,4%,18180,4%,~,p=1.000 n=6
+geomean,18179.99999999999,,18179.99999999999,,+0.00%,
+
+,base,,head,,,
+,slow-reserves/op,CI,slow-reserves/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,18.45,17%,18.45,17%,~,p=1.000 n=6
+geomean,18.45,,18.45,,+0.00%,
+
+,base,,head,,,
+,max-qlock-us,CI,max-qlock-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,17170,4%,24038,4%,+40.00%,p=0.002 n=6
+geomean,17169.999999999993,,24038.00000000001,,+40.00%,
+
+,base,,head,,,
+,slow-reserve-p50-us,CI,slow-reserve-p50-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,1515,4%,1515,4%,~,p=1.000 n=6
+geomean,1514.9999999999995,,1514.9999999999995,,+0.00%,
+
+,base,,head,,,
+,B/op,CI,B/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,1.6766e+08,4%,1.6766e+08,4%,~,p=1.000 n=6
+geomean,1.676600000000001e+08,,1.676600000000001e+08,,+0.00%,
+
+,base,,head,,,
+,allocs/op,CI,allocs/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,808000,4%,808000,4%,~,p=1.000 n=6
+geomean,807999.9999999995,,807999.9999999995,,+0.00%,

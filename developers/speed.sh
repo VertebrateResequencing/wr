@@ -9,7 +9,10 @@
 # temporary git worktree. BASE and HEAD rounds are interleaved so drift in host
 # load hits both alike. benchstat compares them; a change worse than
 # SPEED_THRESHOLD percent at p < SPEED_ALPHA fails the gate, as does any
-# scenario that fails its own absolute thresholds on HEAD.
+# scenario that fails its own absolute thresholds on HEAD. developers/speedjudge
+# applies that rule, and judges jobqueue's *UnderReserveLoad benchmarks by its
+# window-aware rule instead of their raw reserve tail percentiles
+# (DEVELOPERS.md).
 #
 #   developers/speed.sh [quick|full]
 #
@@ -95,7 +98,7 @@ mkdir -p "$RUN"
 WORKTREES=()
 cleanup() {
   [ "${SPEED_KEEP:-0}" = 1 ] && return 0
-  rm -f "$RUN"/*.test "$RUN"/wrdev-*/wr "$RUN"/wrdev-*/wsprobe "$RUN"/wrdev-*/depgran_fixture_db
+  rm -f "$RUN"/*.test "$RUN"/speedjudge "$RUN"/wrdev-*/wr "$RUN"/wrdev-*/wsprobe "$RUN"/wrdev-*/depgran_fixture_db
   for w in "${WORKTREES[@]}"; do git -C "$REPO" worktree remove --force "$w" >/dev/null 2>&1 || true; done
 }
 trap cleanup EXIT
@@ -110,6 +113,10 @@ if [ ! -x "$BENCHSTAT" ]; then
     || die "could not install benchstat"
   mv "$SPEED_DIR/tools/bin/benchstat" "$BENCHSTAT"
 fi
+
+# --- the judge, built first so a broken one fails before the hour of runs -----
+( cd "$REPO" && CGO_ENABLED=0 go build -o "$RUN/speedjudge" ./developers/speedjudge ) \
+  || die "could not build developers/speedjudge"
 
 # --- trees --------------------------------------------------------------------
 # tree_dir <label> <ref|dir> sets TREE_DIR to a directory holding that tree.
@@ -268,19 +275,9 @@ echo "================ benchstat ================"
 if [ -n "$BASE_DIR" ]; then
   ( cd "$RUN" && "$BENCHSTAT" base=base.txt head=head.txt ) | tee "$RUN/benchstat.txt"
   ( cd "$RUN" && "$BENCHSTAT" -format csv base=base.txt head=head.txt ) >"$RUN/benchstat.csv" 2>/dev/null
-  # A table starts with a ",<unit>,CI,<unit>,CI,vs base,P" header; rows are
-  # name,base,CI,head,CI,delta,P. benchstat writes "~" when not significant at
-  # its default alpha of 0.05, so also check P against SPEED_ALPHA.
-  awk -F, -v thr="$SPEED_THRESHOLD" -v alpha="$SPEED_ALPHA" '
-    $1 == "" && $7 == "P" { unit = $2; next }
-    $1 == "" || $1 == "geomean" || unit == "" { next }
-    $6 ~ /^[+-][0-9.]+%$/ {
-      d = $6; sub(/%/, "", d); d += 0
-      p = $7; sub(/^p=/, "", p); sub(/ .*/, "", p); p += 0
-      higher = (unit ~ /\/s$/ || unit == "throughput-factor")
-      worse = higher ? -d : d
-      if (worse > thr && p < alpha) printf "REGRESSION %s %s: %s (p=%s)\n", $1, unit, $6, p
-    }' "$RUN/benchstat.csv" >"$RUN/regressions.txt"
+  "$RUN/speedjudge" -threshold "$SPEED_THRESHOLD" -alpha "$SPEED_ALPHA" "$RUN/benchstat.csv" >"$RUN/judgement.txt" \
+    || die "could not judge $RUN/benchstat.csv"
+  grep '^REGRESSION ' "$RUN/judgement.txt" >"$RUN/regressions.txt" || true
   while read -r r; do FAILED+=("$r"); done <"$RUN/regressions.txt"
 else
   ( cd "$RUN" && "$BENCHSTAT" head.txt ) | tee "$RUN/benchstat.txt"
@@ -288,7 +285,11 @@ fi
 
 echo
 echo "================ verdict ================"
-echo "results: $RUN (benchstat.txt, *.txt raw, *.out scenario logs)"
+echo "results: $RUN (benchstat.txt, judgement.txt, *.txt raw, *.out scenario logs)"
+if [ -s "$RUN/judgement.txt" ] && grep -qE '^(WINDOW|NOTE) ' "$RUN/judgement.txt"; then
+  echo "window-aware rule (raw reserve tail percentiles are informational):"
+  grep -vE '^(REGRESSION |$)' "$RUN/judgement.txt" | sed 's/^/  /'
+fi
 if [ "${#FAILED[@]}" -gt 0 ]; then
   printf '  %s\n' "${FAILED[@]}"
   echo "FAIL: make speed found ${#FAILED[@]} problem(s) (threshold ${SPEED_THRESHOLD}% at p<${SPEED_ALPHA})"

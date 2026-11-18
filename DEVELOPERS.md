@@ -255,7 +255,79 @@ built in a temporary worktree. Knobs:
   `${TMPDIR:-/tmp}/wr-speed-$USER`).
 
 The header of `developers/speed.sh` lists the rest. Every run keeps its raw
-results and `benchstat.txt` under `$SPEED_DIR/run-<epoch>/`.
+results, `benchstat.txt` and the verdict's `judgement.txt` under
+`$SPEED_DIR/run-<epoch>/`. `developers/speedjudge` reads benchstat's CSV and
+makes the verdict; its tests (part of `make test`) replay recorded runs,
+1g.4's among them, and the synthetic cases `testdata/synthetic.py` writes.
+
+**Benchmarks under reserve load.** jobqueue's `BenchmarkKickUnderReserveLoad`,
+`BenchmarkResumeUnderReserveLoad`, `BenchmarkSuspendUnderReserveLoad` and
+`BenchmarkAddManyUnderReserveLoad` time a background operation while 8
+goroutines reserve from the same queue. They are not in the default set: add
+them with `SPEED_BENCH` (6 rounds of both trees take about 1.5 hours). A raw
+tail percentile (p99, max) of the reserves taken during the operation
+misjudges them: a faster operation has a shorter window, which holds fewer
+reserves, so the same few slow ones make a larger share and the percentile
+rises with no reserve worse off. So when both trees report the window figures
+below, the gate judges such a benchmark by them instead. It regresses only if
+one of them is more than 10% worse at p < 0.05 (the same threshold and alpha
+as every other figure):
+
+- (a) `sec/op`: how long the operation took.
+- (b) `slow-reserves/op`: how many reserves took over 1ms, per operation. 1ms
+  is Go's mutex starvation threshold, the point past which a waiter is being
+  kept from the lock, not queuing behind the other reservers. In 1g.4, an add
+  twice as fast as base's still delayed as many reserves past it per add.
+- (c) `max-qlock-us`: the longest wait of a paced reader of the queue's lock
+  during the operation, averaged per operation. A reader waits only for the
+  hold under way, so this approximates the longest hold the reader saw: it
+  can fall short by up to the reader's period, or miss a short hold, and it
+  adds the reader's own scheduling delay. It is close for an add's hold of
+  about 15ms; for the per-item holds of kick, resume and suspend (a few
+  microseconds) it mostly measures that delay.
+- (d) `slow-reserve-p50-us`: the median latency of the reserves counted in
+  (b). The median, because the mean and p99 of so few are set by the longest
+  wait, which (c) judges, and their total per operation would repeat (b). It
+  is noisy, and for kick, resume and suspend it fails safe but has little
+  power.
+- (e) `reserve-p50-us`: the median latency of every reserve taken during the
+  operation. A median over thousands of reserves per operation, which a
+  shorter window does not skew the way it skews the tail. It catches a
+  slowdown of every reserve by less than 1ms, which (b) and (d) cannot see
+  and (c) cannot tell from the probe's noise for per-item operations.
+
+On an idle host, kick, resume and suspend delay almost no reserve past 1ms, so
+(b) and (d) are mostly 0 on both trees, and (c) reads tens to hundreds of
+microseconds. Load raises all three on both trees alike: on a loaded host,
+1g.4's review measured 17 to 43 slow reserves per operation, a
+`slow-reserve-p50-us` of 1.2 to 3.5ms and a `max-qlock-us` of 0.5 to 13ms.
+
+A criterion whose figure either tree lacks fails. `reserve-p99-us`,
+`reserve-max-us` and `reserves/op` are reported as informational; `B/op` and
+`allocs/op` are judged as usual. The verdict prints a `WINDOW` block for each
+such benchmark, naming any criterion that failed.
+
+A base from before these figures reports none of them, so its under-load
+benchmarks are judged by their raw figures, reserve percentiles included, and
+the verdict notes it. To judge them by the window-aware rule, give that base
+this tree's harness and pass it as a prepared tree; a base without
+`settleStore` (no log store) needs the stub too, which does what
+`settleStore` does on bbolt, nothing:
+
+```bash
+git archive <base-sha> | tar -x -C <dir>
+cp jobqueue/kick_resume_bench_test.go <dir>/jobqueue/
+printf 'package jobqueue\n\nimport "testing"\n\nfunc settleStore(testing.TB, *Server) {}\n' \
+  >"<dir>/jobqueue/settle_stub_test.go"
+SPEED_BASE=<dir> make speed-full
+```
+
+Two outcomes are stricter than the awk rule `speed.sh` used before
+`speedjudge`. A figure that rises from 0 on base fails (at p < `SPEED_ALPHA`)
+in any unit where higher is worse, where the awk rule skipped it because
+benchstat writes `?` for its change. And a `SPEED_ALPHA` above 0.05 now flags
+a row benchstat marks `~`, as `speedjudge` reads the p-value rather than
+benchstat's verdict at its own alpha of 0.05.
 
 `make speed-full` adds the in-process big-DB scenarios: `add-storm`,
 `archive-rate` and `archive-ceiling`. They need copies of production-shaped

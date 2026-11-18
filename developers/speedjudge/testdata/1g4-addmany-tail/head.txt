@@ -1,0 +1,11 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+BenchmarkAddManyUnderReserveLoad/norc-8 1 264000000 ns/op 141 reserve-p99-us 7331 reserves/op 12 slow-reserves/op 14078 max-qlock-us
+BenchmarkAddManyUnderReserveLoad/norc-8 1 292000000 ns/op 138 reserve-p99-us 11226 reserves/op 17 slow-reserves/op 15255 max-qlock-us
+BenchmarkAddManyUnderReserveLoad/norc-8 1 288000000 ns/op 145 reserve-p99-us 7799 reserves/op 16 slow-reserves/op 14740 max-qlock-us
+BenchmarkAddManyUnderReserveLoad/norc-8 1 298000000 ns/op 147 reserve-p99-us 9013 reserves/op 16 slow-reserves/op 16180 max-qlock-us
+BenchmarkAddManyUnderReserveLoad/rc-8 1 279000000 ns/op 135 reserve-p99-us 8539 reserves/op 16 slow-reserves/op 16060 max-qlock-us
+BenchmarkAddManyUnderReserveLoad/rc-8 1 294000000 ns/op 136 reserve-p99-us 8075 reserves/op 11 slow-reserves/op 14481 max-qlock-us
+BenchmarkAddManyUnderReserveLoad/rc-8 1 314000000 ns/op 147 reserve-p99-us 9801 reserves/op 24 slow-reserves/op 21669 max-qlock-us
+BenchmarkAddManyUnderReserveLoad/rc-8 1 282000000 ns/op 160 reserve-p99-us 9699 reserves/op 15 slow-reserves/op 14813 max-qlock-us

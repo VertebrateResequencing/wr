@@ -1,0 +1,102 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+"cpu: Intel Xeon Processor (Skylake, IBRS)"
+,base,,head,,,
+,sec/op,CI,sec/op,CI,vs base,P
+AddDepGroupMember-8,0.3744099595,20%,0.282723069,13%,-24.49%,p=0.002 n=6
+KickUnderReserveLoad-8,0.1147443545,18%,0.0300649645,6%,-73.80%,p=0.002 n=6
+ResumeUnderReserveLoad-8,0.103372528,12%,0.01353431,4%,-86.91%,p=0.002 n=6
+SuspendUnderReserveLoad-8,0.09856555850000001,9%,0.0126070095,4%,-87.21%,p=0.002 n=6
+AddManyUnderReserveLoad/norc-8,0.5774919205,5%,0.2925074125,8%,-49.35%,p=0.002 n=6
+AddManyUnderReserveLoad/rc-8,0.5866861620000001,6%,0.30265440450000003,6%,-48.41%,p=0.002 n=6
+ReadyBacklogSnapshot-8,0.0014678540000000002,13%,0.0014017425000000003,16%,~,p=0.485 n=6
+geomean,0.11175407811048686,,0.040540480697652474,,-63.72%,
+
+,base,,head,,,
+,B/op,CI,B/op,CI,vs base,P
+AddDepGroupMember-8,1.0716595e+08,0%,1.16269599e+08,0%,+8.49%,p=0.002 n=6
+KickUnderReserveLoad-8,1.981321155e+08,4%,1.5193184e+07,13%,-92.33%,p=0.002 n=6
+ResumeUnderReserveLoad-8,1.9150124e+08,5%,8.000016e+06,20%,-95.82%,p=0.002 n=6
+SuspendUnderReserveLoad-8,1.899561695e+08,4%,7.3856205e+06,10%,-96.11%,p=0.002 n=6
+AddManyUnderReserveLoad/norc-8,1.66867792e+08,1%,1.59537558e+08,1%,-4.39%,p=0.002 n=6
+AddManyUnderReserveLoad/rc-8,1.6860303e+08,1%,1.61718827e+08,1%,-4.08%,p=0.002 n=6
+ReadyBacklogSnapshot-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,-72.34%,
+
+,base,,head,,,
+,allocs/op,CI,allocs/op,CI,vs base,P
+AddDepGroupMember-8,1.1756905e+06,0%,602489,0%,-48.75%,p=0.002 n=6
+KickUnderReserveLoad-8,97242.5,5%,108373,11%,+11.45%,p=0.041 n=6
+ResumeUnderReserveLoad-8,57563.5,14%,53755.5,11%,-6.62%,p=0.002 n=6
+SuspendUnderReserveLoad-8,58180,12%,49353,8%,-15.17%,p=0.009 n=6
+AddManyUnderReserveLoad/norc-8,798667.5,2%,367909,2%,-53.93%,p=0.002 n=6
+AddManyUnderReserveLoad/rc-8,892220.5,2%,461174.5,1%,-48.31%,p=0.002 n=6
+ReadyBacklogSnapshot-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,-27.26%,
+
+,base,,head,,,
+,reserve-max-us,CI,reserve-max-us,CI,vs base,P
+KickUnderReserveLoad-8,8171,38%,6424,58%,~,p=0.589 n=6
+ResumeUnderReserveLoad-8,7260.5,42%,4844,77%,-33.28%,p=0.026 n=6
+SuspendUnderReserveLoad-8,7758,42%,5666.5,87%,~,p=0.180 n=6
+AddManyUnderReserveLoad/norc-8,19033,13%,18853.5,15%,~,p=0.937 n=6
+AddManyUnderReserveLoad/rc-8,19559.5,14%,17547.5,13%,-10.29%,p=0.026 n=6
+geomean,11137.07905286178,,8978.139710260268,,-19.39%,
+
+,base,,head,,,
+,reserve-p50-us,CI,reserve-p50-us,CI,vs base,P
+KickUnderReserveLoad-8,8.237,35%,64.1,21%,+678.20%,p=0.002 n=6
+ResumeUnderReserveLoad-8,14.475,18%,49.825,2%,+244.21%,p=0.002 n=6
+SuspendUnderReserveLoad-8,10.895,15%,65.97,8%,+505.51%,p=0.002 n=6
+AddManyUnderReserveLoad/norc-8,6.374499999999999,21%,7.4135,11%,~,p=0.065 n=6
+AddManyUnderReserveLoad/rc-8,5.8565000000000005,6%,6.7595,16%,~,p=0.065 n=6
+geomean,8.652464561685292,,25.393229457782613,,+193.48%,
+
+,base,,head,,,
+,reserve-p99-us,CI,reserve-p99-us,CI,vs base,P
+KickUnderReserveLoad-8,514.75,39%,1140,6%,+121.47%,p=0.002 n=6
+ResumeUnderReserveLoad-8,719.8,32%,1179,14%,+63.80%,p=0.002 n=6
+SuspendUnderReserveLoad-8,612.8,19%,1350,5%,+120.30%,p=0.002 n=6
+AddManyUnderReserveLoad/norc-8,127,14%,149.65,14%,+17.83%,p=0.015 n=6
+AddManyUnderReserveLoad/rc-8,118.15,9%,141.75,7%,+19.97%,p=0.002 n=6
+geomean,320.97623624946834,,521.2792559459515,,+62.40%,
+
+,base,,head,,,
+,reserves/op,CI,reserves/op,CI,vs base,P
+KickUnderReserveLoad-8,5399.5,12%,904.05,7%,-83.26%,p=0.002 n=6
+ResumeUnderReserveLoad-8,4554,10%,369.70000000000005,11%,-91.88%,p=0.002 n=6
+SuspendUnderReserveLoad-8,4643.5,5%,265.95,13%,-94.27%,p=0.002 n=6
+AddManyUnderReserveLoad/norc-8,15725.5,23%,8877.5,20%,-43.55%,p=0.002 n=6
+AddManyUnderReserveLoad/rc-8,15361.5,16%,9603.5,10%,-37.48%,p=0.002 n=6
+geomean,7729.04831216272,,1499.382450988777,,-80.60%,
+
+,base,,head,,,
+,jobs/s,CI,jobs/s,CI,vs base,P
+ScenarioReportStorm,3152.1,1%,3295,3%,+4.53%,p=0.002 n=6
+geomean,3152.099999999997,,3294.9999999999973,,+4.53%,
+
+,base,,head,,,
+,max-archive-ms,CI,max-archive-ms,CI,vs base,P
+ScenarioReportStorm,104,162%,116,202%,~,p=0.589 n=6
+geomean,103.99999999999999,,115.99999999999999,,+11.54%,
+
+,base,,head,,,
+,wall-sec,CI,wall-sec,CI,vs base,P
+ScenarioReportStorm,6.345,1%,6.07,3%,-4.33%,p=0.002 n=6
+geomean,6.345,,6.070000000000001,,-4.33%,
+
+,base,,head,,,
+,peak-rss-B,CI,peak-rss-B,CI,vs base,P
+ScenarioDepGranularity,3.25e+08,6%,2.63e+08,2%,-19.08%,p=0.002 n=6
+geomean,3.2500000000000036e+08,,2.629999999999997e+08,,-19.08%,
+
+,base,,head,,,
+,recovery-sec,CI,recovery-sec,CI,vs base,P
+ScenarioDepGranularity,0.20500000000000002,17%,0.194,12%,~,p=0.175 n=6
+geomean,0.20500000000000002,,0.19400000000000003,,-5.37%,
+
+,base,,head,,,
+,add-sec,CI,add-sec,CI,vs base,P
+ScenarioDepGranularity,0.5435000000000001,11%,0.332,8%,-38.91%,p=0.002 n=6
+geomean,0.5435000000000001,,0.332,,-38.91%,

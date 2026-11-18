@@ -1,0 +1,29 @@
+,base,,head,,,
+,jobs/s,CI,jobs/s,CI,vs base,P
+ScenarioReportStorm,2123.95,48%,2440.1,36%,~,p=0.310 n=6
+geomean,2123.9499999999994,,2440.1,,+14.89%,
+
+,base,,head,,,
+,max-archive-ms,CI,max-archive-ms,CI,vs base,P
+ScenarioReportStorm,174.5,51%,108,29%,-38.11%,p=0.028 n=6
+geomean,174.49999999999997,,108.00000000000003,,-38.11%,
+
+,base,,head,,,
+,wall-sec,CI,wall-sec,CI,vs base,P
+ScenarioReportStorm,11.879999999999999,47%,8.855,32%,~,p=0.310 n=6
+geomean,11.879999999999999,,8.855000000000002,,-25.46%,
+
+,base,,head,,,
+,peak-rss-B,CI,peak-rss-B,CI,vs base,P
+ScenarioDepGranularity,3.21e+08,4%,3.8e+08,2%,+18.38%,p=0.002 n=6
+geomean,3.210000000000004e+08,,3.800000000000002e+08,,+18.38%,
+
+,base,,head,,,
+,recovery-sec,CI,recovery-sec,CI,vs base,P
+ScenarioDepGranularity,0.1945,11%,0.214,16%,~,p=0.236 n=6
+geomean,0.19449999999999998,,0.214,,+10.03%,
+
+,base,,head,,,
+,add-sec,CI,add-sec,CI,vs base,P
+ScenarioDepGranularity,0.5674999999999999,10%,4.0905000000000005,4%,+620.79%,p=0.002 n=6
+geomean,0.5674999999999999,,4.0905000000000005,,+620.79%,

@@ -1,0 +1,32 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+,base,,head,,,
+,sec/op,CI,sec/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0.5640000000000001,∞,0.29000000000000004,∞,-48.58%,p=0.029 n=4
+AddManyUnderReserveLoad/rc-8,0.5815000000000001,∞,0.28800000000000003,∞,-50.47%,p=0.029 n=4
+geomean,0.5726831584742126,,0.2889982698910152,,-49.54%,
+
+,base,,head,,,
+,reserve-p99-us,CI,reserve-p99-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,128.5,∞,143,∞,+11.28%,p=0.029 n=4
+AddManyUnderReserveLoad/rc-8,115.5,∞,141.5,∞,+22.51%,p=0.029 n=4
+geomean,121.82672120680262,,142.24802283335958,,+16.76%,
+
+,base,,head,,,
+,reserves/op,CI,reserves/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,18036.5,∞,8406,∞,-53.39%,p=0.029 n=4
+AddManyUnderReserveLoad/rc-8,15842,∞,9119,∞,-42.44%,p=0.029 n=4
+geomean,16903.67513294078,,8755.244942318863,,-48.21%,
+
+,base,,head,,,
+,slow-reserves/op,CI,slow-reserves/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,14,∞,16,∞,~,p=0.771 n=4
+AddManyUnderReserveLoad/rc-8,16,∞,15.5,∞,~,p=0.686 n=4
+geomean,14.96662954709577,,15.748015748023617,,+5.22%,
+
+,base,,head,,,
+,max-qlock-us,CI,max-qlock-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,16593,∞,14997.5,∞,-9.62%,p=0.029 n=4
+AddManyUnderReserveLoad/rc-8,17727,∞,15436.5,∞,~,p=0.343 n=4
+geomean,17150.6300467359,,15215.416811576346,,-11.28%,

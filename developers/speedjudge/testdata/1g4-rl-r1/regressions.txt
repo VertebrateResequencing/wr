@@ -1,0 +1,2 @@
+REGRESSION AddManyUnderReserveLoad/norc-8 reserve-p99-us: +17.46% (p=0.004)
+REGRESSION AddManyUnderReserveLoad/rc-8 reserve-p99-us: +16.11% (p=0.026)

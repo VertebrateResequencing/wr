@@ -1,0 +1,53 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+"cpu: Intel Xeon Processor (Skylake, IBRS)"
+,base,,head,,,
+,sec/op,CI,sec/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0.5656000000000001,4%,0.29411200000000004,4%,-48.00%,p=0.002 n=6
+geomean,0.5656000000000001,,0.2941120000000001,,-48.00%,
+
+,base,,head,,,
+,reserves/op,CI,reserves/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,15150,4%,9090,4%,-40.00%,p=0.002 n=6
+geomean,15150.000000000013,,9089.999999999995,,-40.00%,
+
+,base,,head,,,
+,reserve-p50-us,CI,reserve-p50-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,6.5649999999999995,4%,6.5649999999999995,4%,~,p=1.000 n=6
+geomean,6.5649999999999995,,6.5649999999999995,,+0.00%,
+
+,base,,head,,,
+,reserve-p99-us,CI,reserve-p99-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,126.25,4%,151.5,4%,+20.00%,p=0.002 n=6
+geomean,126.25000000000003,,151.50000000000006,,+20.00%,
+
+,base,,head,,,
+,reserve-max-us,CI,reserve-max-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,18180,4%,20907,4%,+15.00%,p=0.002 n=6
+geomean,18179.99999999999,,20907,,+15.00%,
+
+,base,,head,,,
+,slow-reserves/op,CI,slow-reserves/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,18.45,17%,19.3725,17%,~,p=0.515 n=6
+geomean,18.45,,19.372499999999995,,+5.00%,
+
+,base,,head,,,
+,max-qlock-us,CI,max-qlock-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,17170,4%,16654.9,4%,~,p=0.071 n=6
+geomean,17169.999999999993,,16654.899999999987,,-3.00%,
+
+,base,,head,,,
+,slow-reserve-p50-us,CI,slow-reserve-p50-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,1515,4%,1469.55,4%,~,p=0.071 n=6
+geomean,1514.9999999999995,,1469.5500000000004,,-3.00%,
+
+,base,,head,,,
+,B/op,CI,B/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,1.6766e+08,4%,1.59277e+08,4%,-5.00%,p=0.009 n=6
+geomean,1.676600000000001e+08,,1.5927699999999988e+08,,-5.00%,
+
+,base,,head,,,
+,allocs/op,CI,allocs/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,808000,4%,371680,4%,-54.00%,p=0.002 n=6
+geomean,807999.9999999995,,371680.0000000003,,-54.00%,
