@@ -1,0 +1,43 @@
+# run2 heap profile 008699 (15:25:54, pid 1616846, 74s after its start finished with 2,179,296 live jobs):
+# in-use bytes by allocation site. slices.Clone under collectFileRecords is the record bodies decodePriorJobs
+# read; flatReader.str aliases them (store_flat.go), so they live as long as the recovered jobs do.
+Time: 2026-11-18 15:25:54 GMT
+Showing nodes accounting for 24.49GB, 86.59% of 28.28GB total
+Dropped 204 nodes (cum <= 0.14GB)
+Showing top 22 nodes out of 55
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%    28.11GB 99.38%  runtime.main
+         0     0%     0%    28.11GB 99.37%  github.com/VertebrateResequencing/wr/cmd.Execute
+         0     0%     0%    28.11GB 99.37%  github.com/VertebrateResequencing/wr/cmd.init.func19
+         0     0%     0%    28.11GB 99.37%  github.com/VertebrateResequencing/wr/cmd.serveManager
+         0     0%     0%    28.11GB 99.37%  github.com/VertebrateResequencing/wr/cmd.startJQ
+         0     0%     0%    28.11GB 99.37%  github.com/VertebrateResequencing/wr/jobqueue.Serve
+         0     0%     0%    28.11GB 99.37%  github.com/spf13/cobra.(*Command).Execute (inline)
+         0     0%     0%    28.11GB 99.37%  github.com/spf13/cobra.(*Command).ExecuteC
+         0     0%     0%    28.11GB 99.37%  github.com/spf13/cobra.(*Command).execute
+         0     0%     0%    28.11GB 99.37%  main.main
+         0     0%     0%    27.19GB 96.13%  github.com/VertebrateResequencing/wr/jobqueue.(*Server).startPriorStateRecovery
+         0     0%     0%    25.39GB 89.77%  github.com/VertebrateResequencing/wr/jobqueue.(*Server).decodePriorJobs
+         0     0%     0%    25.39GB 89.77%  github.com/VertebrateResequencing/wr/jobqueue.(*logStore).liveJobs
+         0     0%     0%    25.39GB 89.77%  github.com/VertebrateResequencing/wr/jobqueue.(*logStore).recoverIncompleteJobs
+         0     0%     0%    23.09GB 81.64%  github.com/VertebrateResequencing/wr/jobqueue/wal.giveRecords
+         0     0%     0%    22.20GB 78.47%  github.com/VertebrateResequencing/wr/jobqueue.(*logStore).collectFileRecords
+         0     0%     0%    22.20GB 78.47%  github.com/VertebrateResequencing/wr/jobqueue.(*logStore).collectRecords
+         0     0%     0%    22.20GB 78.47%  github.com/VertebrateResequencing/wr/jobqueue.(*logStore).collectRecords.func1.func1
+   22.20GB 78.47% 78.47%    22.20GB 78.47%  slices.Clone[go.shape.[]uint8,go.shape.uint8]
+         0     0% 78.47%    20.14GB 71.22%  github.com/VertebrateResequencing/wr/jobqueue/wal.Scan
+    0.02GB 0.057% 78.53%     3.20GB 11.30%  github.com/VertebrateResequencing/wr/jobqueue.(*logStore).jobsOf
+    2.28GB  8.06% 86.59%     3.18GB 11.24%  github.com/VertebrateResequencing/wr/jobqueue.(*logStore).jobOf
+
+# battery10 (bbolt) pre-stop heap profile 1791175931 (05:52:11 BST), next start decoded 261,221 live jobs:
+Time: 2026-10-05 05:52:11 BST
+Showing nodes accounting for 1793.82MB, 94.04% of 1907.57MB total
+Dropped 66 nodes (cum <= 9.54MB)
+Showing top 6 nodes out of 57
+      flat  flat%   sum%        cum   cum%
+ 1368.40MB 71.73% 71.73%  1368.40MB 71.73%  github.com/ugorji/go/codec.(*decoderBase).detach2Str (inline)
+  256.25MB 13.43% 85.17%  1741.67MB 91.30%  github.com/VertebrateResequencing/wr/jobqueue.(*db).decodeJob
+   70.52MB  3.70% 88.87%    77.02MB  4.04%  github.com/ugorji/go/codec.fastpathDTBincBytes.DecMapStringStringL
+   37.65MB  1.97% 90.84%    37.65MB  1.97%  github.com/VertebrateResequencing/wr/jobqueue.(*jobGroupShard).recordLocked
+   31.50MB  1.65% 92.49%    40.50MB  2.12%  github.com/VertebrateResequencing/wr/jobqueue.newJobKeyMemo
+   29.50MB  1.55% 94.04%    33.50MB  1.76%  github.com/VertebrateResequencing/wr/jobqueue.(*Server).recoveredItemDef

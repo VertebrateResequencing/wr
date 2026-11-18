@@ -1,0 +1,108 @@
+# The checkpointer's goroutine in each pre-stop goroutine dump (debug=2) of run2 that has one (function lines only).
+# In five of the six dumps (13:15:55 to 14:38:19) it is in cutAndFold -> foldNow, spec Checkpoints step 2
+# (fold to the cut); at 14:03:57 it was idle in runCheckpointer. The store directory after the soak holds one
+# checkpoint, 0000000a.ckpt (13:41), so no checkpoint completed after 13:41 (run2-store-listing.txt).
+
+== prestop.1795007755.goroutine2.txt (13:15:55)
+goroutine 56 [runnable]:
+github.com/VertebrateResequencing/wr/jobqueue/wal.wholePlainFrames
+github.com/VertebrateResequencing/wr/jobqueue/wal.decodeBlock
+github.com/VertebrateResequencing/wr/jobqueue/wal.giveRecords
+github.com/VertebrateResequencing/wr/jobqueue/wal.ReadFrameInto
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).readFrameRecords
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).readRecordBodies
+github.com/VertebrateResequencing/wr/jobqueue.(*foldRead).fold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).readFold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldChunk
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldNow
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).cutAndFold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpointLocked
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpoint
+github.com/VertebrateResequencing/wr/jobqueue.(*checkpointDue).run
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).runCheckpointer
+created by github.com/VertebrateResequencing/wr/jobqueue.(*logStore).startCheckpointer in goroutine 1
+
+== prestop.1795008667.goroutine2.txt (13:31:07)
+goroutine 55 [runnable]:
+github.com/ugorji/go/codec.(*bincEncDriverBytes).EncodeString
+github.com/ugorji/go/codec.(*bincEncDriverBytes).EncodeStringNoEscape4Json
+github.com/ugorji/go/codec.(*encoderBincBytes).kStruct
+github.com/ugorji/go/codec.(*encoderBincBytes).encodeValue
+github.com/ugorji/go/codec.(*encoderBincBytes).encodeR
+github.com/ugorji/go/codec.(*encoderBincBytes).mustEncode
+github.com/ugorji/go/codec.(*encoderBincBytes).Encode
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).putComplete
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).recordCompletion
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).recordCompletions
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).putSome
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).foldSomeTx.func1
+go.etcd.io/bbolt.(*DB).Update
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).foldSomeTx
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).fold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldHistoryUpTo
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldChunk
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldNow
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).cutAndFold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpointLocked
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpoint
+github.com/VertebrateResequencing/wr/jobqueue.(*checkpointDue).run
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).runCheckpointer
+created by github.com/VertebrateResequencing/wr/jobqueue.(*logStore).startCheckpointer in goroutine 1
+
+== prestop.1795009643.goroutine2.txt (13:47:23)
+goroutine 40 [sync.Mutex.Lock, 1 minutes]:
+internal/sync.runtime_SemacquireMutex
+internal/sync.(*Mutex).lockSlow
+internal/sync.(*Mutex).Lock
+sync.(*Mutex).Lock
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldNow
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).cutAndFold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpointLocked
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpoint
+github.com/VertebrateResequencing/wr/jobqueue.(*checkpointDue).run
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).runCheckpointer
+created by github.com/VertebrateResequencing/wr/jobqueue.(*logStore).startCheckpointer in goroutine 1
+
+== prestop.1795010637.goroutine2.txt (14:03:57)
+goroutine 64 [select]:
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).runCheckpointer
+created by github.com/VertebrateResequencing/wr/jobqueue.(*logStore).startCheckpointer in goroutine 1
+
+== prestop.1795011665.goroutine2.txt (14:21:05)
+goroutine 25 [sync.Mutex.Lock, 1 minutes]:
+internal/sync.runtime_SemacquireMutex
+internal/sync.(*Mutex).lockSlow
+internal/sync.(*Mutex).Lock
+sync.(*Mutex).Lock
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldNow
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).cutAndFold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpointLocked
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpoint
+github.com/VertebrateResequencing/wr/jobqueue.(*checkpointDue).run
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).runCheckpointer
+created by github.com/VertebrateResequencing/wr/jobqueue.(*logStore).startCheckpointer in goroutine 1
+
+== prestop.1795012699.goroutine2.txt (14:38:19)
+goroutine 31 [syscall]:
+syscall.Syscall
+syscall.Fdatasync
+go.etcd.io/bbolt.fdatasync
+go.etcd.io/bbolt.(*Tx).write
+go.etcd.io/bbolt.(*Tx).Commit
+go.etcd.io/bbolt.(*DB).Update
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).foldSomeTx
+github.com/VertebrateResequencing/wr/jobqueue.(*historyBolt).fold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldHistoryUpTo
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldChunk
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).foldNow
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).cutAndFold
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpointLocked
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).checkpoint
+github.com/VertebrateResequencing/wr/jobqueue.(*checkpointDue).run
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).runCheckpointer
+created by github.com/VertebrateResequencing/wr/jobqueue.(*logStore).startCheckpointer in goroutine 1
+
+== prestop.1795017755.goroutine2.txt (16:02:35)
+goroutine 85 [select]:
+github.com/VertebrateResequencing/wr/jobqueue.(*logStore).runCheckpointer
+created by github.com/VertebrateResequencing/wr/jobqueue.(*logStore).startCheckpointer in goroutine 1

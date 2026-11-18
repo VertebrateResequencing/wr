@@ -1,0 +1,37 @@
+instance 1: OK
+instance 2: OK
+instance 3: OK
+instance 4: OK
+instance 5: OK
+instance 6: OK
+instance 7: CHECK D runs=2 ok=1 B runs=1 A runs=1 D-noend-then-stop-clean
+instance 8: OK
+instance 9: OK
+instance 10: OK
+instance 11: OK
+instance 12: OK
+instance 13: OK
+instance 14: CHECK D runs=2 ok=1 B runs=1 A runs=1 D-noend-then-stop-clean
+instance 15: CHECK D runs=2 ok=1 B runs=1 A runs=1 D-noend-then-stop-clean
+instance 16: CHECK D runs=1 ok=0 B runs=1 A runs=1 D-noend-then-stop-clean
+instance 17: OK
+instance 18: OK-late-add
+instance 19: OK-late-add
+instance 20: OK
+instance 21: OK
+instance 22: OK
+instance 23: OK
+instance 24: OK
+instance 25: OK
+instance 26: OK
+instance 27: OK
+instance 28: CHECK D runs=2 ok=1 B runs=1 A runs=1 D-noend-then-stop-clean
+instance 29: OK
+instance 30: OK
+instance 31: OK
+instance 35: OK
+instance 36: OK
+instance 37: OK
+instance 38: OK
+instance 40: B-not-added
+summary: {'OK': 28, 'CHECK': 5, 'OK-late-add': 2, 'B-not-added': 1}

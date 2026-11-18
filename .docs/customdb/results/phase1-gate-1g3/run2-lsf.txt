@@ -1,0 +1,117 @@
+# lsf.tsv (one bjobs sample a minute of this soak's jobs) binned by 10 minutes from 13:00:54
+samples=180 peakRUN=4968 at 13:22:02 (PEND 1624); RUN>=4000 in 123, >=4400 in 43, >=4800 in 12
+t+  0m 13:00 RUN max= 3587 min= 1601  PEND max=   39 min=    0
+t+ 10m 13:10 RUN max= 4953 min= 3602  PEND max= 2434 min=    0
+t+ 20m 13:20 RUN max= 4968 min= 4832  PEND max= 4766 min= 1235
+t+ 30m 13:30 RUN max= 4860 min=    0  PEND max= 9108 min=    0
+t+ 40m 13:40 RUN max= 4516 min= 4298  PEND max= 4358 min=  661
+t+ 50m 13:50 RUN max= 4588 min= 4430  PEND max= 4145 min= 1041
+t+ 60m 14:00 RUN max= 4451 min=    0  PEND max= 8664 min=    0
+t+ 70m 14:10 RUN max= 4349 min= 2813  PEND max= 5787 min=    0
+t+ 80m 14:20 RUN max= 4305 min= 4211  PEND max= 6813 min=  512
+t+ 90m 14:30 RUN max= 4472 min= 4252  PEND max= 3625 min=    0
+t+100m 14:40 RUN max= 4287 min= 4046  PEND max= 5083 min=  994
+t+110m 14:50 RUN max= 4284 min=    0  PEND max= 1786 min=    0
+t+120m 15:00 RUN max= 4183 min=    0  PEND max= 1980 min=    0
+t+130m 15:10 RUN max= 3755 min= 3755  PEND max=    0 min=    0
+t+140m 15:20 RUN max= 4222 min= 3755  PEND max= 1950 min=    0
+t+150m 15:30 RUN max= 4222 min= 4181  PEND max= 1886 min=    0
+t+160m 15:40 RUN max= 4181 min= 3743  PEND max= 1976 min=    0
+t+170m 15:50 RUN max= 3730 min= 3730  PEND max=    0 min=    0
+t+180m 16:00 RUN max= 3730 min= 3730  PEND max=    0 min=    0
+
+# lsfprobe.tsv: bjobs -p reasons for this soak's pending jobs (first 230 characters of each sample)
+13:00 PEND=22  load=2.89 pend=[22: New job is waiting for scheduling| ]
+13:02 RUN=1602  load=2.20 
+13:04 RUN=1601  load=2.45 
+13:06 RUN=2604  load=3.87 
+13:08 RUN=2603  load=3.89 
+13:10 RUN=3606  load=4.74 
+13:12 RUN=3602  load=6.58 
+13:14 RUN=4602  load=4.89 
+13:16 RUN=4606  load=6.93 
+13:18 PEND=212 RUN=4794  load=6.52 pend=[212: Job slot limit reached: 94 hosts| ]
+13:20 PEND=4766 RUN=4966  load=6.65 pend=[4710: New job is waiting for scheduling| 40: Job slot limit reached: 94 hosts| 11: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the j
+13:22 PEND=1586 RUN=4968  load=7.44 pend=[1585: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 94 hosts| 1: Affinity resource requirement cannot be met
+13:24 PEND=546 RUN=4849  load=7.16 pend=[546: New job is waiting for scheduling| ]
+13:26 PEND=3473 RUN=4860  load=6.73 pend=[3682: New job is waiting for scheduling| 15: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 94 hosts| ]
+13:28 PEND=2476 RUN=4860  load=7.42 pend=[2455: New job is waiting for scheduling| 21: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 94 hosts| ]
+13:30 PEND=3479 RUN=4860  load=6.55 pend=[3455: New job is waiting for scheduling| 17: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 91 hosts| 7: Affi
+13:32 PEND=7743 RUN=3942  load=8.32 pend=[7743: New job is waiting for scheduling| ]
+13:35 PEND=3805 RUN=4214  load=8.39 pend=[3805: New job is waiting for scheduling| ]
+13:37 PEND=1842 RUN=4249  load=9.70 pend=[1841: New job is waiting for scheduling| 1: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 90 hosts| ]
+13:39 PEND=1700 RUN=4395  load=10.77 pend=[2700: New job is waiting for scheduling| ]
+13:41 PEND=1682 RUN=4415  load=8.99 pend=[1669: New job is waiting for scheduling| 12: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 93 hosts| 1: Affi
+13:43 PEND=2679 RUN=4415  load=8.61 pend=[2648: New job is waiting for scheduling| 25: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 92 hosts| 6: Affi
+13:45 PEND=1663 RUN=4443  load=43.95 pend=[1653: New job is waiting for scheduling| 6: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 2 hosts| 4: Affin
+13:47 PEND=3264 RUN=4465  load=21.85 pend=[3264: New job is waiting for scheduling| ]
+13:49 PEND=4304 RUN=4449  load=37.00 pend=[5031: New job is waiting for scheduling| ]
+13:51 PEND=1571 RUN=4517  load=18.08 pend=[1544: New job is waiting for scheduling| 20: Job slot limit reached: 94 hosts| 6: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the j
+13:53 PEND=1541 RUN=4534  load=37.90 pend=[1538: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 94 hosts| 2: Affinity resource requirement cannot be me
+13:55 PEND=2549 RUN=4557  load=56.10 pend=[2546: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 94 hosts| 3: Affinity resource requirement cannot be me
+13:57 PEND=2448 RUN=4586  load=33.65 pend=[1489: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 92 hosts| 959: Affinity resource requirement cannot be 
+13:59 PEND=90 RUN=4583  load=16.25 pend=[90: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 93 hosts| ]
+14:01 PEND=3621 RUN=4451  load=22.34 pend=[3621: New job is waiting for scheduling| ]
+14:03 PEND=8564 RUN=4359  load=26.40 pend=[6964: New job is waiting for scheduling| 1872: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 6 hosts| 1: Af
+14:05  load=14.65 
+14:07 PEND=3482 RUN=4148  load=13.78 pend=[3482: New job is waiting for scheduling| ]
+14:09 PEND=5661 RUN=4319  load=9.69 pend=[5661: New job is waiting for scheduling| ]
+14:11 RUN=3998  load=11.56 
+14:13 PEND=5499 RUN=2648  load=11.49 pend=[5499: New job is waiting for scheduling| ]
+14:15 RUN=2946  load=7.03 
+14:17 PEND=2487 RUN=4231  load=20.02 pend=[2397: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 5 hosts| 90: New job is waiting for scheduling| ]
+14:19 PEND=2777 RUN=4258  load=32.14 pend=[2777: New job is waiting for scheduling| ]
+14:21 PEND=1825 RUN=4275  load=22.32 pend=[1825: New job is waiting for scheduling| ]
+14:23 RUN=4270  load=22.18 
+14:25 PEND=4905 RUN=4283  load=13.58 pend=[4905: New job is waiting for scheduling| ]
+14:27 PEND=1927 RUN=4211  load=10.37 pend=[1927: New job is waiting for scheduling| ]
+14:29 PEND=3681 RUN=4267  load=9.90 pend=[3675: New job is waiting for scheduling| 6: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 4 hosts| ]
+14:31 PEND=1938 RUN=4252  load=13.30 pend=[1935: New job is waiting for scheduling| 2: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 94 hosts| 1: Affi
+14:33 PEND=3689 RUN=4272  load=18.70 pend=[3689: New job is waiting for scheduling| ]
+14:35 PEND=1006 RUN=4385  load=23.34 pend=[1006: New job is waiting for scheduling| ]
+14:37 PEND=3276 RUN=4452  load=18.87 pend=[1639: New job is waiting for scheduling| 1630: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 2 hosts| 7: Jo
+14:39 PEND=1609 RUN=4473  load=22.35 pend=[1609: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 1 host| ]
+14:41 PEND=5083 RUN=4046  load=11.07 pend=[5083: New job is waiting for scheduling| ]
+14:43 PEND=3276 RUN=4187  load=41.16 pend=[2135: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 4 hosts| 1141: New job is waiting for scheduling| ]
+14:45 PEND=1980 RUN=4209  load=43.10 pend=[1980: New job is waiting for scheduling| ]
+14:47 PEND=3630 RUN=4241  load=21.26 pend=[3630: New job is waiting for scheduling| ]
+14:49 PEND=1751 RUN=4284  load=15.23 pend=[1648: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 4 hosts| 102: New job is waiting for scheduling| 1: Aff
+14:51 PEND=1749 RUN=4284  load=18.22 pend=[1734: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 91 hosts| 8: New job is waiting for scheduling| 7: Affi
+14:53 PEND=1760 RUN=4285  load=12.17 pend=[1735: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 89 hosts| 13: New job is waiting for scheduling| 6: Aff
+14:55 PEND=1773 RUN=4283  load=35.68 pend=[1757: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 90 hosts| 8: New job is waiting for scheduling| 8: Affi
+14:57 RUN=44  load=33.33 
+14:59  load=82.39 
+15:01  load=45.82 
+15:03 PEND=1872 RUN=4128  load=22.14 pend=[1872: New job is waiting for scheduling| ]
+15:05 PEND=1401 RUN=4170  load=108.68 pend=[1329: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 5 hosts| 72: Affinity resource requirement cannot be m
+15:07 RUN=3886  load=38.72 
+15:09 RUN=3755  load=52.20 
+15:11 RUN=3755  load=23.02 
+15:13 RUN=3755  load=29.49 
+15:15 RUN=3755  load=13.97 
+15:17 RUN=3755  load=18.89 
+15:19 RUN=3755  load=13.46 
+15:21 RUN=3755  load=14.31 
+15:23 RUN=3755  load=29.10 
+15:25 PEND=1931 RUN=4154  load=18.36 pend=[1931: New job is waiting for scheduling| ]
+15:27 PEND=1944 RUN=4163  load=31.45 pend=[1856: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 91 hosts| 68: New job is waiting for scheduling| 18: Jo
+15:29 PEND=1911 RUN=4183  load=75.78 pend=[1871: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 92 hosts| 26: Job slot limit reached: 94 hosts| 9: New 
+15:31 PEND=1886 RUN=4222  load=25.50 pend=[1831: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 92 hosts| 30: New job is waiting for scheduling| 19: Jo
+15:33 PEND=1866 RUN=4221  load=19.81 pend=[1834: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 93 hosts| 26: Job slot limit reached: 93 hosts| 6: Affi
+15:35 PEND=1861 RUN=4183  load=17.26 pend=[1829: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 92 hosts| 26: Job slot limit reached: 94 hosts| 6: Affi
+15:37 PEND=1553 RUN=4203  load=17.74 pend=[1521: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 86 hosts| 26: Job slot limit reached: 94 hosts| 6: Affi
+15:39 RUN=4183  load=39.75 
+15:41 RUN=4181  load=33.59 
+15:43 RUN=4181  load=22.34 
+15:45 RUN=4181  load=13.69 
+15:47 PEND=1914 RUN=4127  load=13.10 pend=[1819: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 93 hosts| 95: New job is waiting for scheduling| ]
+15:49 PEND=1877 RUN=4091  load=1298.49 pend=[1839: Affinity resource requirement cannot be met because there are not enough processor units to satisfy the job affinity request: 4 hosts| 20: Job slot limit reached: 93 hosts| 12: Af
+15:51 RUN=3730  load=508.47 
+15:53 RUN=3730  load=109.77 
+15:55 RUN=3730  load=33.43 
+15:57 RUN=3730  load=41.27 
+15:59 RUN=3730  load=15.75 
+16:01 RUN=3730  load=12.62 
+
+# queue normal at 16:3x after the soak (bqueues -l normal): MAX -, JL/U -, USER_SHARES [WTSI, 1000],
+# RES_REQ select[type==any] span[hosts=1] affinity[thread(1)], NJOBS 28499 PEND 24555 RUN 3944 (all users)

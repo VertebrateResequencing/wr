@@ -1,0 +1,33 @@
+1795006854	start	rc=0	pid=49488	ms=582	db_mb=0	load=2.79	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795007756	stop	rc=crash	pid=49488	ms=159	kind=crash	db_mb=0	load=4.53
+1795007767	start	rc=0	pid=198172	ms=10706	db_mb=0	load=4.95	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795008157	stop	rc=crash	pid=198172	ms=142	kind=crash	manual=relbury-r1	killms=1795008157646	load=7.23
+1795008181	start	rc=0	pid=275566	ms=20268	manual=relbury-r1	load=7.44
+1795008713	stop	rc=killed	pid=275566	ms=44840	kind=clean	db_mb=0	load=5.24	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1795008458->1795008709
+1795008743	start	rc=0	pid=373691	ms=29446	db_mb=0	load=5.01	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795009646	stop	rc=crash	pid=373691	ms=183	kind=crash	db_mb=0	load=20.25
+1795009737	start	rc=0	pid=563033	ms=91157	db_mb=0	load=36.04	freelistAtOpen=unreadable	db=/tmp/wr-soak-fuse-sb10-53312/db
+1795010162	stop	rc=crash	pid=563033	ms=16	kind=crash	manual=crashon-stall	lsfRUN=4562	load=38.00
+1795010345	start	rc=0	pid=705548	ms=60249	manual=crashon-stall	load=16.25
+1795010455	stop	rc=crash	pid=705548	ms=9	kind=crash	manual=crashon-burst	lsfRUN=4451	load=24.48
+1795010561	start	rc=0	pid=736185	ms=100226	manual=crashon-burst	load=25.48
+1795010691	stop	rc=killed	pid=736185	ms=49763	kind=clean	db_mb=0	load=15.34	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1795010634->1795010691
+1795010764	start	rc=0	pid=785956	ms=72920	db_mb=0	load=12.54	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795010993	stop	rc=crash	pid=785956	ms=180	kind=crash	manual=relbury-r2	killms=1795010993126	load=9.27
+1795011090	start	rc=0	pid=854064	ms=94614	manual=relbury-r2	load=10.38
+1795011091	stop	rc=crash	pid=854064	ms=9	kind=crash	manual=crashafter	load=10.38
+1795011173	start	rc=0	pid=870503	ms=77046	manual=crashafter	load=7.16
+1795011264	stop	rc=crash	pid=870503	ms=5	kind=crash	manual=crashon-burst	lsfRUN=4349	load=10.40
+1795011366	start	rc=0	pid=899850	ms=94996	manual=crashon-burst	load=9.44
+1795011670	stop	rc=crash	pid=899850	ms=208	kind=crash	db_mb=0	load=22.32
+1795011798	start	rc=0	pid=985294	ms=127400	db_mb=0	load=20.97	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795012706	stop	rc=crash	pid=985294	ms=424	kind=crash	db_mb=0	load=38.55
+1795012842	start	rc=0	pid=1198417	ms=134952	db_mb=0	load=9.68	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795013811	stop	rc=killed	pid=1198417	ms=68340	kind=clean	db_mb=0	load=36.34	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1795013037->1795013810
+1795014168	start	rc=0	pid=1402732	ms=356039	db_mb=0	load=18.16	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795015068	stop	rc=skipped	pid=1402732	ms=136	kind=crash	db_mb=0	load=17.28
+1795015480	start	rc=0	pid=1616846	ms=411732	db_mb=0	load=17.13	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795016382	stop	rc=skipped	pid=1616846	ms=494	kind=clean	db_mb=0	load=38.19	aliveAtReturn=-	token=-	freelist=-	bkMtime=1795015320->1795015320
+1795016782	start	rc=0	pid=1850112	ms=399329	db_mb=0	load=9.67	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795017683	stop	rc=skipped	pid=1850112	ms=126	kind=crash	db_mb=0	load=13.02
+1795018066	stop	rc=killed	pid=2062726	ms=309670	kind=clean	db_mb=0	load=14.48	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1795016791->1795017867

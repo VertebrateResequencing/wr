@@ -1,0 +1,10 @@
+1795007756 restart 1 (crash): db /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795008714 restart 2 (clean): db /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795009646 restart 3 (crash): db now via fusestall: /tmp/wr-soak-fuse-sb10-53312/db
+1795010691 restart 4 (clean): db direct again: /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795011670 restart 5 (crash): db /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795012706 restart 6 (crash): db /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795013811 restart 7 (clean): db /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795015068 restart 8 (crash): db /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795016382 restart 9 (clean): db /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db
+1795017683 restart 10 (crash): db /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/dbdir/db

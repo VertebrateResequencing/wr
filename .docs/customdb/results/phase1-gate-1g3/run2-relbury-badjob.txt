@@ -1,0 +1,32 @@
+# relburycheck BAD-JOB relb.r2.rel.113 (key 78a1566dc8f4062b68a6c40d010e5922, --retries 1)
+# relbury marks (relbury/*.tsv): two runs
+E	relb.r2.rel.113	1795010991035	node-14-24	697274		3
+E	relb.r2.rel.113	1795011176540	node-13-23	1056874		3
+S	relb.r2.rel.113	1795010787487	node-14-24	697274		
+S	relb.r2.rel.113	1795011176534	node-13-23	1056874		
+# driver.log
+1795010773252 r2 deadline D=1795010991000; kill at D+2000ms
+1795010993300 r2 killed pid 785956 at 1795010993126 (D+2126ms); marks so far S=400 E=400
+1795011173614 r2 snapshot up rel rc=0 at 1795011173573:     189 "State":"ready"       2 "State":"reserved"       9 "State":"running" 
+# r2.up.rel.json, the job at the restart's 'up' snapshot (14:12:53), before its first runner reconnected:
+{'State': 'ready', 'Attempts': 1, 'Host': 'node-14-24', 'Pid': 697274, 'Exitcode': 3, 'Started': 1795010787484749725, 'Ended': 1795010992773272267}
+# first run's runner log (runnerlogs/26.11.18/14-06-22.node-14-24.694657), commands elided
+t=2026-11-18T14:06:27+0000 lvl=info msg="wr runner started for scheduler group '200:30:1:0:8cf0c858493d53816806a5e66158b2ad'; pid: 694657; LSF job id 939113[57]"
+t=2026-11-18T14:06:27+0000 lvl=info msg="reserved a job" key=78a1566dc8f4062b68a6c40d010e5922 cmd=... attempts=0
+t=2026-11-18T14:06:27+0000 lvl=info msg="will start executing" key=78a1566dc8f4062b68a6c40d010e5922 cmd=...
+t=2026-11-18T14:06:27+0000 lvl=info msg="started executing" jobkey=78a1566dc8f4062b68a6c40d010e5922 cmd=... pid=697274
+t=2026-11-18T14:10:53+0000 lvl=eror msg="failed to update server with cmd's final state" jobkey=78a1566dc8f4062b68a6c40d010e5922 err="receive time out" caller=clog.go:344 caller=clog.go:344
+t=2026-11-18T14:11:08+0000 lvl=warn msg="tried to reconnect to server but failed" jobkey=78a1566dc8f4062b68a6c40d010e5922 err="jobqueue Connect(): could not reach the server" caller=clog.go:338 caller=clog.go:338
+t=2026-11-18T14:11:23+0000 lvl=warn msg="tried to reconnect to server but failed" jobkey=78a1566dc8f4062b68a6c40d010e5922 err="jobqueue Connect(): could not reach the server" caller=clog.go:338 caller=clog.go:338
+t=2026-11-18T14:11:45+0000 lvl=warn msg="tried to reconnect to server but failed" jobkey=78a1566dc8f4062b68a6c40d010e5922 err="jobqueue Connect(): could not reach the server" caller=clog.go:338 caller=clog.go:338
+t=2026-11-18T14:12:07+0000 lvl=warn msg="tried to reconnect to server but failed" jobkey=78a1566dc8f4062b68a6c40d010e5922 err="jobqueue Connect(): could not reach the server" caller=clog.go:338 caller=clog.go:338
+t=2026-11-18T14:12:26+0000 lvl=warn msg="tried to reconnect to server but failed" jobkey=78a1566dc8f4062b68a6c40d010e5922 err="jobqueue Connect(): could not reach the server" caller=clog.go:338 caller=clog.go:338
+t=2026-11-18T14:12:45+0000 lvl=warn msg="tried to reconnect to server but failed" jobkey=78a1566dc8f4062b68a6c40d010e5922 err="jobqueue Connect(): could not reach the server" caller=clog.go:338 caller=clog.go:338
+t=2026-11-18T14:13:02+0000 lvl=info msg="reconnected to server" jobkey=78a1566dc8f4062b68a6c40d010e5922
+t=2026-11-18T14:13:02+0000 lvl=eror msg="failed to update server with cmd's final state" jobkey=78a1566dc8f4062b68a6c40d010e5922 err="jobqueue jrelease(78a1566dc8f4062b68a6c40d010e5922): bad job (not in queue or correct 
+t=2026-11-18T14:13:02+0000 lvl=warn msg="command [...] (outcome line elided)
+t=2026-11-18T14:13:02+0000 lvl=eror msg="object closed" caller=clog.go:344 caller=clog.go:344
+# manager.log
+t=2026-11-18T14:13:02+0000 lvl=eror msg="Server handle client request error" err="jobqueue jrelease(78a1566dc8f4062b68a6c40d010e5922): bad job (not in queue or correct sub-queue)" caller=clog.go:344
+# dbstart.tsv (final store)
+jobslive	78a1566dc8f4062b68a6c40d010e5922	relb	relb.r2.rel.113	buried	3	2	node-13-23	1056874	1795011176531	1795011176543

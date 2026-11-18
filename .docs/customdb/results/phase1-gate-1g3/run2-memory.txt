@@ -1,0 +1,114 @@
+# host farm22-wrstat01: 91GB RAM, 8 cores. Kernel OOM kills (dmesg; the ring buffer starts at kernel time 14:56:54).
+# dmesg -T times run 7.0-8.4 min behind wall-clock time on this host: pid 1616846's log ends 15:32:12 and samples.tsv
+# shows it dead by 15:33:31, against a dmesg time of 15:25:15; pid 1402732's log ends 15:03:52, dead by 15:05:19,
+# dmesg 14:56:54. uid 11346 = sb10 (wr.real = this soak's manager), uid 13912 = mercury (wrstat-ui, started from cron).
+[Wed Nov 18 14:56:54 2026] Out of memory: Killed process 1402732 (wr.real) anon-rss:56564496kB
+[Wed Nov 18 15:13:24 2026] bash invoked oom-killer: gfp_mask=0x1100cca(GFP_HIGHUSER_MOVABLE), order=0, oom_score_adj=0
+[Wed Nov 18 15:13:24 2026] Out of memory: Killed process 1439820 (wrstat-ui) anon-rss:61781992kB
+[Wed Nov 18 15:25:14 2026] wr invoked oom-killer: gfp_mask=0x1100cca(GFP_HIGHUSER_MOVABLE), order=0, oom_score_adj=0
+[Wed Nov 18 15:25:14 2026] Out of memory: Killed process 1616846 (wr.real) anon-rss:69181588kB
+[Wed Nov 18 15:35:50 2026] wrstat-ui invoked oom-killer: gfp_mask=0x1100cca(GFP_HIGHUSER_MOVABLE), order=0, oom_score_adj=0
+[Wed Nov 18 15:35:50 2026] Out of memory: Killed process 1754482 (wrstat-ui) anon-rss:62349552kB
+[Wed Nov 18 15:41:32 2026] wr invoked oom-killer: gfp_mask=0x1100cca(GFP_HIGHUSER_MOVABLE), order=0, oom_score_adj=0
+[Wed Nov 18 15:41:32 2026] Out of memory: Killed process 1850112 (wr.real) anon-rss:68670632kB
+[Wed Nov 18 15:55:39 2026] elim.hpc invoked oom-killer: gfp_mask=0x1100cca(GFP_HIGHUSER_MOVABLE), order=0, oom_score_adj=-1000
+[Wed Nov 18 15:55:39 2026] Out of memory: Killed process 1907266 (wrstat-ui) anon-rss:79972724kB
+[Wed Nov 18 16:00:20 2026] sleep invoked oom-killer: gfp_mask=0x1100cca(GFP_HIGHUSER_MOVABLE), order=0, oom_score_adj=0
+[Wed Nov 18 16:00:20 2026] Out of memory: Killed process 2062726 (wr.real) anon-rss:59691120kB
+
+# atop (/var/log/atop/atop_20261118), 10-minute snapshots: largest RSS of the wr manager (wr.real) and of wrstat-ui
+12:50:02 wr.real=0.0GB wrstat-ui=1.4GB
+13:00:02 wr.real=0.0GB wrstat-ui=1.4GB
+13:10:02 wr.real=2.3GB wrstat-ui=1.4GB
+13:20:02 wr.real=5.9GB wrstat-ui=1.4GB
+13:30:02 wr.real=11.4GB wrstat-ui=1.4GB
+13:40:02 wr.real=17.2GB wrstat-ui=1.4GB
+13:50:02 wr.real=18.7GB wrstat-ui=1.4GB
+14:00:02 wr.real=20.6GB wrstat-ui=1.4GB
+14:10:02 wr.real=0.3GB wrstat-ui=1.4GB
+14:20:02 wr.real=42.8GB wrstat-ui=1.4GB
+14:30:02 wr.real=46.5GB wrstat-ui=4.9GB
+14:40:02 wr.real=27.1GB wrstat-ui=1.4GB
+14:50:02 wr.real=60.8GB wrstat-ui=1.4GB
+15:00:02 wr.real=25.9GB wrstat-ui=56.8GB
+15:10:02 wr.real=0.0GB wrstat-ui=61.8GB
+15:20:02 wr.real=17.7GB wrstat-ui=60.9GB
+15:30:02 wr.real=74.5GB wrstat-ui=0.0GB
+15:40:02 wr.real=0.4GB wrstat-ui=62.9GB
+15:50:02 wr.real=0.0GB wrstat-ui=51.1GB
+16:00:02 wr.real=0.0GB wrstat-ui=79.3GB
+16:10:02 wr.real=0.0GB wrstat-ui=42.5GB
+
+# atop host memory per 10-minute interval (a row's time ends its interval): free and page cache,
+# pages scanned for reclaim, direct-reclaim stalls, pages swapped in and out
+12:50:02 free=26.6GB cache=50.7GB pgscan=0 allocstall=0 swapin=88 swapout=0
+13:00:02 free=24.9GB cache=51.4GB pgscan=0 allocstall=0 swapin=9 swapout=0
+13:10:02 free=23.3GB cache=52.1GB pgscan=0 allocstall=0 swapin=0 swapout=0
+13:20:02 free=19.3GB cache=53.3GB pgscan=0 allocstall=0 swapin=8 swapout=0
+13:30:02 free=13.3GB cache=54.8GB pgscan=0 allocstall=0 swapin=2 swapout=0
+13:40:02 free=6.3GB cache=57.0GB pgscan=0 allocstall=0 swapin=17 swapout=0
+13:50:02 free=2.8GB cache=57.6GB pgscan=2501110 allocstall=0 swapin=343 swapout=8653
+14:00:02 free=7.4GB cache=46.9GB pgscan=5766450 allocstall=0 swapin=22 swapout=68743
+14:10:02 free=37.9GB cache=40.1GB pgscan=5057790 allocstall=0 swapin=1300 swapout=86483
+14:20:02 free=4.2GB cache=36.6GB pgscan=9876048 allocstall=1 swapin=1823 swapout=12618
+14:30:02 free=1.5GB cache=33.8GB pgscan=4614806 allocstall=0 swapin=7009 swapout=16409
+14:40:02 free=27.2GB cache=25.8GB pgscan=4936978 allocstall=1 swapin=5944 swapout=1108
+14:50:02 free=1.7GB cache=21.5GB pgscan=13582372 allocstall=1 swapin=5113 swapout=17063
+15:00:02 free=1.6GB cache=0.1GB pgscan=91086070 allocstall=22986 swapin=481778 swapout=1554310
+15:10:02 free=15.5GB cache=7.4GB pgscan=68197292 allocstall=18166 swapin=1395128 swapout=1448992
+15:20:02 free=1.4GB cache=5.5GB pgscan=13965782 allocstall=0 swapin=50606 swapout=115821
+15:30:02 free=5.0GB cache=13.0GB pgscan=52035146 allocstall=6515 swapin=472885 swapout=1000515
+15:40:02 free=12.3GB cache=9.7GB pgscan=66573904 allocstall=4537 swapin=546208 swapout=1104517
+15:50:02 free=33.3GB cache=1.4GB pgscan=131319010 allocstall=13495 swapin=619611 swapout=2199978
+16:00:02 free=1.9GB cache=3.1GB pgscan=47967802 allocstall=613 swapin=469595 swapout=406131
+16:10:02 free=39.6GB cache=3.7GB pgscan=78003564 allocstall=6325 swapin=568880 swapout=1836362
+
+# first run nights (atop_20261109, atop_20261110): wrstat-ui stayed at or below 5.9GB; the first run's manager reached 57.9GB
+
+# samples.tsv rows with load1 > 40 (t_s from 13:00:54; rss_mb -1 = manager not running)
+13:44:33 pid=373691 rss_mb=21094 load1=47.69
+13:45:04 pid=373691 rss_mb=21154 load1=43.95
+13:53:14 pid=563033 rss_mb=21372 load1=46.14
+13:54:17 pid=563033 rss_mb=21346 load1=69.56
+13:54:49 pid=563033 rss_mb=21926 load1=60.78
+13:55:19 pid=563033 rss_mb=22878 load1=51.52
+14:01:31 pid=736185 rss_mb=599 load1=40.43
+14:42:58 pid=1198417 rss_mb=55553 load1=43.82
+14:43:28 pid=1198417 rss_mb=55579 load1=41.08
+14:45:28 pid=1198417 rss_mb=58340 load1=41.82
+14:58:29 pid=1402732 rss_mb=14521 load1=141.95
+14:58:59 pid=1402732 rss_mb=24325 load1=92.08
+14:59:33 pid=1402732 rss_mb=26958 load1=68.61
+15:00:16 pid=1402732 rss_mb=26511 load1=93.78
+15:00:46 pid=1402732 rss_mb=27524 load1=69.94
+15:01:17 pid=1402732 rss_mb=29365 load1=45.82
+15:05:19 pid=1402732 rss_mb=-1 load1=108.68
+15:05:49 pid=1402732 rss_mb=-1 load1=88.72
+15:06:19 pid=1402732 rss_mb=-1 load1=62.45
+15:06:49 pid=1402732 rss_mb=-1 load1=45.40
+15:07:49 pid=1402732 rss_mb=-1 load1=53.88
+15:08:19 pid=1402732 rss_mb=-1 load1=50.93
+15:08:49 pid=1402732 rss_mb=-1 load1=43.79
+15:09:19 pid=1402732 rss_mb=-1 load1=52.74
+15:09:50 pid=1402732 rss_mb=-1 load1=45.46
+15:12:50 pid=1402732 rss_mb=-1 load1=41.95
+15:27:55 pid=1616846 rss_mb=74551 load1=292.05
+15:28:25 pid=1616846 rss_mb=74601 load1=181.89
+15:28:56 pid=1616846 rss_mb=74683 load1=115.67
+15:29:26 pid=1616846 rss_mb=75941 load1=70.67
+15:29:57 pid=1616846 rss_mb=76302 load1=47.71
+15:39:01 pid=1616846 rss_mb=-1 load1=45.64
+15:40:31 pid=1850112 rss_mb=585 load1=47.55
+15:41:01 pid=1850112 rss_mb=1078 load1=40.95
+15:49:36 pid=1850112 rss_mb=-1 load1=1195.79
+15:50:06 pid=1850112 rss_mb=-1 load1=730.95
+15:50:36 pid=1850112 rss_mb=-1 load1=801.21
+15:51:06 pid=1850112 rss_mb=-1 load1=517.12
+15:51:36 pid=1850112 rss_mb=-1 load1=551.84
+15:52:06 pid=1850112 rss_mb=-1 load1=365.82
+15:52:36 pid=1850112 rss_mb=-1 load1=239.74
+15:53:06 pid=1850112 rss_mb=-1 load1=157.38
+15:53:36 pid=1850112 rss_mb=-1 load1=105.54
+15:54:06 pid=1850112 rss_mb=-1 load1=79.56
+15:54:36 pid=1850112 rss_mb=-1 load1=56.29
+15:57:06 pid=1850112 rss_mb=-1 load1=50.04

@@ -1,0 +1,26 @@
+runner logs: 103214
+  final_fail_before_settle: 183
+  final_state_fail: 39644
+  kill_requested: 8442
+  killed_child: 8442
+  outcome_ok: 830973
+  outcome_ok-newserver: 33405
+  outcome_rerun: 5
+  start_retry_failed_attempt: 428
+  start_settled_ok: 339
+  unacked_start: 372
+error texts:
+   27977 final: send time out
+   11662 final: receive time out
+     348 start-warn: receive time out
+      24 start-warn: send time out
+       4 final: jobqueue jrelease(K): you must Reserve() a Job before passing it to other methods
+       1 final: jobqueue jrelease(K): bad job (not in queue or correct sub-queue)
+logs whose last line is "kill requested externally": 0
+kill requested with no kill line before the job ended or the log ended (incl. above): 0
+problems: 5
+    /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/runnerlogs/26.11.18/14-06-09.node-13-07.2757164 rerun: t=2026-11-18T14:13:08+0000 lvl=warn msg="command [/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/prodsim-1795006847/psimjob.sh portal_compress 20261118T131055.1798 36.5 341 1 # {\"file\":\"/lustre/scratch/projects/portal_compress/20261118T131055.1798/sample_000000.cram\",\"md5\":\"0123456789abcd
+    /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/runnerlogs/26.11.18/14-06-22.node-14-24.694657 rerun: t=2026-11-18T14:13:02+0000 lvl=warn msg="command [: relb relb.r2.rel.113; h=$(hostname -s); printf 'S\\trelb.r2.rel.113\\t%s\\t%s\\t%s\\t%s\\t\\n' $(date +%s%3N) $h $$ \"${LSB_JOBID:-}\" >> /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/prodsim-1795006847/relbury/$h.tsv; n=$(date +%s%3N); s=$(( 1
+    /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/runnerlogs/26.11.18/13-32-27.node-14-24.3353518 rerun: t=2026-11-18T13:56:00+0000 lvl=warn msg="command [/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/prodsim-1795006847/psimjob.sh portal_compress 20261118T131555.42315 33.5 341 1 # {\"file\":\"/lustre/scratch/projects/portal_compress/20261118T131555.42315/sample_000000.cram\",\"md5\":\"0123456789ab
+    /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/runnerlogs/26.11.18/13-32-26.node-13-21.1804810 rerun: t=2026-11-18T13:55:55+0000 lvl=warn msg="command [/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/prodsim-1795006847/psimjob.sh portal_compress 20261118T131055.36967 42.1 341 1 # {\"file\":\"/lustre/scratch/projects/portal_compress/20261118T131055.36967/sample_000000.cram\",\"md5\":\"0123456789ab
+    /nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/runnerlogs/26.11.18/13-32-27.node-14-15.2895376 rerun: t=2026-11-18T13:55:52+0000 lvl=warn msg="command [/nfs/hgi/wr/sb10-bigdb/customdb/1g3/soak/run2/prodsim-1795006847/psimjob.sh portal_compress 20261118T131555.25162 15.4 341 1 # {\"file\":\"/lustre/scratch/projects/portal_compress/20261118T131555.25162/sample_000000.cram\",\"md5\":\"0123456789ab
