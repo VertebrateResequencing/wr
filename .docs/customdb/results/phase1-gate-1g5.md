@@ -16,6 +16,109 @@ The item also asks for the 1d.2 incidental on the unpaced checkpoint write
 to be resolved, with reserve p99 measured while a `.ckpt` of 40MB or more
 is written ([incidentals.md](../phases/incidentals.md)).
 
+## Verdict: PASS (Wednesday 2026-11-18, `8dab632a`)
+
+The bugfix's final code
+([checklist](../../bugfixes/261111-reserve-tail-nfs-4766eb70.md)) meets
+every criterion, with the soak and the 3 add runs wholly between 10:00 and
+17:00 GMT (UTC, UK local time in November) on Wednesday 2026-11-18. Both
+soaks' wr binaries report `vcs.revision=8dab632aa844fad73528e4172ba257ac90e7ab3f`
+and `vcs.modified=false`. The add runs used the jobqueue test binary
+`chain17.sh` built from the same clean `src-gate` commit (sha256 prefix
+`3d8a28696ecb1c99`). That commit exists only in the `src-gate` clone; its
+tree outside `.docs` matches this branch's `ea00b2d2` except for three
+`_test.go` files that later review rounds added to.
+
+| criterion | run (2026-11-18, UTC) | result |
+| --- | --- | --- |
+| every `"reservation wait"` `p99` <= 50ms | G7b gate soak, prodsim 10:26:35 to 11:27:44 | PASS (61 of 61 lines; worst 33.03ms at 11:07:35) |
+| every `"reservation wait"` `abandoned=0` | G7b | PASS (61 of 61; `notDurable=0` in all) |
+| `TestAddLatency1000` p50 <= 200ms, 3 runs | runs 22-24, 12:45:07 to 12:45:26 | PASS (23.59ms, 23.59ms, 23.59ms) |
+| reserve p99 while a `.ckpt` >= 40MB is written | G7b (3 such checkpoints), H2b (4) | PASS (25.69ms to 27.79ms; 8.65ms and 9.18ms in the final partial lines) |
+
+### How it ran
+
+[fix-r5-chain18.sh](phase1-gate-1g5/fix-r5-chain18.sh) (as
+`tools/chain18.sh`, 10:26:11 to 12:29:58) reran `chain17.sh`'s two soaks.
+On Monday 2026-11-16 prodsim's diskguard stopped both within 2 minutes
+(`watcher.log`: `diskguard: tmp=14G`, against `GUARD_GB=40`). Its add runs
+19-21 did complete (10:01:46 to 10:02:06, p50 25.7ms, 26.7ms and 25.7ms),
+but on a different day from any soak, so runs 22-24 repeated them on
+2026-11-18 with the same script
+([fix-r5-addbench.sh](phase1-gate-1g5/fix-r5-addbench.sh), run by hand
+after chain18 as `tools/addbench-r5.sh 22` to `24`) and test
+binary, `WR_TEST_STORE=log` and `WR_ADDBENCH_DIR` under
+`/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/addbench/`. `/tmp` had 58G free
+throughout both soaks (`disk.tsv`).
+
+Both soaks used [fix-r5-soak.sh](phase1-gate-1g5/fix-r5-soak.sh): `run.sh`
+with `SOAK_ROOT` on NFS (`/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/<arm>`),
+`USE_FUSE=0`, `HOURS=1`, `RESTART_MIN=120`, `SCHED=lsf`, no `FIXTURE`, no
+injectors and `run.sh`'s default ramp (600, 1,200, 2,100, 3,000 runners).
+Each soak's `restarts.tsv` holds only the start and the final clean stop.
+
+| arm | prodsim | LSF RUN 2,000 / 3,000 / peak | lines | over 50ms | worst p99 | abandoned | reservations | double runs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| G7b (gate) | 10:26:35-11:27:44 | 10:47 / 11:02 / 3,106 | 61 | 0 | 33.03ms | 0 | 281,052 | 0 |
+| H2b (scale 2, supporting) | 11:28:26-12:29:38 | 11:49 / 12:05 / 3,108 | 61 | 0 | 36.70ms | 0 | 280,615 | 0 |
+
+Every line was checked on its own, with no averaging. Per line, G7b's p50
+was 0.77ms to 1.48ms and p99 2.82ms to 33.03ms; H2b's p50 0.80ms to 1.54ms
+and p99 3.87ms to 36.70ms. H2b's worst line (12:01:26) held one 3.61s wait,
+a single wal sync of 3.61s (its writer line: `maxSync=3.607453s`), like
+G3's 3.25s wait on 2026-11-12. `SCALE=2` doubles prodsim's other actors,
+not the portal bursts: in `run.sh`'s dynamic mode a burst is sized from
+the runner target (33,093 jobs a phase at 3,000 in both soaks), so H2b
+reserved about as many jobs as G7b.
+
+### Checkpoints of 40MB or more
+
+[ckptwatch.py](phase1-gate-1g5/ckptwatch.py) recorded each checkpoint's
+`.ckpt.tmp` create-to-rename window. A `"reservation wait"` line covers
+the minute before its timestamp.
+
+| arm | checkpoint | size | written (UTC) | covering line | p99 | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| G7b | `0000000b.ckpt` | 49.44MB | 11:18:22.2-11:18:27.2 (5.0s) | 11:18:35 | 25.69ms | 61.68ms |
+| G7b | `0000000c.ckpt` | 58.49MB | 11:23:23.0-11:23:28.7 (5.7s) | 11:23:35 | 27.79ms | 61.68ms |
+| G7b | `0000000d.ckpt` | 57.49MB | 11:26:47.7-11:26:53.3 (5.6s) | 11:27:14 (partial) | 9.18ms | 44.41ms |
+| H2b | `0000000a.ckpt` | 40.52MB | 12:15:10.3-12:15:14.1 (3.8s) | 12:15:26 | 25.69ms | 52.72ms |
+| H2b | `0000000b.ckpt` | 48.55MB | 12:20:16.2-12:20:21.1 (4.9s) | 12:20:26 | 26.74ms | 62.96ms |
+| H2b | `0000000c.ckpt` | 58.54MB | 12:24:56.0-12:25:01.5 (5.5s) | 12:25:26 | 27.79ms | 53.52ms |
+| H2b | `0000000d.ckpt` | 58.32MB | 12:28:38.0-12:28:43.6 (5.6s) | 12:29:04 (partial) | 8.65ms | 258.97ms |
+
+G7b's `0000000a.ckpt` was 39,999,912 bytes, just under 40MB (11:13:35,
+p99 31.98ms). No covering line holds a portal burst's start: each
+checkpoint began 1m30s to 1m50s after a burst, in the next minute, and
+the final ones after no burst. Over each soak's last 20 minutes the
+5-minute cycle repeats: the burst's line 22.5ms to 23.6ms, the
+checkpoint's 25.7ms to 32.0ms, the quiet minutes 7.2ms to 12.3ms. So a
+paced checkpoint of 40-58MB still lifts its minute's p99 by about 15-20ms
+over the quiet minutes, leaving 22ms under 50ms. Round 4's unpaced code
+failed G6's last line (61.9ms) at a 58.5MB checkpoint; the paced code
+passes every line at the same size. This resolves the 1d.2 incidental.
+
+Files: [fix-G7b-waitlines.txt](phase1-gate-1g5/fix-G7b-waitlines.txt),
+[fix-H2b-waitlines.txt](phase1-gate-1g5/fix-H2b-waitlines.txt) (every
+line), [fix-G7b-ckptwatch.tsv](phase1-gate-1g5/fix-G7b-ckptwatch.tsv),
+[fix-H2b-ckptwatch.tsv](phase1-gate-1g5/fix-H2b-ckptwatch.tsv),
+[fix-G7b-ckptcover.txt](phase1-gate-1g5/fix-G7b-ckptcover.txt),
+[fix-H2b-ckptcover.txt](phase1-gate-1g5/fix-H2b-ckptcover.txt) (each
+checkpoint's covering lines),
+[fix-G7b-dbwriter.txt](phase1-gate-1g5/fix-G7b-dbwriter.txt),
+[fix-H2b-dbwriter.txt](phase1-gate-1g5/fix-H2b-dbwriter.txt),
+[fix-G7b-lsf.tsv](phase1-gate-1g5/fix-G7b-lsf.tsv),
+[fix-H2b-lsf.tsv](phase1-gate-1g5/fix-H2b-lsf.tsv),
+[fix-r5-chain18-run.txt](phase1-gate-1g5/fix-r5-chain18-run.txt)
+(`chain18.out`, both soaks' buildinfo, restarts, ramp and marker
+analysis), [fix-r5-addbench-22.out](phase1-gate-1g5/fix-r5-addbench-22.out),
+[fix-r5-addbench-23.out](phase1-gate-1g5/fix-r5-addbench-23.out),
+[fix-r5-addbench-24.out](phase1-gate-1g5/fix-r5-addbench-24.out). The
+soaks' output directories (`soak/G7b-gate/prodsim-1794997589/`,
+`soak/H2b-scale2/prodsim-1795001300/`) stay under the work directory.
+
+## First run (2026-11-11, `f7006373`): FAIL
+
 All runs were on Wednesday 2026-11-11 (GMT, which is UK local time),
 from farm22-wrstat01 (8 cores, 91GB, shared with other users), on LSF
 queue `normal`. The binary and test binary were built from HEAD `f7006373`
@@ -23,7 +126,8 @@ queue `normal`. The binary and test binary were built from HEAD `f7006373`
 work directory was `/nfs/hgi/wr/sb10-bigdb/customdb/1g5/`. Trimmed outputs
 and the scripts are in [phase1-gate-1g5/](phase1-gate-1g5/).
 
-**Verdict: FAIL** on the soak criterion. 31 of the soak's 61
+**This run's verdict: FAIL** on the soak criterion; the sections from
+here to "Fix" describe it. 31 of the soak's 61
 `"reservation wait"` lines have `p99` above 50ms, the worst 427.8ms. Every
 line has `abandoned=0` and `notDurable=0`. The add criterion passes: p50
 25.7ms, 28.8ms and 24.6ms. The checkpoint incidental was measured with
@@ -937,7 +1041,8 @@ the lag pass 5s; the figures are the final code's):
   50s), which G5 did not soak.
 
   H1 (13:57:44 to 14:57:23; the same 5s-step code at prodsim scale 2,
-  bursts twice the size; `fix-soak2.sh H1-scale2 <src> 1 SCALE=2`;
+  which doubles the actors other than the portal, whose bursts `run.sh`
+  sizes from the runner target, 33,093 jobs a phase as in G5; `fix-soak2.sh H1-scale2 <src> 1 SCALE=2`;
   `fix-H1-*`): fold lag stayed bounded, `maxLag` at most 52.0s and the
   checkpoints' bound at most 48.3s (`f7006373` at scale 1: 51.0s), with
   3,126 runners at peak and 278,943 reservations; but 6 of 61 lines
@@ -1151,7 +1256,9 @@ could not bind its port. The checkpoint's own time is in the table above.
 
 #### Monday soaks, prepared
 
-Not run yet. `src-gate` is at 8dab632aa844fad73528e4172ba257ac90e7ab3f,
+Run on Wednesday 2026-11-18 instead (see "Verdict" at the top): on
+Monday prodsim's diskguard stopped G7 and H2 within 2 minutes, as local
+`/tmp` had 14G free. `src-gate` is at 8dab632aa844fad73528e4172ba257ac90e7ab3f,
 file for file round 5's working tree outside `.docs` (whose records of it
 came after); its wr build gives that `vcs.revision` with
 `vcs.modified=false`. [fix-r5-chain17.sh](phase1-gate-1g5/fix-r5-chain17.sh)
@@ -1194,7 +1301,9 @@ unchanged.
   history's folded position, so a restore replays up to about
   `history.bolt`'s size of wal. This is the Phase 1 form only; Phase 2's
   sealed history segments replace the whole-file copy.
-- **The 1d.2 checkpoint incidental, paced in round 5, not soaked yet.**
+- **The 1d.2 checkpoint incidental, paced in round 5, soaked 2026-11-18:
+  resolved.** G7b and H2b covered 7 paced checkpoints of 40.5-58.5MB
+  with lines of p99 8.65-27.79ms (see "Verdict" at the top). Before:
   The checkpoint grows with the live set, to 55-76MB written over 5-7.6s
   by the end of each gate soak. G6's one failing line (the last, partial,
   39s) coincided with its last checkpoint (58.5MB in 5.7s), with the fold
@@ -1203,8 +1312,7 @@ unchanged.
   load. Round 5 paces the checkpoint's writeback every MiB, after
   `TestReserveWaitDuringCheckpoint` showed an unpaced 73MB checkpoint
   holding reservations to p99 100-143ms, on local disk and NFS alike
-  (3.4-43.7ms paced, all but two under 12ms). The Monday soak G7 is its
-  gate evidence.
+  (3.4-43.7ms paced, all but two under 12ms).
 - **Fold capacity against the reserve tail.** Small commits protect
   reservations and cost the folder throughput. The final code keeps 2MB
   transactions until a record has waited 60s, then grows them: G6 passed
@@ -1218,8 +1326,11 @@ unchanged.
   sets the lag back to 0, puts off growth until records have waited 60s
   again. Growing from 5s (G5, H1) kept the lag near
   `f7006373`'s but failed 3 and 6 burst lines. At loads well above G6's,
-  the bound grows and burst lines can fail again; the final code's
-  higher-load soak (prodsim scale 2) has not run. Making history.bolt's
+  the bound grows and burst lines can fail again. The final code's
+  prodsim scale 2 soak (H2b, 2026-11-18) passed every line with `maxLag`
+  peaking at 131s, as G7b's at 130s, but it is not a higher reserve load:
+  `run.sh` sizes portal bursts from the runner target, so H2b reserved
+  280,615 jobs to G7b's 281,052. Making history.bolt's
   commits cheaper for the wal (another device, or bbolt's `NoSync` with
   rebuild from the wal on a host crash) would remove the trade-off; both
   are design changes for the spec.

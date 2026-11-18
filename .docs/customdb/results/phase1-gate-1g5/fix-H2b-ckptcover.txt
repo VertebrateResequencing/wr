@@ -1,0 +1,26 @@
+# reservation-wait lines covering each checkpoint's .ckpt.tmp create-to-rename window (from ckptwatch.tsv; a line covers the minute before its timestamp)
+00000002.ckpt 2061685 bytes (2.06MB) write 11:33:26.125-11:33:26.329 (0.20s)
+    t=2026-11-18T11:34:26+0000 lvl=warn msg="reservation wait" n=1377 p50=1.409ms p99=5.636ms max=20.634ms notDurable=0 abandoned=0 caller=clog.go:338
+00000003.ckpt 4103980 bytes (4.10MB) write 11:38:27.473-11:38:27.902 (0.43s)
+    t=2026-11-18T11:39:26+0000 lvl=warn msg="reservation wait" n=2973 p50=1.409ms p99=16.515ms max=54.035ms notDurable=0 abandoned=0 caller=clog.go:338
+00000004.ckpt 5633253 bytes (5.63MB) write 11:43:31.858-11:43:32.424 (0.57s)
+    t=2026-11-18T11:44:26+0000 lvl=warn msg="reservation wait" n=2721 p50=1.278ms p99=6.947ms max=30.169ms notDurable=0 abandoned=0 caller=clog.go:338
+00000005.ckpt 8764256 bytes (8.76MB) write 11:48:40.011-11:48:40.906 (0.89s)
+    t=2026-11-18T11:49:26+0000 lvl=warn msg="reservation wait" n=4893 p50=836µs p99=15.991ms max=37.393ms notDurable=0 abandoned=0 caller=clog.go:338
+00000006.ckpt 11313968 bytes (11.31MB) write 11:53:49.727-11:53:50.909 (1.18s)
+    t=2026-11-18T11:54:26+0000 lvl=warn msg="reservation wait" n=4600 p50=1.409ms p99=24.642ms max=59.512ms notDurable=0 abandoned=0 caller=clog.go:338
+00000007.ckpt 18316177 bytes (18.32MB) write 11:59:41.464-11:59:43.237 (1.77s)
+    t=2026-11-18T12:00:26+0000 lvl=warn msg="reservation wait" n=4664 p50=1.409ms p99=9.699ms max=54.854ms notDurable=0 abandoned=0 caller=clog.go:338
+00000008.ckpt 25598893 bytes (25.60MB) write 12:04:00.512-12:04:03.178 (2.67s)
+    t=2026-11-18T12:04:26+0000 lvl=warn msg="reservation wait" n=5948 p50=836µs p99=20.447ms max=80.503ms notDurable=0 abandoned=0 caller=clog.go:338
+00000009.ckpt 30711399 bytes (30.71MB) write 12:10:23.536-12:10:27.176 (3.64s)
+    t=2026-11-18T12:10:26+0000 lvl=warn msg="reservation wait" n=6624 p50=1.409ms p99=25.69ms max=74.709ms notDurable=0 abandoned=0 caller=clog.go:338
+    t=2026-11-18T12:11:26+0000 lvl=warn msg="reservation wait" n=6658 p50=1.409ms p99=11.796ms max=832.213ms notDurable=0 abandoned=0 caller=clog.go:338
+0000000a.ckpt 40518961 bytes (40.52MB) write 12:15:10.250-12:15:14.067 (3.82s)
+    t=2026-11-18T12:15:26+0000 lvl=warn msg="reservation wait" n=6606 p50=1.409ms p99=25.69ms max=52.721ms notDurable=0 abandoned=0 caller=clog.go:338
+0000000b.ckpt 48551459 bytes (48.55MB) write 12:20:16.198-12:20:21.057 (4.86s)
+    t=2026-11-18T12:20:26+0000 lvl=warn msg="reservation wait" n=6702 p50=1.343ms p99=26.739ms max=62.961ms notDurable=0 abandoned=0 caller=clog.go:338
+0000000c.ckpt 58536712 bytes (58.54MB) write 12:24:56.023-12:25:01.488 (5.46s)
+    t=2026-11-18T12:25:26+0000 lvl=warn msg="reservation wait" n=6672 p50=1.409ms p99=27.787ms max=53.524ms notDurable=0 abandoned=0 caller=clog.go:338
+0000000d.ckpt 58321323 bytes (58.32MB) write 12:28:38.018-12:28:43.577 (5.56s)
+    t=2026-11-18T12:29:04+0000 lvl=warn msg="reservation wait" n=4119 p50=1.343ms p99=8.651ms max=258.973ms notDurable=0 abandoned=0 caller=clog.go:338

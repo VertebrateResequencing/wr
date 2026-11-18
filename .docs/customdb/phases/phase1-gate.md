@@ -144,8 +144,8 @@ production-sized live set (a `.ckpt` of 40MB or more) is written, not
 only the small ones a test-scale soak makes
 ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1g.6: wrdev.sh scenarios
 

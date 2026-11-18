@@ -845,7 +845,7 @@ called ready, or explicitly deferred with the owner.
   `errStoreCorrupt`. Owner: 1f (E2), which creates a new store with an
   empty checkpoint: make a store with none `errStoreCorrupt` then.
 
-- [ ] (from 1d.2 review) A checkpoint writes its whole `.ckpt` (about
+- [x] (from 1d.2 review) A checkpoint writes its whole `.ckpt` (about
   40-180MB at production's live set) through one buffered writer with no
   pacing, then makes it durable with a single fsync, on NFS. That is the
   burst pattern that starved the bbolt committer's fdatasync before, which
@@ -889,8 +889,12 @@ called ready, or explicitly deferred with the owner.
   writeback every `backupCopySyncBytes` (1MiB) and keeping the pages
   cached: p99 3.4-43.7ms (16 runs, all but two under 12ms), and the
   checkpoint no slower (2.1-2.7s against 2.3-3.0s at `f1bcc1d7`).
-  `TestLogStoreCheckpointPacesItsWrite` guards it. The daytime soak of
-  the paced code (G7, 2026-11-16) is still to run.
+  `TestLogStoreCheckpointPacesItsWrite` guards it. The daytime soaks of
+  the paced code (`8dab632a`, NFS, Wednesday 2026-11-18;
+  [results](../results/phase1-gate-1g5.md), "Verdict") wrote 7 checkpoints
+  of 40.5MB to 58.5MB in 3.8s to 5.7s, and the `"reservation wait"` lines
+  covering them have p99 25.7ms to 27.8ms (8.7ms and 9.2ms in the final
+  partial lines), with every line of both soaks at most 36.7ms.
 
 - [x] (from 1d.2 review round 6) Recovery step 1 deletes every `*.tmp`
   (`removeTmpFiles`, `jobqueue/store_checkpoint.go`), but only a

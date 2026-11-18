@@ -7,7 +7,7 @@
 
 ## Items
 
-- [ ] 1g.5 (daytime NFS targets) fails the stall-free soak criterion: every
+- [x] 1g.5 (daytime NFS targets) fails the stall-free soak criterion: every
   `"reservation wait"` line must have `p99` at most 50ms and `abandoned=0`,
   with no averaging. In the 1h NFS soak (10:00 to 11:02 GMT on 2026-11-11,
   HEAD f7006373, peak LSF RUN 3,121, 280,956 reservations) `abandoned=0`
@@ -459,7 +459,7 @@
     `f1bcc1d7` settles seconds behind (results doc, "Open for the
     owner").
 
-- [ ] Checkpoint writeback (1g.5 with the 1d.2 incidental,
+- [x] Checkpoint writeback (1g.5 with the 1d.2 incidental,
   .docs/customdb/phases/incidentals.md): the gate soak G6 of round 4's
   code failed one line, its last (61.9ms), which coincided with its last
   checkpoint (58.5MB written over 5.7s); production-sized checkpoints are
@@ -571,7 +571,18 @@
     120,000 freshly added jobs took 27.5-27.7s against 6.6-6.8s at
     `f1bcc1d7`, the round 1-4 fold bound's 2MB commits each paying an
     NFS fsync (results doc, "Round 5" and "The fold bound's cost").
-  - Gate soaks: not yet run. `src-gate`
+  - Gate soaks: PASS on Wednesday 2026-11-18 (results doc, "Verdict" at
+    the top). chain17's G7 and H2 were stopped on 2026-11-16 within 2
+    minutes by prodsim's diskguard (local `/tmp` 14G free), so
+    `tools/chain18.sh` reran them from the same clean `src-gate` (wr
+    buildinfo `vcs.revision=8dab632aa844fad73528e4172ba257ac90e7ab3f`,
+    `vcs.modified=false`). G7b, the gate soak (10:26:35-11:27:44, peak
+    LSF RUN 3,106, 281,052 reservations): all 61 `"reservation wait"`
+    lines `p99` <= 50ms (worst 33.03ms) and `abandoned=0`. H2b, prodsim
+    scale 2 (11:28:26-12:29:38): all 61 lines pass (worst 36.70ms). The 7
+    checkpoints of 40.5-58.5MB across both soaks have covering lines of
+    p99 8.65-27.79ms. `TestAddLatency1000` runs 22-24 (12:45:07-12:45:26,
+    the same day): p50 23.59ms each. As recorded before the runs: `src-gate`
     (/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/src-gate) holds the final code
     at commit 8dab632aa844fad73528e4172ba257ac90e7ab3f, equal file for
     file to round 5's working tree outside `.docs` (round 6 changed only
@@ -668,3 +679,5 @@ Round 7 passed the code, tests and docs at the working tree that src-gate
 
 The two fix items stay unticked until the gate soak G7 (chain17.sh, PID
 308228, from 10:00 GMT on 2026-11-16) shows 1g.5's criteria on this code.
+Its rerun G7b (chain18.sh, 2026-11-18) did, so both are ticked (see the
+checkpoint item's "Gate soaks").

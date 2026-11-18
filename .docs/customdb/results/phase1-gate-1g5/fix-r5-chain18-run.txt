@@ -1,0 +1,77 @@
+# chain18.out
+chain18: pid 3148832 Wed 18 Nov 10:26:11 UTC 2026
+/dev/vda3       127G   68G   58G  55% /tmp
+chain18: G7b done rc=0 Wed 18 Nov 11:28:05 UTC 2026
+chain18: H2b done rc=0 Wed 18 Nov 12:29:58 UTC 2026
+# G7b-gate.out (head)
+soak-r5: arm=G7b-gate src=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/src-gate hours=1 env:  start Wed 18 Nov 10:26:11 UTC 2026
+building wr from 8dab632 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/G7b-gate/wr
+built wsprobe -> /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/G7b-gate/wsprobe
+OK
+prodsim: 1h real, 1 sim minute = 6s, scale 1, scheduler lsf, pprof :6338
+  isolated prod-mode manager :53382 web :53383, LSF jobs wrpiso53382h663922806_*, output /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/G7b-gate/prodsim-1794997589
+run: output /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/G7b-gate/prodsim-1794997589
+soak-r5: G7b-gate wr buildinfo:
+	build	vcs.revision=8dab632aa844fad73528e4172ba257ac90e7ab3f
+	build	vcs.modified=false
+# H2b-scale2.out (head)
+soak-r5: arm=H2b-scale2 src=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/src-gate hours=1 env: SCALE=2 start Wed 18 Nov 11:28:05 UTC 2026
+building wr from 8dab632 -> /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/H2b-scale2/wr
+built wsprobe -> /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/H2b-scale2/wsprobe
+OK
+prodsim: 1h real, 1 sim minute = 6s, scale 2, scheduler lsf, pprof :6338
+  isolated prod-mode manager :53382 web :53383, LSF jobs wrpiso53382h1940160706_*, output /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/H2b-scale2/prodsim-1795001300
+run: output /nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/H2b-scale2/prodsim-1795001300
+soak-r5: H2b-scale2 wr buildinfo:
+	build	vcs.revision=8dab632aa844fad73528e4172ba257ac90e7ab3f
+	build	vcs.modified=false
+# G7b-gate/prodsim-1794997589 restarts.tsv
+1794997595	start	rc=0	pid=3151410	ms=588	db_mb=0	load=1.30	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/G7b-gate/dbdir/db
+1795001264	stop	rc=killed	pid=3151410	ms=32015	kind=clean	db_mb=0	load=3.17	aliveAtReturn=y	token=deleted	freelist=unreadable	bkMtime=1795001225->1795001255
+# G7b-gate/prodsim-1794997589 ramp.log
+1794997597 stage t+0m target=600 results_portal=600 load=1.30
+1794998199 stage t+10m target=1200 results_portal=1200 load=3.39
+1794998800 stage t+20m target=2100 results_portal=2100 load=2.20
+1794999703 stage t+35m target=3000 results_portal=3000 load=2.91
+# G7b-gate/prodsim-1794997589 markers-analysis.txt
+runs=281052 keys=278355 by kind: {'portal_compress': 96639, 'portal_dedupe': 179728, 'pipeline': 115, 'walk': 24, 'stat': 1635, 'tidy': 15, 'combine': 16, 'put': 21, 'fofnput': 2857, 'build': 1, 'publish': 1}
+runs with no end marker (SIGKILLed, lost, or still running at the end): 2215
+  by nearest event: {'stop-clean': 2215}
+runs ended by a signal: 0 {}
+  by nearest event: {}
+exit codes: {'0': 276048, '3': 2789}
+
+DOUBLE RUNS (non-put key run again after a run that exited 0): 0
+
+true overlaps (a second run began before an earlier one ended): 0
+
+re-runs after a run that did not exit 0 (killed, failed or lost; retries/wr retry are expected): 2686
+    2127  previous run rc3    near none
+     559  previous run rc3    near stop-clean
+
+ctrdep: runs=0 dependency-done-file missing at start=0 started before dependency finished=0
+# H2b-scale2/prodsim-1795001300 restarts.tsv
+1795001306	start	rc=0	pid=3615812	ms=571	db_mb=0	load=2.71	freelistAtOpen=unreadable	db=/nfs/hgi/wr/sb10-bigdb/customdb/1g5fix/soak/H2b-scale2/dbdir/db
+1795004978	stop	rc=0	pid=3615812	ms=34452	kind=clean	db_mb=0	load=2.05	aliveAtReturn=n	token=deleted	freelist=unreadable	bkMtime=1795004938->1795004968
+# H2b-scale2/prodsim-1795001300 ramp.log
+1795001308 stage t+0m target=600 results_portal=600 load=2.71
+1795001909 stage t+10m target=1200 results_portal=1200 load=2.33
+1795002511 stage t+20m target=2100 results_portal=2100 load=2.01
+1795003414 stage t+35m target=3000 results_portal=3000 load=3.94
+# H2b-scale2/prodsim-1795001300 markers-analysis.txt
+runs=280615 keys=277903 by kind: {'portal_dedupe': 166662, 'pipeline': 115, 'tidy': 13, 'portal_compress': 108979, 'combine': 14, 'stat': 1949, 'fofnput': 2812, 'put': 45, 'publish': 1, 'build': 1, 'walk': 24}
+runs with no end marker (SIGKILLed, lost, or still running at the end): 2234
+  by nearest event: {'stop-clean': 2234}
+runs ended by a signal: 0 {}
+  by nearest event: {}
+exit codes: {'0': 275575, '3': 2806}
+
+DOUBLE RUNS (non-put key run again after a run that exited 0): 0
+
+true overlaps (a second run began before an earlier one ended): 0
+
+re-runs after a run that did not exit 0 (killed, failed or lost; retries/wr retry are expected): 2687
+    2120  previous run rc3    near none
+     567  previous run rc3    near stop-clean
+
+ctrdep: runs=0 dependency-done-file missing at start=0 started before dependency finished=0
