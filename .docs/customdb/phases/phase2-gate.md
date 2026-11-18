@@ -72,6 +72,9 @@ spec.md section: Implementation Order, Phase 2, Gates
 
 Repeat the crash soak of item 1g.3 with the same pass criteria against
 the final store. This soak gives the authoritative backup-I/O result.
+Also fail it if `wr status -i <rep group> -z --limit 1`, timed just
+after each injected restart, takes more than 5s: item 2b.3 made it
+independent of history size (owner ruling, 2026-11-18).
 
 - [ ] implemented
 - [ ] reviewed

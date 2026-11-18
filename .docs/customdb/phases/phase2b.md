@@ -71,3 +71,22 @@ Phase 2 checkpoint's spec per overlay or replaced entry
 
 - [ ] implemented
 - [ ] reviewed
+
+### Item 2b.3: History status queries independent of history size
+
+spec.md section: D3; Implementation Order, Phase 2, 2b
+
+Owner ruling, 2026-11-18, moved from item 1g.3: make
+`wr status -i <rep group> -z --limit 1` and the other limited
+history-path status queries near-instant, with a cost that does not grow
+with the number of finished jobs. Today `historyRead.offerArchived` reads
+every complete record of the rep group, which took 72s to over 120s on
+the 1g.3 soak's 11GB history. Serve these queries from per-key indexes or
+segment footers (D3) so they read only the records they return. Add a
+regression test that fails while the cost scales with history: grow the
+history of one rep group by at least 10x and require the records or bytes
+read for a `--limit 1` query to stay constant, not merely the wall time.
+The phase 2 gate times the query on the crash soak. Depends on 2b.2.
+
+- [ ] implemented
+- [ ] reviewed

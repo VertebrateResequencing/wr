@@ -93,7 +93,11 @@ least 1, and the `doubles` line has `outside=0`. Also time
 manager still has a large unfolded wal backlog, and report the times: the
 log store decodes each unfolded history entry in full on that path (the
 1f.11 incidental owned by 2b in [incidentals.md](incidentals.md)), and any
-time over 60s, the client request timeout floor, fails the gate. Never
+time over 60s, the client request timeout floor, fails the gate. Also
+time and report `wr status -i <rep group> -z --limit 1` after each
+restart, but do not fail this gate on it: its cost grows with the number
+of finished jobs on bbolt and the log store alike, and the owner ruled on
+2026-11-18 that item 2b.3 makes it independent of history size. Never
 replace the NFS wr binary while the soak's runners are live.
 
 - [ ] implemented
@@ -104,6 +108,21 @@ replace the NFS wr binary while the soak's runners are live.
 spec.md section: Implementation Order, Phase 1, Gates
 
 Run `make speed-full` against `d1a4b6d7`: no regression above 10%.
+
+Owner ruling, 2026-11-18: a plain percentile of reserve waits taken
+during a background operation (such as `AddManyUnderReserveLoad`'s
+reserve p99) misreports a faster operation as a regression, because a
+shorter window samples fewer reserves and the same few slow ones become a
+larger share. Before judging this gate, make `developers/speed.sh` judge
+those benchmarks by a deterministic, window-aware rule instead of the
+raw percentile delta. The rule regresses only if, compared with the
+base, the background operation slows, or it delays more reserves per
+operation, or its longest queue-lock hold grows, or the delayed reserves
+wait longer, each beyond the 10% bound or the benchmark's measured noise.
+Report the raw percentile alongside it. Test the rule
+on recorded base and head outputs, including the 1g.4 runs in
+[results/phase1-gate-1g4.md](../results/phase1-gate-1g4.md), then rerun
+`make speed-full` with it.
 
 - [ ] implemented
 - [ ] reviewed
