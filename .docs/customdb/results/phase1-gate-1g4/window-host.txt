@@ -1,0 +1,35 @@
+Wed 18 Nov 18:00:13 UTC 2026
+ 18:00:13 up 422 days,  1:40, 21 users,  load average: 2.63, 1.24, 1.08
+               total        used        free      shared  buff/cache   available
+Mem:              91           9          15           0          66          80
+Swap:              7           4           3
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda3       127G   68G   58G  54% /tmp
+
+# every 5 min during the run (ps %CPU is the process's lifetime average)
+18:00:42 load 4.22, 1.77, 1.27 | 14 free/80 avail GB | /tmp avail 58G | 
+18:05:42 load 3.13, 2.52, 1.75 | 9 free/76 avail GB | /tmp avail 57G | wrstat-ui 290% 5GB
+18:10:42 load 1.95, 2.17, 1.82 | 14 free/79 avail GB | /tmp avail 58G | wrstat-ui 278% 8GB
+18:15:42 load 2.07, 2.03, 1.85 | 14 free/79 avail GB | /tmp avail 58G | wrstat-ui 267% 5GB
+18:20:42 load 1.66, 1.81, 1.80 | 12 free/79 avail GB | /tmp avail 56G | wrstat-ui 257% 5GB
+18:25:42 load 1.41, 1.65, 1.75 | 13 free/79 avail GB | /tmp avail 58G | wrstat-ui 247% 5GB
+18:30:42 load 1.78, 1.70, 1.74 | 14 free/80 avail GB | /tmp avail 58G | wrstat-ui 238% 5GB
+18:35:42 load 1.99, 1.87, 1.80 | 11 free/79 avail GB | /tmp avail 57G | wrstat-ui 230% 5GB
+18:40:42 load 2.24, 1.92, 1.83 | 11 free/79 avail GB | /tmp avail 58G | wrstat-ui 223% 5GB
+18:45:42 load 1.82, 2.05, 1.93 | 12 free/79 avail GB | /tmp avail 58G | wrstat-ui 215% 5GB
+18:50:42 load 1.74, 1.94, 1.92 | 11 free/79 avail GB | /tmp avail 58G | wrstat-ui 209% 5GB
+18:55:42 load 1.98, 2.02, 1.98 | 11 free/79 avail GB | /tmp avail 58G | wrstat-ui 202% 5GB
+19:00:42 load 2.03, 2.12, 2.03 | 10 free/79 avail GB | /tmp avail 58G | wrstat-ui 196% 5GB
+19:05:42 load 1.91, 2.13, 2.07 | 7 free/76 avail GB | /tmp avail 57G | wrstat-ui 191% 5GB
+19:10:42 load 2.15, 2.13, 2.07 | 12 free/80 avail GB | /tmp avail 58G | wrstat-ui 186% 8GB
+19:15:42 load 2.38, 2.10, 2.05 | 10 free/79 avail GB | /tmp avail 57G | wrstat-ui 181% 5GB
+19:20:42 load 2.37, 2.05, 2.03 | 11 free/79 avail GB | /tmp avail 58G | wrstat-ui 176% 5GB
+19:25:43 load 2.09, 2.01, 2.01 | 12 free/80 avail GB | /tmp avail 58G | wrstat-ui 171% 5GB
+19:30:43 load 2.07, 1.98, 1.99 | 11 free/79 avail GB | /tmp avail 58G | wrstat-ui 167% 5GB
+19:35:43 load 4.33, 3.04, 2.39 | 11 free/80 avail GB | /tmp avail 58G | wrstat-ui 163% 5GB
+19:40:43 load 3.47, 3.13, 2.60 | 6 free/79 avail GB | /tmp avail 58G | wrstat-ui 159% 5GB
+19:45:43 load 3.93, 3.34, 2.82 | 6 free/79 avail GB | /tmp avail 58G | wrstat-ui 155% 5GB
+19:50:43 load 3.78, 3.27, 2.94 | 9 free/80 avail GB | /tmp avail 58G | wrstat-ui 152% 5GB
+19:55:43 load 1.45, 2.39, 2.65 | 5 free/80 avail GB | /tmp avail 58G | wrstat-ui 149% 5GB
+20:00:43 load 2.66, 2.20, 2.46 | 7 free/80 avail GB | /tmp avail 58G | wrstat-ui 145% 5GB
+20:05:43 load 2.88, 2.45, 2.49 | 1 free/77 avail GB | /tmp avail 58G | wrstat-ui 142% 5GB

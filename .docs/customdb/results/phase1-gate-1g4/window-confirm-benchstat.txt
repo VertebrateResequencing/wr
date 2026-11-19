@@ -1,0 +1,83 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                               │     base      │                head                 │
+                               │    sec/op     │    sec/op     vs base               │
+KickUnderReserveLoad-8           110.87m ± 12%   74.54m ± 12%  -32.77% (p=0.000 n=8)
+ResumeUnderReserveLoad-8          96.54m ±  6%   66.82m ± 16%  -30.78% (p=0.000 n=8)
+AddManyUnderReserveLoad/norc-8    539.9m ±  6%   261.9m ±  5%  -51.48% (p=0.000 n=8)
+AddManyUnderReserveLoad/rc-8      559.1m ±  8%   271.7m ±  4%  -51.41% (p=0.000 n=8)
+geomean                           238.4m         137.2m        -42.45%
+
+                               │     base     │                head                │
+                               │ max-qlock-us │ max-qlock-us  vs base              │
+KickUnderReserveLoad-8            958.8 ± 51%   1035.0 ± 42%       ~ (p=0.959 n=8)
+ResumeUnderReserveLoad-8         1.043k ± 41%   1.000k ± 46%       ~ (p=0.878 n=8)
+AddManyUnderReserveLoad/norc-8   14.50k ± 13%   13.78k ± 12%       ~ (p=0.195 n=8)
+AddManyUnderReserveLoad/rc-8     16.74k ± 19%   15.45k ± 16%       ~ (p=0.105 n=8)
+geomean                          3.947k         3.853k        -2.39%
+
+                               │      base      │                 head                  │
+                               │ reserve-max-us │ reserve-max-us  vs base               │
+KickUnderReserveLoad-8             6.500k ± 33%     2.507k ± 90%  -61.43% (p=0.000 n=8)
+ResumeUnderReserveLoad-8           6.354k ± 26%     3.016k ± 30%  -52.54% (p=0.000 n=8)
+AddManyUnderReserveLoad/norc-8     16.46k ± 17%     15.45k ± 14%        ~ (p=0.279 n=8)
+AddManyUnderReserveLoad/rc-8       18.49k ± 24%     18.27k ± 25%        ~ (p=0.878 n=8)
+geomean                            10.59k           6.797k        -35.80%
+
+                               │      base      │                  head                  │
+                               │ reserve-p50-us │ reserve-p50-us  vs base                │
+KickUnderReserveLoad-8              8.700 ± 20%     18.235 ± 43%  +109.60% (p=0.000 n=8)
+ResumeUnderReserveLoad-8            12.82 ± 14%      25.54 ± 40%   +99.22% (p=0.000 n=8)
+AddManyUnderReserveLoad/norc-8      5.847 ±  9%      6.262 ± 12%         ~ (p=0.130 n=8)
+AddManyUnderReserveLoad/rc-8        5.543 ± 11%      6.271 ± 22%         ~ (p=0.065 n=8)
+geomean                             7.754            11.63         +49.98%
+
+                               │      base      │                 head                  │
+                               │ reserve-p99-us │ reserve-p99-us  vs base               │
+KickUnderReserveLoad-8              501.2 ± 36%      211.4 ± 10%  -57.82% (p=0.000 n=8)
+ResumeUnderReserveLoad-8            677.6 ± 28%      222.6 ± 17%  -67.16% (p=0.000 n=8)
+AddManyUnderReserveLoad/norc-8      118.4 ± 19%      139.4 ± 30%        ~ (p=0.130 n=8)
+AddManyUnderReserveLoad/rc-8        104.0 ± 24%      123.8 ± 14%  +19.14% (p=0.038 n=8)
+geomean                             254.3            168.8        -33.60%
+
+                               │     base      │                head                 │
+                               │  reserves/op  │ reserves/op   vs base               │
+KickUnderReserveLoad-8            5.438k ± 11%   4.590k ±  6%  -15.60% (p=0.000 n=8)
+ResumeUnderReserveLoad-8          4.255k ±  7%   4.210k ±  9%        ~ (p=0.574 n=8)
+AddManyUnderReserveLoad/norc-8   12.072k ± 17%   7.556k ± 20%  -37.41% (p=0.000 n=8)
+AddManyUnderReserveLoad/rc-8     11.492k ± 31%   7.164k ± 16%  -37.66% (p=0.001 n=8)
+geomean                           7.527k         5.687k        -24.45%
+
+                               │        base         │                    head                    │
+                               │ slow-reserve-p50-us │ slow-reserve-p50-us  vs base               │
+KickUnderReserveLoad-8                 1.157k ±   2%          1.513k ± 18%  +30.77% (p=0.000 n=8)
+ResumeUnderReserveLoad-8               1.170k ±   3%          1.514k ± 12%  +29.40% (p=0.000 n=8)
+AddManyUnderReserveLoad/norc-8         4.505k ± 177%          2.575k ± 23%        ~ (p=0.798 n=8)
+AddManyUnderReserveLoad/rc-8           2.873k ±  80%          8.470k ± 71%        ~ (p=0.161 n=8)
+geomean                                2.046k                 2.659k        +29.94%
+
+                               │       base       │                  head                   │
+                               │ slow-reserves/op │ slow-reserves/op  vs base               │
+KickUnderReserveLoad-8               24.670 ± 35%        7.684 ± 63%  -68.85% (p=0.000 n=8)
+ResumeUnderReserveLoad-8             24.585 ± 27%        7.953 ± 58%  -67.65% (p=0.000 n=8)
+AddManyUnderReserveLoad/norc-8        16.75 ± 67%        17.75 ± 18%        ~ (p=0.721 n=8)
+AddManyUnderReserveLoad/rc-8          17.00 ± 21%        16.88 ± 20%        ~ (p=0.629 n=8)
+geomean                               20.39              11.63        -42.94%
+
+                               │      base      │                 head                 │
+                               │      B/op      │     B/op       vs base               │
+KickUnderReserveLoad-8           193.903Mi ± 6%   7.565Mi ± 14%  -96.10% (p=0.000 n=8)
+ResumeUnderReserveLoad-8         182.892Mi ± 2%   5.580Mi ± 17%  -96.95% (p=0.000 n=8)
+AddManyUnderReserveLoad/norc-8     157.7Mi ± 0%   150.9Mi ±  0%   -4.37% (p=0.000 n=8)
+AddManyUnderReserveLoad/rc-8       159.5Mi ± 1%   152.5Mi ±  0%   -4.37% (p=0.000 n=8)
+geomean                            172.8Mi        31.39Mi        -81.84%
+
+                               │    base     │                head                │
+                               │  allocs/op  │  allocs/op   vs base               │
+KickUnderReserveLoad-8           96.78k ± 7%   90.47k ± 2%   -6.52% (p=0.007 n=8)
+ResumeUnderReserveLoad-8         56.91k ± 3%   58.94k ± 5%   +3.57% (p=0.028 n=8)
+AddManyUnderReserveLoad/norc-8   780.4k ± 1%   361.3k ± 2%  -53.71% (p=0.000 n=8)
+AddManyUnderReserveLoad/rc-8     868.9k ± 2%   446.5k ± 2%  -48.62% (p=0.000 n=8)
+geomean                          247.2k        171.3k       -30.73%

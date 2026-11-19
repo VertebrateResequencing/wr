@@ -963,3 +963,148 @@ AddAndWait did not return within 3.8s), a known flake: in a load-matched
 A/B, this tree and 09c38065 run side by side 105 times each, it failed 1
 time on this tree and 3 times on 09c38065, always at that assertion. The
 rerun passed with 1,286 tests.
+
+## Gate run with the window-aware rule (2026-11-18)
+
+This is the rerun of `make speed-full` that the owner's 2026-11-18 ruling
+asks for, judged by `speedjudge`'s window-aware rule for the four
+`*UnderReserveLoad` benchmarks.
+
+**Verdict: FAIL.** `KickUnderReserveLoad` and `ResumeUnderReserveLoad`
+regress on criteria (d) and (e): a reserve taken during a kick or resume
+waits about twice as long at the median as on base, and a slow one
+(over 1ms) about 30% longer. A 10-round rerun of the failing benchmarks
+confirmed both. Every other benchmark and scenario is within 10% or
+better, and `AddManyUnderReserveLoad/rc`'s (b) failure did not reproduce
+in the rerun.
+
+### Method
+
+HEAD was `6b925a26` on `customdb-f397b547`, a clean tree. The base was
+`d1a4b6d7`, given this tree's harness by the recipe in DEVELOPERS.md
+("Performance gate"), in a local scratch directory:
+
+```bash
+git archive d1a4b6d7 | tar -x -C <scratch>/base-d1a4b6d7
+cp jobqueue/kick_resume_bench_test.go <scratch>/base-d1a4b6d7/jobqueue/
+printf 'package jobqueue\n\nimport "testing"\n\nfunc settleStore(testing.TB, *Server) {}\n' \
+  ><scratch>/base-d1a4b6d7/jobqueue/settle_stub_test.go
+```
+
+`speed.sh` takes a single `SPEED_BENCH` regex for every package in place
+of its default sets. So that the whole gate ran in one run, the regex
+was the union of the jobqueue, queue and limiter defaults plus the four
+under-load benchmarks. It matches the same benchmarks as the default set,
+plus those four. benchstat was a copy of the binary in
+`/nfs/hgi/wr/sb10-bigdb/speed/tools/`. The fixtures and ports were those of
+the earlier runs:
+
+```bash
+F=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures
+(unset $(compgen -v | grep '^OS_'); HOME=<scratch>/home \
+ GOCACHE=/nfs/hgi/wr/sb10-bigdb/customdb/1g4/gocache \
+ GOMODCACHE=/software/hgi/envs/sb10/go/pkg/mod \
+ SPEED_BASE=<scratch>/base-d1a4b6d7 \
+ SPEED_DIR=/nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed-window-20261118 \
+ SPEED_BENCH='^Benchmark(AddJobs|UpdateJobState|ArchiveJobs|ArchiveSpacedArrivals|ReadyBacklogSnapshot|BuildSchedulerGroupsBacklog|RACCycleCounted|RepGroupStatusDetails|JobKey|ModifyLiveJobsReverseLookup|JobCleanup|JobCleanupDepth1|JobCleanupDepth8|AddDepGroupMember|KickUnderReserveLoad|ResumeUnderReserveLoad|SuspendUnderReserveLoad|AddManyUnderReserveLoad|QueueLifecycle|Limiter.*)$' \
+ SPEED_BIG_DB=$F/pristine6 WR_AS_DB=$F/prod.db WR_ARCHRATE_DB=$F/pristine10 WR_AC_DB=$F/pristine6 \
+ DEV_PORT=51994 DEV_WEB=51995 PROD_PORT=51996 PROD_WEB=51997 make speed-full)
+```
+
+It ran from 18:00 to 20:07 GMT, with 6 interleaved rounds of the
+benchmarks and one round of each scenario. Run directory:
+`/nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed-window-20261118/run-1795024813/`.
+
+The confirmation rerun used the same settings with
+`SPEED_BENCH='^Benchmark(KickUnderReserveLoad|ResumeUnderReserveLoad|AddManyUnderReserveLoad)$'`,
+`SPEED_COUNT=10`, `SPEED_SCENARIOS=none` and `developers/speed.sh quick`,
+from 20:07 to 21:36 GMT. In round 9 the shared `/nfs/hgi` volume filled up
+(another user's data: it went from 81GB free to 133MB, while this run's
+directories held about 10MB). `speed.sh` then stopped with `No space left
+on device` while writing its log. The benchmarks' own data was in local
+`/tmp`, so rounds 1 to 8 were complete for both trees. They were judged
+with the same benchstat and `speedjudge -threshold 10 -alpha 0.05`, after
+dropping base's partial round 9. Raw files:
+`/nfs/hgi/wr/sb10-bigdb/customdb/1g4/speed-window-20261118/confirm/run-1795032475/`.
+
+### Host conditions
+
+farm22-wrstat01 (8 cores, 91GB). Load average was 1.4 to 2.4 for most of
+the gate run, briefly 4.3 at 19:35 during the scenarios, and 1.6 to 2.8
+during the rerun. /tmp had 56 to 58GB free throughout. mercury's
+`wrstat-ui` (5 to 9GB RSS) was the top process by `ps`'s lifetime %CPU,
+but it had done its work before the run: its lifetime %CPU fell from 290%
+to 159% as about 1/t over the run, and `top` read 0.0% at 20:10. The load
+was the benchmarks' own (8 reservers plus the background operation).
+Base and HEAD were interleaved in every round, so neither tree had a
+quieter host. Five-minute samples:
+[window-host.txt](phase1-gate-1g4/window-host.txt).
+
+### Results
+
+benchstat: [window-benchstat.txt](phase1-gate-1g4/window-benchstat.txt);
+judgement: [window-judgement.txt](phase1-gate-1g4/window-judgement.txt).
+`speed.sh`'s verdict was `FAIL: make speed found 4 problem(s)`, all from
+the window rule:
+
+```text
+REGRESSION KickUnderReserveLoad-8 (d) median slow-reserve wait, slow-reserve-p50-us: +14.78% (p=0.002)
+REGRESSION KickUnderReserveLoad-8 (e) median reserve wait, reserve-p50-us: +82.12% (p=0.002)
+REGRESSION ResumeUnderReserveLoad-8 (d) median slow-reserve wait, slow-reserve-p50-us: +39.20% (p=0.002)
+REGRESSION AddManyUnderReserveLoad/rc-8 (b) slow reserves per op, slow-reserves/op: +12.50% (p=0.043)
+```
+
+The WINDOW blocks, gate run (6 rounds) and rerun (8 rounds):
+
+| Criterion | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| (a) sec/op | -32.29% / -32.77% | -30.42% / -30.78% | -58.78% | -51.81% / -51.48% | -50.02% / -51.41% |
+| (b) slow-reserves/op | -75.56% / -68.85% | -75.35% / -67.65% | -99.04% | ~ / ~ | **+12.50% (p=0.043)** / ~ |
+| (c) max-qlock-us | ~ / ~ | ~ / ~ | -82.92% | -21.40% / ~ | ~ / ~ |
+| (d) slow-reserve-p50-us | **+14.78%** / **+30.77%** | **+39.20%** / **+29.40%** | ~ | ~ / ~ | ~ / ~ |
+| (e) reserve-p50-us | **+82.12%** / **+109.60%** | ~ (+86.55%, p=0.132) / **+99.22%** | -15.75% | ~ / ~ | ~ / ~ |
+| reserve-p99-us (info) | -67.08% / -57.82% | -67.66% / -67.16% | -72.13% | ~ / ~ | ~ / +19.14% |
+| reserve-max-us (info) | -66.00% / -61.43% | -58.92% / -52.54% | -77.41% | ~ / ~ | ~ / ~ |
+
+Bold marks a regression (p at most 0.002 except where shown); `~` is not
+significant at p < 0.05. Suspend was not rerun. The rerun's figures:
+[window-confirm-benchstat.txt](phase1-gate-1g4/window-confirm-benchstat.txt),
+[window-confirm-judgement.txt](phase1-gate-1g4/window-confirm-judgement.txt).
+
+Absolute medians in the rerun:
+
+| Benchmark | reserve-p50-us base -> HEAD | slow-reserve-p50-us base -> HEAD | slow-reserves/op base -> HEAD |
+| --- | --- | --- | --- |
+| Kick | 8.7 -> 18.2 | 1,157 -> 1,513 | 24.7 -> 7.7 |
+| Resume | 12.8 -> 25.5 | 1,170 -> 1,514 | 24.6 -> 8.0 |
+
+In the gate run, Kick's reserve-p50 was higher on HEAD in every round
+(13.8 to 19.5us, against 7.8 to 13.7us on base). So on HEAD a kick or
+resume takes about 30% less time and delays a quarter as many reserves
+past 1ms. But the typical reserve during it waits about 10us longer, and
+the reserves that pass 1ms wait about 0.35ms longer. The earlier A/Bs
+above (for example rl-r2) showed reserve-p50 as `~` for kick and resume;
+they had no (d) figures.
+
+Everything else, from [window-benchstat.txt](phase1-gate-1g4/window-benchstat.txt):
+
+- No sec/op, B/op or allocs/op of the default set is more than 10% worse.
+  The largest rises are `AddDepGroupMember` B/op +8.49% (sec/op -17.06%,
+  allocs/op -48.76%), `RepGroupStatusDetails/1000` allocs/op +0.74%, and
+  `ArchiveJobs` bolt_txns/job +0.41%.
+- The under-load benchmarks' B/op fall by 4.9% to 97.8%.
+- The scenarios, one round each, all met their thresholds on HEAD. Their
+  HEAD/base figures: report-storm 3,241.5/3,144.7 jobs/s;
+  dep-granularity peak RSS 267/308MB, add 0.325/0.496s; add-storm
+  259.3/252.7 adds/s, p99 2,937/2,870ms; archive-rate 168.6/168.0
+  archives/s; archive-ceiling 374.6/396.1 archives/s (-5.4%), p99
+  1,476/1,312ms (+12.5%). With one round, benchstat calls none of them
+  significant, so as in run 2 they gate only on their own thresholds.
+
+### What is left
+
+1g.4 stays unticked. The kick and resume regressions on (d) and (e) need a
+diagnosis on the reserve path during a per-item queue operation (what
+adds about 10us to the median reserve while a kick or resume runs), or
+an owner ruling on these two criteria. The rule was not
+retuned.
