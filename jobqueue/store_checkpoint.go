@@ -28,10 +28,11 @@ package jobqueue
 // This file holds the log store's checkpoints (spec "Checkpoints", C6): every
 // checkpointInterval, or checkpointLogBytes of wal, the log is cut, the
 // previous checkpoint is merged with the wal files before the cut into a new
-// one, every in-memory Ref below the cut is swapped for its copy in the new
-// checkpoint, and the files the new checkpoint makes redundant are deleted, so
-// that recovery time and the log's size stay bounded and every live spec stays
-// addressable through a Ref.
+// one, which also holds the fold backlog the folder has yet to fold from them
+// (store_backlog.go), every in-memory Ref below the cut is swapped for its copy
+// in the new checkpoint, and the files the new checkpoint makes redundant are
+// deleted, so that recovery time and the log's size stay bounded however far
+// the folder trails and every live spec stays addressable through a Ref.
 
 import (
 	"bufio"
@@ -125,10 +126,11 @@ var (
 
 // Test seams, nil or 0 outside tests.
 var (
-	// logCheckpointFoldedHook is called by each checkpoint once the folded
-	// position has reached its cut (spec "Checkpoints", step 2), with the store
-	// making it, as every log store open in the process calls it.
-	logCheckpointFoldedHook atomic.Pointer[func(*logStore)] //nolint:gochecknoglobals // a test seam
+	// logCheckpointCutHook is called by each checkpoint once it has made its
+	// cut and every write before it has applied (spec "Checkpoints", step 1),
+	// before it takes where its backlog starts, with the store making it, as
+	// every log store open in the process calls it.
+	logCheckpointCutHook atomic.Pointer[func(*logStore)] //nolint:gochecknoglobals // a test seam
 
 	// logCheckpointRenameHook is called by each checkpoint once its .tmp file
 	// is durable, before it is renamed; an error it returns ends the
@@ -415,14 +417,17 @@ func (w *checkpointWriter) addAll(recs [][]byte) error {
 }
 
 // checkpointMerge is one checkpoint's reading of the previous checkpoint and
-// the wal files before its cut.
+// the wal files before its cut, and the backlog it notes of the records from
+// histFrom on that the folder folds.
 type checkpointMerge struct {
-	s       *logStore
-	walFrom uint32
-	prev    uint32 // the previous checkpoint's walFrom, or 0
-	files   []uint32
-	limits  []int64
-	state   logState
+	s        *logStore
+	walFrom  uint32
+	histFrom historyPos
+	prev     uint32 // the previous checkpoint's walFrom, or 0
+	files    []uint32
+	limits   []int64
+	state    logState
+	backlog  []backlogEntry
 }
 
 // each calls fn with every record of the previous checkpoint, then of the wal
@@ -510,28 +515,65 @@ func (m *checkpointMerge) eachInWAL(n uint32, limit int64, fn func(ref wal.Ref, 
 	return err
 }
 
-// reduce applies every record m reads to m's state with the recovery reducer.
-// It decodes no spec or run state: what a checkpoint holds depends only on
-// each record's type, seq, key and Ref.
+// reduce applies every record m reads to m's state with the recovery reducer,
+// a record of the previous checkpoint's backlog as applyBacklog does, and notes
+// m's backlog (see noteBacklog). It decodes no spec or run state: what a
+// checkpoint holds depends only on each record's type, seq, key and Ref, and
+// on its backlog header.
 func (m *checkpointMerge) reduce() error {
+	var head *backlogHeader
+
 	return m.each(func(ref wal.Ref, rec []byte) error {
-		parsed, err := parseLogRecord(rec)
+		h, ok, err := backlogHeaderOf(rec)
+		if ok || err != nil {
+			head = h
+
+			return corruptAt(ref, err)
+		}
+
+		h, head = head, nil
+		if h != nil && h.flags&backlogSpecCopy != 0 {
+			return nil
+		}
+
+		op, err := mergeOp(ref, rec, h)
 		if err != nil {
-			return fmt.Errorf("%w: %+v: %w", errStoreCorrupt, ref, err)
+			return corruptAt(ref, err)
 		}
 
-		op := logOp{typ: parsed.typ, seq: parsed.seq, key: parsed.key, newKey: parsed.newKey, ref: ref,
-			stream: parsed.stream, hasStd: len(parsed.body) > 0, limit: parsed.limit, removed: parsed.removed,
-			name: strings.Clone(parsed.name)}
-
-		if parsed.typ == logRecEnv {
-			op.blob = slices.Clone(parsed.body)
-		}
-
+		m.noteBacklog(&op, ref)
 		m.state.apply(&op)
 
 		return nil
 	})
+}
+
+// corruptAt returns err, if not nil, as errStoreCorrupt of the record at ref.
+func corruptAt(ref wal.Ref, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %+v: %w", errStoreCorrupt, ref, err)
+}
+
+// mergeOp returns the op of rec, at ref, with backlog header h if it is a
+// backlog record, as reduce applies it.
+func mergeOp(ref wal.Ref, rec []byte, h *backlogHeader) (logOp, error) {
+	parsed, err := parseLogRecord(rec)
+	if err != nil {
+		return logOp{}, err
+	}
+
+	op := logOp{typ: parsed.typ, seq: parsed.seq, key: parsed.key, newKey: parsed.newKey, ref: ref,
+		stream: parsed.stream, hasStd: len(parsed.body) > 0, limit: parsed.limit, removed: parsed.removed,
+		name: strings.Clone(parsed.name), backlog: h}
+
+	if parsed.typ == logRecEnv {
+		op.blob = slices.Clone(parsed.body)
+	}
+
+	return op, nil
 }
 
 // wanted returns the Refs of the records of m's live jobs a checkpoint copies:
@@ -557,25 +599,29 @@ func (m *checkpointMerge) wanted() map[wal.Ref]bool {
 }
 
 // write writes m's checkpoint to f and syncs it: its header, a block per
-// checkpointBlockBytes of records, and its trailer. It forces writeback every
+// checkpointBlockBytes of records, those of its live jobs first, then its
+// backlog in blocks of its own, and its trailer. It forces writeback every
 // backupCopySyncBytes, as the backup copy does, so that the final sync does
 // not send the whole file (55-76MB at the end of phase 1's gate soaks) at
 // once ahead of the log's syncs, which reservations wait for: unpaced, such a
 // checkpoint held reservations up to about 150ms, on local disk too
-// (TestReserveWaitDuringCheckpoint).
-func (m *checkpointMerge) write(f *os.File, folded historyPos) (map[wal.Ref]wal.Ref, error) {
+// (TestReserveWaitDuringCheckpoint). The header's record count leaves out the
+// backlog's headers and the specs it copies.
+func (m *checkpointMerge) write(f *os.File) (map[wal.Ref]wal.Ref, error) {
 	want, unreferenced := m.wanted(), m.unreferenced()
 	paced := &backupCopyWriter{f: f, syncEvery: backupCopySyncBytes, keepCached: true}
 	cw := &checkpointWriter{w: bufio.NewWriter(paced), refFile: m.walFrom | checkpointRefFlag,
 		swap: make(map[wal.Ref]wal.Ref, len(want))}
 
-	header := checkpointHeader{walFrom: m.walFrom, histFrom: folded, maxSeq: m.state.maxSeq,
-		live: uint64(len(m.state.live)), records: uint64(len(want) + len(unreferenced))}
+	header := checkpointHeader{walFrom: m.walFrom, histFrom: m.histFrom, maxSeq: m.state.maxSeq,
+		live: uint64(len(m.state.live)), records: uint64(len(want) + len(unreferenced) + len(m.backlog))}
 
 	steps := []func() error{
 		func() error { return cw.frame(header.append(nil)) },
 		func() error { return m.copyWanted(cw, want) },
 		func() error { return cw.addAll(unreferenced) },
+		cw.flush,
+		func() error { return m.writeBacklog(cw) },
 		cw.flush,
 		callCheckpointWriteHook,
 		func() error { return cw.frame(checkpointTrailer(cw.offsets)) },
@@ -694,15 +740,17 @@ func (m *checkpointMerge) limit(files []uint32, i int) (int64, error) {
 	return limit, err
 }
 
-// newCheckpointMerge returns the merge for a checkpoint cut at walFrom: of the
-// previous checkpoint, if any, and the wal files from its walFrom (else the
-// first) to the cut, each to the end recovery gives it.
-func (s *logStore) newCheckpointMerge(walFrom uint32) (*checkpointMerge, error) {
-	m := &checkpointMerge{s: s, walFrom: walFrom, prev: s.ckptFrom, state: newLogState()}
+// newCheckpointMerge returns the merge for a checkpoint cut at walFrom, its
+// backlog starting at histFrom: of the previous checkpoint, if any, and the
+// wal files from its walFrom (else the first) to the cut, each to the end
+// recovery gives it.
+func (s *logStore) newCheckpointMerge(walFrom uint32, histFrom historyPos) (*checkpointMerge, error) {
+	m := &checkpointMerge{s: s, walFrom: walFrom, histFrom: histFrom, prev: s.ckptFrom, state: newLogState()}
 
-	// Every complete, rglookup and modify record before the cut is folded
-	// (step 2), so they change only the live plane, as at recovery.
-	m.state.folded = historyPos{file: walFrom}
+	// A complete, rglookup or modify record before histFrom is folded, so it
+	// changes only the live plane, as at recovery; one from it on goes to the
+	// overlay too, which pairs each complete record with its spec.
+	m.state.folded = histFrom
 
 	var err error
 
@@ -943,11 +991,13 @@ func publishCheckpoint(dir, tmp, path string) error {
 	return syncDir(dir)
 }
 
-// cutAndFold makes a checkpoint's cut and folds to it (spec "Checkpoints",
-// steps 1 and 2): it rotates the writer, waits until every write with records
-// before the cut has applied, then folds to the writer's durable end, which
-// the rotation took past the cut. It returns the cut and the folded position.
-func (s *logStore) cutAndFold() (uint32, historyPos, error) {
+// cut makes a checkpoint's cut (spec "Checkpoints", step 1): it rotates the
+// writer and waits until every write with records before the cut has applied.
+// It returns the cut and where the checkpoint's backlog starts: the folded
+// position of the last fold that has dropped what it folded from the overlay,
+// so that every overlay entry below the cut has its records in the backlog. It
+// never waits for the folder.
+func (s *logStore) cut() (uint32, historyPos, error) {
 	sealed, err := s.rotate()
 	if err != nil {
 		return 0, historyPos{}, err
@@ -955,14 +1005,14 @@ func (s *logStore) cutAndFold() (uint32, historyPos, error) {
 
 	s.awaitAppends()
 
-	if err = s.foldNow(); err != nil {
-		return 0, historyPos{}, err
+	if hook := logCheckpointCutHook.Load(); hook != nil {
+		(*hook)(s)
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return sealed + 1, s.state.folded, nil
+	return sealed + 1, s.state.dropped, nil
 }
 
 // rotate is the writer's Rotate, its ErrClosed being errDBClosed.
@@ -992,22 +1042,23 @@ func (e *logLive) swapRefs(swapped func(wal.Ref) wal.Ref) {
 // loadCheckpoint applies the records of the newest checkpoint in the store's
 // directory with a valid trailer to the store's state (spec "Recovery", step
 // 2), decoding its blocks with checkpointReaders goroutines, and returns its
-// walFrom, or 0 if there is no checkpoint. Checkpoint files with none valid is
-// errStoreCorrupt.
-func (s *logStore) loadCheckpoint() (uint32, error) {
+// header, a zero one if there is no checkpoint. Its backlog's records rebuild
+// the overlay from the folded position, which the caller has set (see
+// applyBacklog). Checkpoint files with none valid is errStoreCorrupt.
+func (s *logStore) loadCheckpoint() (checkpointHeader, error) {
 	n, header, offsets, f, err := newestCheckpoint(s.dir)
 	if err != nil || f == nil {
-		return 0, err
+		return checkpointHeader{}, err
 	}
 
 	err = s.applyCheckpoint(f, offsets, n|checkpointRefFlag)
 	if err = errors.Join(err, f.Close()); err != nil {
-		return 0, fmt.Errorf("%w: checkpoint %08x: %w", errStoreCorrupt, n, err)
+		return checkpointHeader{}, fmt.Errorf("%w: checkpoint %08x: %w", errStoreCorrupt, n, err)
 	}
 
 	s.state.maxSeq = max(s.state.maxSeq, header.maxSeq)
 
-	return n, nil
+	return header, nil
 }
 
 // checkpointOps is the ops of a checkpoint's block i, or the error decoding it.
@@ -1072,15 +1123,32 @@ func (s *logStore) decodeCheckpointBlocks(f *os.File, offsets []uint64, refFile 
 }
 
 // decodeCheckpointBlock returns the ops of the records of the checkpoint block
-// i at off in f.
+// i at off in f, each record of its backlog with its header, leaving out spec
+// copies, which apply to nothing. A backlog header and its record are always
+// in the same block.
 func (s *logStore) decodeCheckpointBlock(r *logReplayer, f *os.File, i int, off uint64,
 	refFile uint32) checkpointOps {
 	block := checkpointOps{i: i}
 
+	var head *backlogHeader
+
 	block.err = wal.ReadFrame(f, off, func(ref wal.Ref, rec []byte) error {
 		ref.File = refFile
 
+		h, ok, err := backlogHeaderOf(rec)
+		if ok || err != nil {
+			head = h
+
+			return err
+		}
+
+		h, head = head, nil
+		if h != nil && h.flags&backlogSpecCopy != 0 {
+			return nil
+		}
+
 		op, err := r.op(rec, ref, s.ch)
+		op.backlog = h
 		block.ops = append(block.ops, op)
 
 		return err
@@ -1119,13 +1187,12 @@ func (s *logStore) applyCheckpointBlocks(decoded <-chan checkpointOps, ahead <-c
 }
 
 // checkpoint makes a checkpoint (spec "Checkpoints"): it rotates the writer,
-// so the new file is the cut walFrom; folds the log to the cut; merges the
-// previous checkpoint and the wal files before the cut into a new one, renamed
-// into place once durable; swaps every in-memory Ref below the cut for its copy
-// in it; then, once no reader holds a Ref it swapped, deletes the older
-// checkpoint and the wal files before both the cut and the folded position.
-// Checkpoints are made one at a time. A failed fold fails the checkpoint, so it
-// is skipped while the folder is failing.
+// so the new file is the cut walFrom; merges the previous checkpoint and the
+// wal files before the cut into a new one, with the backlog of what the folder
+// has yet to fold of them, renamed into place once durable; swaps every
+// in-memory Ref below the cut for its copy in it; then, once no reader holds a
+// Ref it swapped, deletes the older checkpoint and the wal files before the
+// cut. Checkpoints are made one at a time, and never wait for the folder.
 func (s *logStore) checkpoint() error {
 	s.ckptMu.Lock()
 	defer s.ckptMu.Unlock()
@@ -1135,21 +1202,21 @@ func (s *logStore) checkpoint() error {
 
 // checkpointLocked is checkpoint, the caller holding ckptMu.
 func (s *logStore) checkpointLocked() error {
-	walFrom, folded, err := s.cutAndFold()
+	walFrom, histFrom, err := s.cut()
 	if err != nil {
 		return err
 	}
 
-	if hook := logCheckpointFoldedHook.Load(); hook != nil {
-		(*hook)(s)
-	}
-
-	swap, err := s.writeCheckpoint(walFrom, folded)
+	swap, err := s.writeCheckpoint(walFrom, histFrom)
 	if err != nil {
 		return err
 	}
 
+	// The folder reads the backlog of the checkpoint it finds here, under the
+	// store's lock, holding its Refs, which keeps what it reads until it ends.
+	s.mu.Lock()
 	s.ckptFrom = walFrom
+	s.mu.Unlock()
 
 	if unswapped := s.swapRefs(swap, walFrom); unswapped > 0 {
 		return fmt.Errorf("%w: %d", errCheckpointRefsUnswapped, unswapped)
@@ -1157,17 +1224,17 @@ func (s *logStore) checkpointLocked() error {
 
 	s.awaitRefReaders()
 
-	s.delFrom, s.delFolded = walFrom, folded
+	s.delFrom = walFrom
 
-	return s.deleteRedundant(walFrom, folded)
+	return s.deleteRedundant(walFrom)
 }
 
-// writeCheckpoint writes the checkpoint cut at walFrom, its folded position
-// folded, merging the previous checkpoint with the wal files before the cut
-// (spec "Checkpoints", steps 3 and 4 up to the rename), and returns the new Ref
-// of each record it copied, by its old Ref.
-func (s *logStore) writeCheckpoint(walFrom uint32, folded historyPos) (map[wal.Ref]wal.Ref, error) {
-	m, err := s.newCheckpointMerge(walFrom)
+// writeCheckpoint writes the checkpoint cut at walFrom, its backlog starting
+// at histFrom, merging the previous checkpoint with the wal files before the
+// cut (spec "Checkpoints", steps 2 and 3 up to the rename), and returns the
+// new Ref of each record it copied, by its old Ref.
+func (s *logStore) writeCheckpoint(walFrom uint32, histFrom historyPos) (map[wal.Ref]wal.Ref, error) {
+	m, err := s.newCheckpointMerge(walFrom, histFrom)
 	if err != nil {
 		return nil, err
 	}
@@ -1184,7 +1251,7 @@ func (s *logStore) writeCheckpoint(walFrom uint32, folded historyPos) (map[wal.R
 		return nil, err
 	}
 
-	swap, err := m.write(f, folded)
+	swap, err := m.write(f)
 	if err = errors.Join(err, f.Close()); err != nil {
 		return nil, errors.Join(err, os.Remove(tmp))
 	}
@@ -1198,7 +1265,7 @@ func (s *logStore) writeCheckpoint(walFrom uint32, folded historyPos) (map[wal.R
 // in memory, not only those live at the cut, so that a Ref the checkpoint has
 // no copy of is found even if memory differs from what the checkpoint replayed.
 // A key made live after it collects the keys has Refs after the cut, as every
-// write with records before the cut has applied (cutAndFold). It works through
+// write with records before the cut has applied (see cut). It works through
 // the keys in batches, each under the store's lock, so that a reader holding a
 // Ref it copied before the swap has its hold in the generation before it.
 // Overlay and replaced entries are replaced, never changed, as queries copy
@@ -1262,13 +1329,14 @@ func (st *logState) swapRefs(k logKey, swap map[wal.Ref]wal.Ref, walFrom uint32)
 	return unswapped
 }
 
-// deleteRedundant deletes the checkpoints before walFrom and the wal files
-// before both walFrom and folded's file (spec "Recovery", wal deletion rule),
-// closing any of them open for reading. No reader holds them: the caller waited
-// for every reader that might. While incremental backups are made (spec E4) it
-// keeps the checkpoint a backup tick holds and each wal file the backup may
-// still need bytes of, which a later tick deletes once it has shipped them.
-func (s *logStore) deleteRedundant(walFrom uint32, folded historyPos) error {
+// deleteRedundant deletes the checkpoints and wal files before walFrom, the
+// newest checkpoint's cut (spec "Recovery", wal deletion rule): its backlog
+// holds what the folder has yet to fold of those wal files. It closes any of
+// them open for reading. No reader holds them: the caller waited for every
+// reader that might. While incremental backups are made (spec E4) it keeps the
+// checkpoint a backup tick holds and each wal file the backup may still need
+// bytes of, which a later tick deletes once it has shipped them.
+func (s *logStore) deleteRedundant(walFrom uint32) error {
 	files, err := walFileNumbers(s.dir)
 	if err != nil {
 		return err
@@ -1279,8 +1347,7 @@ func (s *logStore) deleteRedundant(walFrom uint32, folded historyPos) error {
 		return err
 	}
 
-	errs := s.removeRecordFiles(files, func(n uint32) bool { return n < min(walFrom, folded.file) && s.inc.mayDelete(n) },
-		0)
+	errs := s.removeRecordFiles(files, func(n uint32) bool { return n < walFrom && s.inc.mayDelete(n) }, 0)
 
 	return errors.Join(errs, s.removeRecordFiles(ckpts, func(n uint32) bool { return n < walFrom && !s.inc.holds(n) },
 		checkpointRefFlag))

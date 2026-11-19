@@ -78,6 +78,7 @@ const (
 	logRecComplete logRecordType = 9  // key, flat run state
 	logRecDepGroup logRecordType = 10 // dep group name
 	logRecExitStat logRecordType = 11 // key, jobExitData's sample fields
+	logRecBacklog  logRecordType = 12 // a checkpoint's backlog header (see backlogHeader)
 )
 
 // logRecord is a parsed record. Its byte slices and strings alias the record
@@ -111,6 +112,7 @@ var logRecordParsers = [...]func(r *logRecord, body []byte) error{
 	logRecComplete: (*logRecord).takeKey,
 	logRecDepGroup: (*logRecord).parseDepGroup,
 	logRecExitStat: (*logRecord).takeKey,
+	logRecBacklog:  (*logRecord).keepBody,
 }
 
 // logOp is one record as the reducer applies it: its type, seq and Ref, and
@@ -131,6 +133,10 @@ type logOp struct {
 	limit     int64        // limit
 	removed   bool         // limit
 	endTime   time.Time    // complete: the job's EndTime
+
+	// backlog is the header of a record of a checkpoint's fold backlog, which
+	// applies as applyBacklog says, not as the reducer applies a record.
+	backlog *backlogHeader
 }
 
 // logState is the log store's in-memory state (spec "In-memory state of
@@ -190,6 +196,12 @@ type logState struct {
 	// modify record before it is one history.bolt holds, whether replay or a
 	// done func that a fold overtook applies it.
 	folded historyPos
+
+	// dropped is the folded position of the last fold that has dropped from
+	// the overlay what it folded, at or before folded: no overlay entry is of
+	// a complete record before it, so a checkpoint's backlog from it holds
+	// every entry's records (see logStore.cut).
+	dropped historyPos
 }
 
 // logReducers apply each type of record that changes the in-memory state; an
@@ -581,6 +593,12 @@ func (s *logStore) apply(ops []logOp) {
 // rules, so the order ops are applied in does not matter.
 func (st *logState) apply(op *logOp) {
 	st.maxSeq = max(st.maxSeq, op.seq)
+
+	if op.backlog != nil {
+		st.applyBacklog(op)
+
+		return
+	}
 
 	if int(op.typ) < len(logReducers) && logReducers[op.typ] != nil {
 		logReducers[op.typ](st, op)

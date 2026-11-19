@@ -1256,6 +1256,14 @@ func hasBoltMagic(path string) (bool, error) {
 		return true, nil
 	}
 
+	// A self-contained backup is a tar, whose history.bolt member can start
+	// at one of the offsets where hasSecondBoltMeta looks, as it does when
+	// the checkpoint before it is small; a bbolt file's first page holds no
+	// tar magic.
+	if isTar, errt := hasTarMagic(path); errt != nil || isTar {
+		return false, errt
+	}
+
 	return hasSecondBoltMeta(path)
 }
 

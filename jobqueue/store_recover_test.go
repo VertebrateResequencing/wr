@@ -437,6 +437,76 @@ func TestLogStoreRecoverFailedBatch(t *testing.T) {
 	})
 }
 
+func TestLogStoreWALFromCutMidFileThenMissing(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a closed log store, its folder paused, whose checkpoint's walFrom is its last wal file and "+
+		"holds two adds made after the checkpoint, the last of them torn", t, func() {
+		pauseLogFolder()
+
+		s, dir := openTestLogStore(t, ctx)
+
+		_, err := s.storeNewJobsGuarded(ctx, testLogJobs("cut walFrom before", "cut", 3), false, nil)
+		So(err, ShouldBeNil)
+		So(s.checkpoint(), ShouldBeNil)
+
+		walFrom := s.checkpointFrom()
+
+		for i := range 2 {
+			_, err = s.storeNewJobsGuarded(ctx, testLogJobs(fmt.Sprintf("cut walFrom after %d", i), "cut", 3),
+				false, nil)
+			So(err, ShouldBeNil)
+		}
+
+		So(s.close(ctx), ShouldBeNil)
+
+		files, err := walFileNumbers(dir)
+		So(err, ShouldBeNil)
+		So(files[len(files)-1], ShouldEqual, walFrom)
+
+		path := walFilePath(dir, walFrom)
+		info, err := os.Stat(path)
+		So(err, ShouldBeNil)
+		So(os.Truncate(path, info.Size()-3), ShouldBeNil)
+
+		Convey("an open that dies as soon as recovery has cut walFrom's torn tail, noting that cut mid-file, "+
+			"then walFrom missing, makes the next open errStoreCorrupt, not an absent file a torn header "+
+			"left", func() {
+			died := func() error { return errRecoverRun }
+			logWALTruncatedHook.Store(&died)
+			Reset(func() { logWALTruncatedHook.Store(nil) })
+
+			_, err = openLogStore(ctx, dir)
+			So(err, ShouldWrap, errRecoverRun)
+
+			logWALTruncatedHook.Store(nil)
+
+			So(filepath.Join(dir, recoveryCutsFile), shouldExist)
+
+			cut, errs := os.Stat(path)
+			So(errs, ShouldBeNil)
+			So(cut.Size(), ShouldBeBetween, int64(wal.FrameHeader+walHeaderLen), info.Size()-3)
+
+			files, err = walFileNumbers(dir)
+			So(err, ShouldBeNil)
+			So(files[len(files)-1], ShouldEqual, walFrom)
+
+			So(os.Remove(path), ShouldBeNil)
+
+			broken, erro := openLogStore(ctx, dir)
+			if broken != nil {
+				Reset(func() { So(broken.close(ctx), ShouldBeNil) })
+			}
+
+			So(erro, ShouldWrap, errStoreCorrupt)
+		})
+	})
+}
+
 // TestLogStoreRecoverReopenedRelease covers spec C5 test 8: a release made
 // after a reopen outranks the reservation recovered by it at the next reopen,
 // with or without a checkpoint between the two reopens, and when the first
@@ -623,6 +693,7 @@ func TestLogStoreRecoverTornWalFromHeader(t *testing.T) {
 		archiveTestJob(s, jobs[0], start, start.Add(time.Second))
 		So(s.flush(), ShouldBeNil)
 		So(s.checkpoint(), ShouldBeNil)
+		So(s.foldNow(), ShouldBeNil)
 
 		s.mu.RLock()
 		walFrom, folded := s.ckptFrom, s.state.folded
@@ -819,7 +890,7 @@ func TestLogStoreTornWALFromReopen(t *testing.T) {
 				pauseLogFolder()
 
 				reopened := openLogStoreIn(logCtx, dir)
-				So(reopened.state.folded, ShouldResemble, historyPos{file: walFrom})
+				So(reopened.state.folded.after(historyPos{file: walFrom}), ShouldBeFalse)
 
 				_, err = reopened.storeNewJobsGuarded(ctx, testLogJobs("torn walFrom reused", "torn", 3), false, nil)
 				So(err, ShouldBeNil)

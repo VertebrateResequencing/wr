@@ -650,9 +650,12 @@ func (s *logStore) jobsOf(keys []logKey, refs [][2]wal.Ref, found map[wal.Ref][]
 // number of a last file with a torn header, which the caller removes, or 0.
 //
 // A missing walFrom is errStoreCorrupt, unless no file from it on is there
-// and history.bolt's folded position is at its start: an earlier recovery
-// removed it as torn, having first moved the folded position back to it, and
-// the store closed before its writer made the file again (spec C5). The log
+// and an earlier recovery removed it as torn, having first moved history.bolt's
+// folded position back to its start if it was past it, and noted the removal
+// (see noteRecoveryCut), and the store closed before its writer made the file
+// again (spec C5): the folded position is then at its start, or, as a
+// checkpoint's backlog holds what history has yet to fold before it, before
+// its start with that note. The log
 // then ends at walFrom's start, and it is the next file.
 func (s *logStore) replay(ctx context.Context, from uint32) (uint32, historyPos, uint32, error) {
 	files, err := walFilesFrom(s.dir, from)
@@ -685,10 +688,19 @@ func (s *logStore) replay(ctx context.Context, from uint32) (uint32, historyPos,
 }
 
 // walFromAbsent reports whether err, walFilesFrom's of files from walFrom
-// from, is the walFrom file found missing with no file after it and
-// history.bolt's folded position at its start (see replay).
+// from, is the walFrom file found missing with no file after it and either
+// history.bolt's folded position at its start, or before it, where the
+// checkpoint's backlog holds the rest, with an earlier recovery's note that
+// it removed the file as torn (see replay).
 func (s *logStore) walFromAbsent(err error, files []uint32, from uint32) bool {
-	return errors.Is(err, errWALFromMissing) && len(files) == 0 && s.state.folded == historyPos{file: from}
+	if !errors.Is(err, errWALFromMissing) || len(files) != 0 {
+		return false
+	}
+
+	start := historyPos{file: from}
+	cut, noted := s.recoveryCuts[from]
+
+	return s.state.folded == start || (start.after(s.state.folded) && noted && cut == 0)
 }
 
 // replayAt is replayFile of files[i], valid up to the end a later file's

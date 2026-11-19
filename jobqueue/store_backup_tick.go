@@ -489,15 +489,17 @@ func (b *incBackup) newestCheckpoint() uint32 {
 	return slices.Max(b.ckpts)
 }
 
-// neededFrom returns the first wal file the backup needs: the one below both
-// its checkpoint's walFrom and its history's folded position's file, or 0,
-// all of them, if it has no checkpoint or history yet.
+// neededFrom returns the first wal file the backup needs: its checkpoint's
+// walFrom, as its checkpoint's backlog holds what its history has yet to fold
+// of the wal before it (a tick ships a checkpoint only if its backlog starts at
+// or before the shipped history's folded position), or 0, all of them, if it
+// has no checkpoint or history yet.
 func (b *incBackup) neededFrom() uint32 {
 	if !b.histShipped || len(b.ckpts) == 0 {
 		return 0
 	}
 
-	return min(b.newestCheckpoint(), b.histFolded.file)
+	return b.newestCheckpoint()
 }
 
 // removeParts deletes parts, in descending offset order so that what is left
@@ -701,9 +703,10 @@ func (b *incBackup) holdsSpent(from, to uint32) bool {
 // 2GB was copied almost without a pause, and the copy's writeback held up the
 // wal's syncs, and so reservations, past phase 1's 50ms target
 // (.docs/bugfixes/261111-reserve-tail-nfs-4766eb70.md). Until the next copy
-// the backup keeps its checkpoint and the wal from its copy's folded position,
-// which a restore folds again, so the history bytes it ships are at most the
-// wal bytes it ships, plus a floor's worth a tick while history.bolt is small.
+// the backup keeps its checkpoint, whose backlog holds what the copy has yet to
+// fold, and the wal from its cut, which a restore folds again, so the history
+// bytes it ships are at most the wal bytes it ships, plus a floor's worth a
+// tick while history.bolt is small.
 func (b *incBackup) historyDue() bool {
 	floor := int64(historyRecopyFloor)
 	if n := logHistoryRecopyFloor.Load(); n > 0 {
@@ -1013,8 +1016,8 @@ func (s *logStore) deleteShipped() error {
 		return nil
 	}
 
-	err := s.deleteRedundant(s.delFrom, s.delFolded)
-	s.inc.forgetBelow(min(s.delFrom, s.delFolded.file))
+	err := s.deleteRedundant(s.delFrom)
+	s.inc.forgetBelow(s.delFrom)
 
 	return err
 }
@@ -1399,7 +1402,7 @@ func (s *logStore) shipNewCheckpoint(ckpt uint32) error {
 }
 
 // dropUnneededParts deletes from the backup every part of each wal file below
-// both its checkpoint's walFrom and its history's folded position's file.
+// its checkpoint's walFrom (see neededFrom).
 func (s *logStore) dropUnneededParts() error {
 	b := s.inc
 	need := b.neededFrom()

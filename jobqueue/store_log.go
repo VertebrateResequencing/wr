@@ -88,6 +88,17 @@ var readBufsMax = 64 << 20 //nolint:gochecknoglobals // tuning knob, varied by t
 // it.
 var walSegmentSize int64 = 256 << 20 //nolint:gochecknoglobals // tuning knob, varied by tests
 
+var (
+	// errModifyMismatch is the error of a modify given a different number of
+	// old keys and jobs.
+	errModifyMismatch = errors.New("modify needs one old key per job")
+)
+
+var _ store = (*logStore)(nil)
+
+// jobRecordTypes are the types of the records a jobRecord's which names.
+var jobRecordTypes = [2]logRecordType{logRecSpec, logRecState} //nolint:gochecknoglobals // a constant table
+
 // Test seams, nil outside tests.
 var (
 	// logStoreWaitHook is called by a write each time it is about to wait for
@@ -141,17 +152,6 @@ var (
 	// crash would end it.
 	logWALTruncatedHook atomic.Pointer[func() error] //nolint:gochecknoglobals // a test seam
 )
-
-var (
-	// errModifyMismatch is the error of a modify given a different number of
-	// old keys and jobs.
-	errModifyMismatch = errors.New("modify needs one old key per job")
-)
-
-var _ store = (*logStore)(nil)
-
-// jobRecordTypes are the types of the records a jobRecord's which names.
-var jobRecordTypes = [2]logRecordType{logRecSpec, logRecState} //nolint:gochecknoglobals // a constant table
 
 // logModify is one job of a modify: its old and new keys, the job and the old
 // key's std.
@@ -1429,30 +1429,33 @@ func (s *logStore) recover(ctx context.Context) (uint32, error) {
 
 	s.seq.Store(max(s.state.maxSeq, foldedSeq))
 
-	s.delFrom, s.delFolded = s.ckptFrom, folded
+	s.state.dropped = s.state.folded
+	s.delFrom = s.ckptFrom
 
 	if s.ckptFrom != 0 {
-		err = s.deleteRedundant(s.ckptFrom, folded)
+		err = s.deleteRedundant(s.ckptFrom)
 	}
 
 	return next, err
 }
 
-// loadCheckpointAfter is loadCheckpoint, refusing a checkpoint whose cut is
-// after folded, history.bolt's folded position, as errStoreCorrupt. A
-// checkpoint is made only once the folded position is at or past its cut,
-// which it never moves back from, so the log from its walFrom holds every
-// complete, rglookup and modify record history.bolt does not. Phase 2's
-// checkpoints, whose folded position can be before the cut, also hold the
-// specs a replay from there needs (spec "Checkpoints", step 3).
+// loadCheckpointAfter is loadCheckpoint, refusing as errStoreCorrupt a
+// checkpoint whose cut is after folded, history.bolt's folded position, and
+// whose backlog starts after it too: the wal from folded to the backlog's
+// start is gone, and with it complete, rglookup and modify records
+// history.bolt does not hold. A checkpoint's backlog starts at or before the
+// folded position when it was made, which never moves back but for damage
+// (see rewindFoldedTo), which leaves it at or after the newest checkpoint's
+// cut. It returns the checkpoint's walFrom, 0 if there is none.
 func (s *logStore) loadCheckpointAfter(folded historyPos) (uint32, error) {
-	walFrom, err := s.loadCheckpoint()
-	if err == nil && walFrom != 0 && folded.file < walFrom {
-		err = fmt.Errorf("%w: %s's folded position, in wal file %08x, is before checkpoint %08x",
-			errStoreCorrupt, historyBoltFile, folded.file, walFrom)
+	header, err := s.loadCheckpoint()
+	if err == nil && header.walFrom != 0 && folded.file < header.walFrom && header.histFrom.after(folded) {
+		err = fmt.Errorf("%w: %s's folded position, in wal file %08x at %d, is before checkpoint %08x and its "+
+			"backlog, from wal file %08x at %d", errStoreCorrupt, historyBoltFile, folded.file, folded.off,
+			header.walFrom, header.histFrom.file, header.histFrom.off)
 	}
 
-	return walFrom, err
+	return header.walFrom, err
 }
 
 // takeSeqs takes the next n records' seqs, returning the first.
@@ -1845,20 +1848,23 @@ type logStore struct {
 	archivedDecodes atomic.Uint64
 
 	// ckptMu makes checkpoints one at a time, and guards ckptFrom, the newest
-	// checkpoint's walFrom (0 if there is none), and delFrom and delFolded,
-	// the walFrom and the folded position it was merged at of the newest
-	// checkpoint that swapped every Ref below its cut and waited for
-	// their readers (or that recovery loaded), before which files may be
-	// deleted: a checkpoint failing with errCheckpointRefsUnswapped is newest
-	// but keeps the files its Refs still read. backup holds it so that no
-	// checkpoint deletes a file it copies. The checkpointer goroutine stops
+	// checkpoint's walFrom (0 if there is none), which a checkpoint sets
+	// under mu too, as the folder reads its backlog, and delFrom, the walFrom
+	// of the newest checkpoint that swapped every Ref below its cut and
+	// waited for their readers (or that recovery loaded), before which files
+	// may be deleted: a checkpoint failing with errCheckpointRefsUnswapped is
+	// newest but keeps the files its Refs still read. backup holds it so that
+	// no checkpoint deletes a file it copies. The checkpointer goroutine stops
 	// once ckptStop is closed, closing ckptExited as it ends.
 	ckptMu     sync.Mutex
 	ckptFrom   uint32
 	delFrom    uint32
-	delFolded  historyPos
 	ckptStop   chan struct{}
 	ckptExited chan struct{}
+
+	// foldBacklog is the folder's note of the newest checkpoint's backlog,
+	// which only the folder, holding foldMu, reads and sets.
+	foldBacklog *foldBacklog
 
 	// inc, if not nil, makes the store's incremental backups (spec E4).
 	inc *incBackup

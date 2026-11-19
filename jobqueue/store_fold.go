@@ -179,8 +179,9 @@ func (st *logState) appliedAs(c *foldComplete) *logHistory {
 
 // foldRead is one fold's reading of the log, a chunk of foldNow's: the
 // records it folds, in log order, the latest spec record of each key it has
-// read, how many records it has read, and the most it reads before ending at a
-// frame.
+// read, how many records it has read, the most it reads before ending at a
+// frame, and, reading a checkpoint's backlog, the position in the wal of the
+// frame of the last record it read.
 type foldRead struct {
 	s         *logStore
 	completes []foldComplete
@@ -189,6 +190,7 @@ type foldRead struct {
 	specs     map[logKey]wal.Ref
 	records   int
 	chunk     int
+	lastFrame historyPos
 }
 
 // newFoldRead returns an empty foldRead of s.
@@ -385,6 +387,21 @@ func callHook(h *atomic.Pointer[func()]) {
 	if fn := h.Load(); fn != nil {
 		(*fn)()
 	}
+}
+
+// readLog reads the log between positions from and to, from the backlog of
+// checkpoint ckpt if from is before its cut, returning where it stopped.
+func (r *foldRead) readLog(from, to historyPos, ckpt uint32) (historyPos, error) {
+	if from.file < ckpt {
+		return r.readBacklog(ckpt, from)
+	}
+
+	files, err := walFileNumbers(r.s.dir)
+	if err != nil {
+		return historyPos{}, err
+	}
+
+	return r.readFiles(files, from, to)
 }
 
 // frameIdxs returns the index of each of refs' records by the Ref of its frame
@@ -591,26 +608,27 @@ func foldTxLimit(lag time.Duration) int {
 
 // readFold reads the log from the folded position F to to, the writer's
 // durable end, into the fold of it, or of its first chunk (see foldNow), or
-// returns nil if F is there already. A wal file followed by another is read
-// only up to the end recovery gives it (see walValidEnd), so an abandoned batch
-// is never folded.
+// returns nil if F is there already. Before the newest checkpoint's cut it
+// reads the checkpoint's backlog, as the wal files before the cut may be gone
+// (see readBacklog). A wal file followed by another is read only up to the end
+// recovery gives it (see walValidEnd), so an abandoned batch is never folded.
+// It holds the Refs of what it reads until it has read the specs of its
+// complete records, so that no checkpoint deletes their files meanwhile.
 func (s *logStore) readFold(to historyPos) (*historyFold, error) {
 	s.mu.RLock()
-	from := s.state.folded
+	from, ckpt := s.state.folded, s.ckptFrom
+	gen := s.holdRefs()
 	s.mu.RUnlock()
+
+	defer s.releaseRefs(gen)
 
 	if !to.after(from) {
 		return nil, nil //nolint:nilnil // nothing to fold is not an error
 	}
 
-	files, err := walFileNumbers(s.dir)
-	if err != nil {
-		return nil, err
-	}
-
 	r := newFoldRead(s)
 
-	end, err := r.readFiles(files, from, to)
+	end, err := r.readLog(from, to, ckpt)
 	if err != nil {
 		return nil, err
 	}

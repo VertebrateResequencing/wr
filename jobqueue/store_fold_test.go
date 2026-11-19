@@ -3400,3 +3400,38 @@ func foldWorkloadReaddElsewhere(ctx context.Context, s store) {
 
 	foldWorkloadArchive(ctx, s, elsewhere, 1, archiveRemovedLive, job)
 }
+
+// foldCrashAnswers describes every answer s gives about jobs: the rep groups
+// ever added, each one's complete jobs, each job's live and complete state and
+// std, and the complete records an inspection finds.
+func foldCrashAnswers(ctx context.Context, s *logStore, jobs []*Job) string {
+	var b strings.Builder
+
+	rgs, err := s.retrieveRepGroups()
+	So(err, ShouldBeNil)
+	slices.Sort(rgs)
+	fmt.Fprintf(&b, "rgs=%v\n", rgs)
+
+	for _, rg := range rgs {
+		got, errr := s.retrieveCompleteJobsByRepGroup(rg)
+		So(errr, ShouldBeNil)
+		fmt.Fprintf(&b, "complete[%s]=%v\n", rg, jobKeys(sortedByKey(got)))
+	}
+
+	for _, job := range sortedByKey(jobs) {
+		key := job.Key()
+
+		live, errl := s.checkIfLive(key)
+		So(errl, ShouldBeNil)
+
+		complete, errc := s.checkIfComplete(key)
+		So(errc, ShouldBeNil)
+
+		stdo, stde := s.retrieveJobStd(ctx, key)
+		fmt.Fprintf(&b, "%s live=%v complete=%v stdo=%q stde=%q\n", key, live, complete, stdo, stde)
+	}
+
+	fmt.Fprintf(&b, "inspect complete=%d\n", inspectedCount(s, kindComplete))
+
+	return b.String()
+}

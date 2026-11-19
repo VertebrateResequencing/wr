@@ -660,7 +660,9 @@ as `repgroups` keeps them; and each rep group's latest EndTime among them, kept
 until a fold commits one as late, as `repgroupEndTime` keeps it), the keys whose
 folded rglookups a modify not yet folded dropped (each with that modify's seq),
 and the folded position F that decides which `complete`, rglookup and modify
-records the in-memory state leaves to history (Folder and history). Live `*Job`
+records the in-memory state leaves to history (Folder and history), with the
+folded position of the last fold that has dropped what it folded from the
+overlay, where a checkpoint's backlog starts (Checkpoints, step 2). Live `*Job`
 values are never held by the store; methods that return live jobs decode them
 through their Refs.
 
@@ -675,11 +677,13 @@ whether `openStore` (including E2's recovery of `.restoring`), E6 compact,
    concurrent readers and applying them in file order, since a block can
    hold a key's state record and an earlier block its spec.
 3. Open history and read its durable folded position F (file, offset).
-   Scan every wal file from min(F's file, the checkpoint's `walFrom`) in
-   file order. Live records from `walFrom` on are applied to live state;
-   `complete` and rglookup records at or after F rebuild the overlay.
-   Phase 1: F is at or past `walFrom` (Checkpoints, step 2), so the scan
-   starts at `walFrom`, and an F before it is `errStoreCorrupt`.
+   This happens before step 2 applies the checkpoint, so that the records
+   of its backlog (Checkpoints, step 3) at or after F rebuild the overlay
+   as the wal records they copy would. Then scan every wal file from the
+   checkpoint's `walFrom` in file order. Live records are applied to live
+   state; `complete` and rglookup records at or after F rebuild the
+   overlay. An F before both `walFrom` and the checkpoint's `histFrom` is
+   `errStoreCorrupt`: the records between are gone.
 4. Damage rules over that range: a file followed by another is valid up to
    the `prevEnd` of the first later file with a whole header, if that
    header names it; if it names an earlier file, it skips this one as spent
@@ -714,7 +718,8 @@ whether `openStore` (including E2's recovery of `.restoring`), E6 compact,
    is no longer past the log's end, so a crash between leaves F at the
    removed file's start. A missing `walFrom` file is then not
    `errStoreCorrupt` when no wal file from it on exists and F is at its
-   start (logged at warn): the log ends there, and the writer makes that
+   start, or before it with the removal noted in `backup-cuts` (a cut at
+   0) (logged at warn): the log ends there, and the writer makes that
    file next.
 5. Set the seq counter to 1 + the maximum seq seen in the checkpoint
    header, the scanned wal records and history (Phase 1: `history.bolt`
@@ -725,9 +730,9 @@ whether `openStore` (including E2's recovery of `.restoring`), E6 compact,
 6. Return live jobs (spec + latest state), as `recoverIncompleteJobs` does.
 
 Wal deletion rule (the only one): a wal file is deleted only when it is
-below both the newest checkpoint's `walFrom` and F's file, where F is
-durable at each fold commit in Phase 1 (`history.bolt` meta) and at each
-segment seal in Phase 2, only when no reader holds it, and, while
+below the newest checkpoint's `walFrom`, whose backlog holds what history
+has yet to fold of it, however far the folder trails, only when no reader
+holds it (the folder, reading the log or a backlog, is one), and, while
 incremental backup runs, only once the backup has shipped all its bytes
 (else a backup still needing the file keeps a torn copy).
 
@@ -739,40 +744,57 @@ since the last), and never sooner after the previous one ended than it took:
 1. Rotate the writer; the sealed file number + 1 is the cut `walFrom`.
    Then wait until every write that appended before the rotation has its
    Refs, so has applied (its batch was durable before the rotation's).
-2. Wait until the folder's position is at or past the cut: the checkpoint
-   folds to the writer's durable end itself, one fold at a time with the
-   folder's. While the folder is failing (Folder and history), this
-   checkpoint is skipped, not waited for; the next interval tries again.
+2. Take `histFrom`: the folded position of the folder's last fold that has
+   dropped what it folded from the overlay, at or before F, so that no
+   overlay entry is of a `complete` record before it. The checkpoint never
+   waits for the folder: while the folder trails or fails (Folder and
+   history), checkpoints go on, and the wal before each cut is deleted.
+   Before 2026-11-19 a checkpoint folded to its cut first; at the 1g.3
+   soak's add rate the folder fell 17 minutes behind, no checkpoint
+   finished for over two hours, and every start replayed 2.3GB of wal
+   (`.docs/bugfixes/261119-phase1-gate-defects-4f8ea64c.md`, item A).
 3. Merge the previous checkpoint with wal files before the cut using the
-   recovery reducer, writing `NNNNNNNN.ckpt.tmp`: a header frame (`walFrom`,
-   `histFrom` = durable F read at the start of this step, max seq, counts),
-   zstd blocks of at most 64KiB uncompressed holding each
-   live job's spec and state records, each live key's non-empty std, and
-   every env, limit and depgroup record, then a trailer frame (block
-   offsets, magic `WRCKPT01`). Max seq is the highest of the previous
+   recovery reducer, with the folded position at `histFrom`, writing
+   `NNNNNNNN.ckpt.tmp`: a header frame (`walFrom`, `histFrom`, max seq,
+   counts), zstd blocks of at most 64KiB uncompressed holding each live
+   job's spec and state records, each live key's non-empty std, and every
+   env, limit and depgroup record, then the backlog in blocks of its own,
+   then a trailer frame (block offsets, magic `WRCKPT01`). The backlog is
+   every `complete`, rglookup, modify and exitstat record at or after
+   `histFrom` and before the cut, of the previous checkpoint's backlog and
+   then of the wal, in log order, each after a header record
+   (`logRecBacklog`) holding the position it was written at in the wal
+   and, for a modify, whether the reducer applied it; for a `complete`
+   record that applied as an overlay or replaced entry (In-memory state of
+   `logStore`), the header also holds the Ref of the spec it applied with
+   and that spec's rep group. The checkpoint holds one copy of each such
+   spec: the live job's if it is one, else a spec record in the backlog,
+   after a header marking it a copy, which applies to nothing. That is one
+   spec per entry, not one per key, as a re-add or modify can change a
+   key's spec between two of its `complete` records. A header and its
+   record are always in the same block. Recovery and the next merge apply
+   a backlog record to the overlay only, as the reducer applied it at its
+   position (the checkpoint's live records already hold what it did to
+   live state): a `complete` record, unless outranked, becomes its key's
+   overlay entry with its header's spec; an rglookup is looked up; an
+   applied modify drops the overlay's rglookups of its old key and, if
+   not folded, marks it unlooked. Max seq is the highest of the previous
    checkpoint's and the merged records', as the record of the highest may
    be gone. A std stream a record cleared (an empty std record, or a
    keep-live archive's `complete` record) is held as an empty std record
    at the seq that cleared it, so that an older std record appended after
    the cut is still ignored. A Ref of a record in a checkpoint has bit 31
    of its file number set, so it is never taken for wal file `walFrom`.
-   Phase 2 only: it also holds the spec record of each overlay or replaced
-   entry (In-memory state of `logStore`) made by a `complete` record at or
-   after `histFrom` and before the cut (completions in the open segment),
-   unless it is a live job's spec
-   record, which it holds already. That is one spec per entry, not one per
-   key, as a re-add or modify can change a key's spec between two of its
-   `complete` records, and it lets each entry's spec survive wal deletion.
-   In Phase 1 that set is empty: after step 2, `histFrom` is at or past
-   the cut. The write forces writeback every `backupCopySyncBytes` (1MiB),
+   The write forces writeback every `backupCopySyncBytes` (1MiB),
    as the backup copy does (Location, lock, conversion, restore and
    backup), keeping the pages cached for reads of its records, so that
    step 4's fsync never sends a whole `.ckpt` (55-76MB at the end of phase
    1's gate soaks) at once ahead of the wal's syncs, which reservations
    wait for.
 4. fsync, rename to `.ckpt`, fsync the directory, then swap every in-memory
-   Ref (spec, last state, std, overlay spec, replaced entry spec) that
-   points below the cut for its copy in the new checkpoint, then delete
+   Ref (spec, last state, std, overlay and replaced entry spec and
+   `complete`) that points below the cut for its copy in the new
+   checkpoint, then delete
    older checkpoints (except one a backup tick holds) and apply the wal
    deletion rule. A reader of records takes a hold, in the swap's
    generation, while it copies their Refs under the store's lock, and
@@ -793,7 +815,12 @@ folds into history every `complete` record (with its spec) and rglookup,
 and every new learned-requirement sample, from `complete` and exitstat
 records only (Records). It reads a file followed by another only up
 to the end recovery gives it (step 4), so an abandoned batch is never
-folded.
+folded. From a position before the newest checkpoint's cut it reads that
+checkpoint's backlog instead (Checkpoints, step 3), whose records it folds
+as it would the wal records they copy, at their positions in the wal, and
+whose end moves the folded position to the cut; the wal before the cut may
+be gone. While it reads the log or a backlog it holds their Refs, so no
+checkpoint deletes what it reads.
 Folding is idempotent and resumable from a log position. A fold of more than
 `foldChunkRecords` (4,096) records is made in chunks: each ends at the first
 frame after that many records and commits its records with the folded position
@@ -852,10 +879,21 @@ with `failures`; it never stops the manager.
   folded `complete` record), and `keyRepgroups` (`repgroupToKey`'s reverse, key
   then rep group, so that a fold of a modify record deletes its old key's folded
   rglookups as `deleteLookupEntriesForJobKey` does), all written in the fold's
-  transaction (and by E1 step 4). The folded position in `meta` never moves back
-  on a fold; only recovery moves it back, to the end of a log damage cut short
-  (Recovery step 4). A fold applies a `complete` record only if its seq is above
-  the key's `completeSeq` (the reducer's history rule). `jobscomplete`,
+  transaction (and by E1 step 4), but that a fold puts each rglookup's reverse
+  entry in `keyRepgroupsPending`, keyed by its record's seq first, so at its
+  end, and merges them into `keyRepgroups` in key order once 1,048,576
+  (`keyRepgroupsPendingMerge`) have gathered, one transaction of the bound
+  below before each fold, taking the keys of a sixteenth of the key space
+  (by the job key's first hex digit) at a time; a modify's fold deletes its
+  old key's from both, scanning `keyRepgroupsPending`. `keyRepgroups` is
+  keyed by random job keys: put as each rglookup folded, each entry changed
+  a page of its own and the one above it, 3 of the 4 pages an rglookup's
+  fold wrote in the 1g.3 soak's 12GB `history.bolt` on NFS (item A of
+  `.docs/bugfixes/261119-phase1-gate-defects-4f8ea64c.md`). The folded
+  position in `meta` never moves back on a fold; only recovery moves it
+  back, to the end of a log damage cut short (Recovery step 4). A fold
+  applies a `complete` record only if its seq is above the key's
+  `completeSeq` (the reducer's history rule). `jobscomplete`,
   `endTimeToKey`, `repgroupEndTime` and the stats buckets hold completed jobs
   only. `repgroupToKey` and `repgroups` also hold every folded rglookup, and
   those name jobs that are still live: `storeRepGroupLookups` writes one for
@@ -1005,7 +1043,8 @@ with `failures`; it never stops the manager.
      checkpoint written after it is shipped only by a later tick, after
      that tick's history step.
   3. Ships wal bytes as parts: for each wal file the backup needs (not
-     below both its checkpoint's `walFrom` and F_b's file), the durable
+     below its checkpoint's `walFrom`, whose backlog, from `histFrom` at
+     or below F_b, holds what its history has yet to fold), the durable
      bytes not yet shipped (bounded by the next file's `prevEnd` for an
      abandoned file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO`
      (16-hex start offset; `.tmp` then rename locally, one object on S3).
@@ -1028,10 +1067,8 @@ with `failures`; it never stops the manager.
      store has one lacks `VERSION` until after C, so is not restorable
      then.
   5. Deletes all parts of a wal file from the backup only when the file is
-     below both the shipped C's `walFrom` and F_b's file (Phase 1: the
-     position read with the shipped `history.bolt` copy; Phase 2: the last
-     shipped sealed segment's). The store's own deletion is not the test:
-     its checkpoint and F are newer than the backup's.
+     below the shipped C's `walFrom`. The store's own deletion is not the
+     test: its checkpoint is newer than the backup's.
 
   While a tick runs the store keeps C, and at all times it keeps each wal
   file the backup may still need bytes of (Recovery, wal deletion rule),

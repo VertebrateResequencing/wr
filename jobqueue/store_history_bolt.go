@@ -103,7 +103,9 @@ var (
 	bucketCompleteSeq = []byte("completeSeq") //nolint:gochecknoglobals
 
 	// bucketKeyRGs is repgroupToKey's reverse, key then rep group, so that a
-	// fold of a modify finds every rglookup of its old key to delete.
+	// fold of a modify finds every rglookup of its old key to delete; the
+	// reverse entries of the rglookups folded since its last merge are in
+	// bucketKeyRGsPending instead (see store_history_reverse.go).
 	bucketKeyRGs = []byte("keyRepgroups") //nolint:gochecknoglobals
 
 	// historyMetaFolded is meta's key of the folded position, and
@@ -115,7 +117,7 @@ var (
 	historyBoltBuckets = [][]byte{ //nolint:gochecknoglobals
 		bucketJobsComplete, bucketRTK, bucketRGs, bucketDTK, bucketRDTK, bucketDepGroups,
 		bucketEndTimeToKey, bucketRGEndTime, bucketJobRAM, bucketJobDisk, bucketJobSecs,
-		bucketHistoryMeta, bucketCompleteSeq, bucketKeyRGs,
+		bucketHistoryMeta, bucketCompleteSeq, bucketKeyRGs, bucketKeyRGsPending,
 	}
 
 	// logFoldTxBytes, if above 0, replaces foldTxBytes.
@@ -187,9 +189,10 @@ type historyLookupChanges struct {
 	complete []historyFolded
 }
 
-// historyLookupPut is one rglookup's keys in repgroupToKey and keyRepgroups.
+// historyLookupPut is one rglookup's keys in repgroupToKey and, with the seq
+// of its latest rglookup record before them, in keyRepgroupsPending.
 type historyLookupPut struct {
-	lookup, reverse []byte
+	lookup, pending []byte
 }
 
 // newHistoryLookupChanges returns the net effect of lookups.
@@ -203,7 +206,7 @@ func newHistoryLookupChanges(lookups []historyLookup) historyLookupChanges {
 		key := l.key.String()
 		c.puts[i] = historyLookupPut{
 			lookup:  []byte(l.repGroup + dbDelimiter + key),
-			reverse: []byte(key + dbDelimiter + l.repGroup),
+			pending: pendingReverseKey(l.seq, key, l.repGroup),
 		}
 	}
 
@@ -213,10 +216,10 @@ func newHistoryLookupChanges(lookups []historyLookup) historyLookupChanges {
 }
 
 // netHistoryLookups returns what lookups, in order, leave: the rglookups put
-// and not dropped after, and the keys dropped, whose rglookups history.bolt
-// already holds go, in key order.
+// and not dropped after, each with the highest seq of its records, and the
+// keys dropped, whose rglookups history.bolt already holds go, in key order.
 func netHistoryLookups(lookups []historyLookup) ([]historyLookup, []logKey) {
-	put := make(map[logKey]map[string]bool)
+	put := make(map[logKey]map[string]uint64)
 	dropped := make(map[logKey]bool)
 
 	for _, l := range lookups {
@@ -228,17 +231,17 @@ func netHistoryLookups(lookups []historyLookup) ([]historyLookup, []logKey) {
 		}
 
 		if put[l.key] == nil {
-			put[l.key] = make(map[string]bool)
+			put[l.key] = make(map[string]uint64)
 		}
 
-		put[l.key][l.repGroup] = true
+		put[l.key][l.repGroup] = max(put[l.key][l.repGroup], l.seq)
 	}
 
 	var puts []historyLookup
 
 	for k, rgs := range put {
-		for rg := range rgs {
-			puts = append(puts, historyLookup{repGroup: rg, key: k})
+		for rg, seq := range rgs {
+			puts = append(puts, historyLookup{repGroup: rg, key: k, seq: seq})
 		}
 	}
 
@@ -297,8 +300,13 @@ func (s *logStore) foldHistory(f *historyFold) error {
 }
 
 // foldHistoryUpTo is foldHistory with each of history.bolt's transactions of
-// f writing about maxBytes.
+// f writing about maxBytes, after a transaction of the merge of pending reverse
+// rglookups if one is due (see mergeSomeReverse).
 func (s *logStore) foldHistoryUpTo(f *historyFold, maxBytes int) error {
+	if err := s.history.mergeSomeReverse(maxBytes); err != nil {
+		return err
+	}
+
 	if err := s.history.fold(f, s.reqStats, &s.foldStats, maxBytes); err != nil {
 		return err
 	}
@@ -307,6 +315,12 @@ func (s *logStore) foldHistoryUpTo(f *historyFold, maxBytes int) error {
 
 	s.moveFolded(f)
 	s.dropFolded(f)
+
+	s.mu.Lock()
+	if f.to.after(s.state.dropped) {
+		s.state.dropped = f.to
+	}
+	s.mu.Unlock()
 
 	return nil
 }
@@ -359,8 +373,13 @@ type historyBolt struct {
 
 	// writeScale is the bytes of pages the last fold transaction wrote, but
 	// for its freelist, per byte its foldTxSize estimated, 0 before any; the
-	// folder, one fold at a time, alone reads and sets it.
+	// folder, one fold at a time, alone reads and sets it, as it does
+	// reverse.
 	writeScale float64
+
+	// reverse is the folder's note of keyRepgroupsPending (see
+	// store_history_reverse.go).
+	reverse pendingReverse
 }
 
 // openHistoryBolt opens, creating if need be, history.bolt in dir, with every
@@ -394,7 +413,7 @@ func openHistoryBolt(dir string, ch codec.Handle) (*historyBolt, error) {
 		return nil, errors.Join(err, bdb.Close())
 	}
 
-	return &historyBolt{bolt: bdb, ch: ch}, nil
+	return &historyBolt{bolt: bdb, ch: ch, reverse: pendingReverse{pending: -1}}, nil
 }
 
 // load returns the folded position and the highest folded complete record's
@@ -539,6 +558,9 @@ func (h *historyBolt) foldSomeTx(f *historyFold, c historyLookupChanges, maxByte
 			return h.foldTx(tx, f, c.repGroups, stats)
 		}
 	})
+	if err == nil {
+		h.reverse.pending += put
+	}
 
 	return put, recorded, begun, err
 }
@@ -593,10 +615,8 @@ func callTxHook() error {
 // in the number put. Once size is full, it stops, at a multiple of
 // foldLookupBatch, and returns how many it put.
 func putHistoryLookups(tx *bolt.Tx, c historyLookupChanges, size *foldTxSize) (int, error) {
-	for _, k := range c.drops {
-		if err := dropHistoryLookups(tx, k); err != nil {
-			return 0, err
-		}
+	if err := dropAllLookups(tx, c.drops); err != nil {
+		return 0, err
 	}
 
 	keys := make([][]byte, 0, foldLookupBatch)
@@ -618,8 +638,11 @@ func putHistoryLookups(tx *bolt.Tx, c historyLookupChanges, size *foldTxSize) (i
 }
 
 // putHistoryLookupBatch puts batch's rglookups in tx, in repgroupToKey in
-// their order and in keyRepgroups in key order, using keys' space, and
-// returns the bytes of keys it put.
+// their order and in keyRepgroupsPending in key order, using keys' space, and
+// returns the bytes of keys it put. Its pending keys start with their seqs, so
+// they go near the end of keyRepgroupsPending, in a few pages, where reverse
+// keys put straight into keyRepgroups each changed a page of its own: in a
+// 12GB history.bolt that was 3 of the 4 pages each rglookup's fold wrote.
 func putHistoryLookupBatch(tx *bolt.Tx, batch []historyLookupPut, keys [][]byte) (int, error) {
 	lookups := tx.Bucket(bucketRTK)
 	keys = keys[:0]
@@ -630,11 +653,11 @@ func putHistoryLookupBatch(tx *bolt.Tx, batch []historyLookupPut, keys [][]byte)
 			return written, err
 		}
 
-		keys = append(keys, p.reverse)
-		written += len(p.lookup) + len(p.reverse)
+		keys = append(keys, p.pending)
+		written += len(p.lookup) + len(p.pending)
 	}
 
-	return written, putSortedKeys(tx.Bucket(bucketKeyRGs), keys)
+	return written, putSortedKeys(tx.Bucket(bucketKeyRGsPending), keys)
 }
 
 // foldTxSize estimates how many bytes of its own one of a fold's
@@ -1369,6 +1392,18 @@ func (s *logStore) historyJobs(keys []logKey) (map[logKey]*Job, error) {
 	return jobs, err
 }
 
+// dropAllLookups deletes every rglookup of each of keys, those keyRepgroups
+// indexes and those keyRepgroupsPending does.
+func dropAllLookups(tx *bolt.Tx, keys []logKey) error {
+	for _, k := range keys {
+		if err := dropHistoryLookups(tx, k); err != nil {
+			return err
+		}
+	}
+
+	return dropPendingLookups(tx, keys)
+}
+
 // historyJob returns the keyed job's history entry's job and true, or false if
 // it has none.
 func (s *logStore) historyJob(k logKey) (*Job, bool, error) {
@@ -1577,9 +1612,10 @@ func putSortedKeys(b *bolt.Bucket, keys [][]byte) error {
 	return nil
 }
 
-// dropHistoryLookups deletes every rglookup of k, as the bbolt store's modify
-// deletes its old key's (deleteLookupEntriesForJobKey). repgroups keeps the rep
-// groups, which are ever added.
+// dropHistoryLookups deletes every rglookup of k that keyRepgroups indexes, as
+// the bbolt store's modify deletes its old key's (deleteLookupEntriesForJobKey);
+// dropPendingLookups deletes the rest. repgroups keeps the rep groups, which
+// are ever added.
 func dropHistoryLookups(tx *bolt.Tx, k logKey) error {
 	key := k.String()
 	prefix := []byte(key + dbDelimiter)

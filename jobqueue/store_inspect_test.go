@@ -122,9 +122,15 @@ var boltOnlyTests = []string{ //nolint:gochecknoglobals
 	"server_startup_upgrade_bolt_test.go",
 
 	// history.bolt, the log store's Phase 1 history, checked against the
-	// bbolt store's history, and the transactions its fold makes.
+	// bbolt store's history, the transactions its fold makes, its pending
+	// reverse rglookups, and the measures of its folds into a big copy.
+	"store_fold_bighistory_test.go",
 	"store_fold_lookups_test.go",
 	"store_history_bolt_test.go",
+	"store_history_reverse_test.go",
+
+	// a self-contained backup tar is not taken for a bbolt file.
+	"store_magic_test.go",
 
 	// fixtures written as raw bbolt records, at a scale the store API would
 	// take minutes to reach, or copied between bbolt files.

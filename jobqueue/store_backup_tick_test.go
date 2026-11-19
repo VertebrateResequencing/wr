@@ -936,6 +936,7 @@ func TestLogStoreIncrementalBackup(t *testing.T) {
 
 		archiveIncTestJobs(s, addIncTestJobs(ctx, s, "inc held archived", 10))
 		So(s.checkpoint(), ShouldBeNil)
+		So(s.foldNow(), ShouldBeNil)
 
 		held := s.checkpointFrom()
 
@@ -1046,8 +1047,9 @@ func TestLogStoreIncrementalBackup(t *testing.T) {
 		So(backupCheckpoints(cfg.dbBkFile), ShouldContain, s.checkpointFrom())
 		So(s.close(ctx), ShouldBeNil)
 
-		Convey("its first tick after it reopens deletes the local wal files below both the backup's "+
-			"checkpoint's walFrom and its history's folded position's file", func() {
+		Convey("its first tick after it reopens deletes the local wal files below the backup's checkpoint's "+
+			"walFrom, whose backlog holds what the backup's history has yet to fold, so at least those below "+
+			"the lesser of that walFrom and its history's folded position's file", func() {
 			reopened := openIncBackupStore(ctx, cfg)
 
 			files, errw := walFileNumbers(cfg.dbFile)
@@ -2850,6 +2852,14 @@ func TestLogStoreIncrementalBackupKeepsCheckpoint(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			addIncTestJobs(ctx, first, "inc kept", 5)
+
+			// A fold racing the checkpoint past its cut, as the folder can,
+			// starts the checkpoint's backlog past the start of its walFrom
+			// file, to which the damage below moves the folded position back.
+			logCheckpointCutHook.Store(checkpointCutHookFor(first, func() { So(first.foldNow(), ShouldBeNil) }))
+
+			Reset(func() { logCheckpointCutHook.Store(nil) })
+
 			So(first.checkpoint(), ShouldBeNil)
 
 			walFrom := first.checkpointFrom()

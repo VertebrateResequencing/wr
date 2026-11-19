@@ -566,9 +566,9 @@ func TestLogStoreCheckpointDue(t *testing.T) {
 		s, _ := openTestLogStore(t, ctx)
 
 		starting := func() { started.Add(1) }
-		logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, starting))
+		logCheckpointCutHook.Store(checkpointCutHookFor(s, starting))
 
-		Reset(func() { logCheckpointFoldedHook.Store(nil) })
+		Reset(func() { logCheckpointCutHook.Store(nil) })
 
 		_, err := s.storeNewJobsGuarded(ctx, testLogJobs("c6 due at open", "c6", 20), false, nil)
 		So(err, ShouldBeNil)
@@ -646,7 +646,7 @@ func TestLogStoreCheckpointUnswappedKeepsFiles(t *testing.T) {
 	})
 }
 
-func TestLogStoreCheckpointSkippedWhileFoldFails(t *testing.T) {
+func TestLogStoreCheckpointWhileFoldFails(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
@@ -672,28 +672,37 @@ func TestLogStoreCheckpointSkippedWhileFoldFails(t *testing.T) {
 
 			logFoldTxHook.Store(&failing)
 
-			Convey("a checkpoint is skipped, and once folds work again a reopen gives the same live set and "+
-				"every completion", func() {
-				So(s.checkpoint(), ShouldWrap, errCkptTestFold)
-				So(s.checkpointFrom(), ShouldEqual, 0)
-				So(checkpointFiles(dir), ShouldBeEmpty)
-
-				logFoldTxHook.Store(nil)
+			Convey("a checkpoint is made and deletes the wal below its cut, a reopen while folds still fail "+
+				"gives the same live set and every completion, and once folds work again they fold every "+
+				"completion", func() {
+				cut := checkpointed(s)
+				So(walFilesBelow(dir, cut), ShouldBeEmpty)
+				So(s.foldNow(), ShouldWrap, errCkptTestFold)
 
 				reopened := reopenLogStore(ctx, s)
 				So(liveViews(reopened), ShouldResemble, want)
+				So(incompleteOf(reopened, jobs[:20]), ShouldBeEmpty)
 
-				var incomplete []string
+				logFoldTxHook.Store(nil)
 
-				for _, job := range jobs[:20] {
-					if complete, errc := reopened.checkIfComplete(job.Key()); errc != nil || !complete {
-						incomplete = append(incomplete, job.Key())
-					}
-				}
-
-				So(incomplete, ShouldBeEmpty)
+				So(reopened.foldNow(), ShouldBeNil)
+				So(overlayEmpty(reopened), ShouldBeTrue)
+				So(incompleteOf(reopenLogStore(ctx, reopened), jobs[:20]), ShouldBeEmpty)
 			})
 		})
+}
+
+// incompleteOf returns the keys of those of jobs s does not find complete.
+func incompleteOf(s *logStore, jobs []*Job) []string {
+	var incomplete []string
+
+	for _, job := range jobs {
+		if complete, err := s.checkIfComplete(job.Key()); err != nil || !complete {
+			incomplete = append(incomplete, job.Key())
+		}
+	}
+
+	return incomplete
 }
 
 func TestLogStoreCheckpointClosesDeletedFiles(t *testing.T) {
@@ -1132,9 +1141,9 @@ func TestLogStoreCheckpointReplacedSpecs(t *testing.T) {
 					So(replaced, ShouldEqual, 1)
 				}
 
-				logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, archived))
+				logCheckpointCutHook.Store(checkpointCutHookFor(s, archived))
 
-				Reset(func() { logCheckpointFoldedHook.Store(nil) })
+				Reset(func() { logCheckpointCutHook.Store(nil) })
 
 				cut := checkpointed(s)
 				So(walFilesBelow(dir, cut), ShouldBeEmpty)
@@ -1157,9 +1166,9 @@ func TestLogStoreCheckpointReplacedSpecs(t *testing.T) {
 					_, archiveErr = s.archiveCompletion(k.Key(), k)
 				}
 
-				logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, archived))
+				logCheckpointCutHook.Store(checkpointCutHookFor(s, archived))
 
-				Reset(func() { logCheckpointFoldedHook.Store(nil) })
+				Reset(func() { logCheckpointCutHook.Store(nil) })
 
 				cut := checkpointed(s)
 				So(walFilesBelow(dir, cut), ShouldBeEmpty)
@@ -1235,10 +1244,10 @@ func TestLogStoreCheckpointWaitsForFoldReads(t *testing.T) {
 				}
 			}
 
-			logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, archivedThenFolding))
+			logCheckpointCutHook.Store(checkpointCutHookFor(s, archivedThenFolding))
 
 			Reset(func() {
-				logCheckpointFoldedHook.Store(nil)
+				logCheckpointCutHook.Store(nil)
 				logFoldSpecsHook.Store(nil)
 			})
 
@@ -1433,23 +1442,22 @@ func TestLogStoreRecoverHistoryBeforeCheckpoint(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("Given a closed log store checkpointed, whose history.bolt is replaced by its copy from before the "+
-		"checkpoint folded to its cut", t, func() {
+	Convey("Given a closed log store checkpointed after a fold to its cut, whose history.bolt is replaced by its "+
+		"copy from before that fold, so before the checkpoint's backlog starts", t, func() {
+		pauseLogFolder()
+
 		s, dir := openTestLogStore(t, ctx)
 
 		jobs := testLogJobs("c6 history behind", "c6", 3)
 		_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
 		So(err, ShouldBeNil)
 
-		s = reopenLogStore(ctx, s)
-
 		history := filepath.Join(dir, historyBoltFile)
 		behind := filepath.Join(t.TempDir(), historyBoltFile)
 
-		So(s.close(ctx), ShouldBeNil)
+		// The folder is paused, so history.bolt has no write in progress.
 		So(copyFile(history, behind), ShouldBeNil)
-
-		s = openLogStoreIn(ctx, dir)
+		So(s.foldNow(), ShouldBeNil)
 		checkpointed(s)
 		So(s.close(ctx), ShouldBeNil)
 		So(copyFile(behind, history), ShouldBeNil)
@@ -1461,7 +1469,8 @@ func TestLogStoreRecoverHistoryBeforeCheckpoint(t *testing.T) {
 	})
 
 	Convey("Given a closed log store checkpointed, whose history.bolt is replaced by its copy from when it was "+
-		"folded to wal file walFrom-1, just before the checkpoint's cut", t, func() {
+		"folded to wal file walFrom-1, where the checkpoint's backlog starts, a job having been archived "+
+		"after it", t, func() {
 		pauseLogFolder()
 
 		s, dir := openTestLogStore(t, ctx)
@@ -1469,7 +1478,9 @@ func TestLogStoreRecoverHistoryBeforeCheckpoint(t *testing.T) {
 		jobs := testLogJobs("c6 history just behind", "c6", 3)
 		_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
 		So(err, ShouldBeNil)
-		So(archiveConcurrently(s, jobs[:1], time.Now()), ShouldBeNil)
+
+		end := time.Now().Truncate(time.Second)
+		So(archiveConcurrently(s, jobs[:1], end), ShouldBeNil)
 		So(s.foldNow(), ShouldBeNil)
 
 		s.mu.RLock()
@@ -1479,18 +1490,31 @@ func TestLogStoreRecoverHistoryBeforeCheckpoint(t *testing.T) {
 		history := filepath.Join(dir, historyBoltFile)
 		behind := filepath.Join(t.TempDir(), historyBoltFile)
 
-		// The folder is paused, so history.bolt has no write in progress.
 		So(copyFile(history, behind), ShouldBeNil)
+		So(archiveConcurrently(s, jobs[1:2], end), ShouldBeNil)
 
 		cut := checkpointed(s)
 		So(folded.file, ShouldEqual, cut-1)
+		So(walFilesBelow(dir, cut), ShouldBeEmpty)
 
 		So(s.close(ctx), ShouldBeNil)
 		So(copyFile(behind, history), ShouldBeNil)
 
-		Convey("opening it fails with errStoreCorrupt", func() {
-			_, erro := openLogStore(ctx, dir)
-			So(erro, ShouldWrap, errStoreCorrupt)
+		Convey("it opens with both archived jobs complete and the third live, before and after folding", func() {
+			reopened := openLogStoreIn(ctx, dir)
+
+			Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
+
+			soAnswers := func() {
+				soCompletedAt(reopened, jobs[0], end)
+				soCompletedAt(reopened, jobs[1], end)
+				soLive(reopened, jobs[2].Key(), true)
+			}
+
+			soAnswers()
+			So(reopened.foldNow(), ShouldBeNil)
+			So(overlayEmpty(reopened), ShouldBeTrue)
+			soAnswers()
 		})
 	})
 }
@@ -1796,11 +1820,11 @@ func TestLogStoreCheckpointCloseStopsMerge(t *testing.T) {
 					})
 				}
 
-				logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, closing))
+				logCheckpointCutHook.Store(checkpointCutHookFor(s, closing))
 				logCheckpointEvery.Store(1)
 
 				Reset(func() {
-					logCheckpointFoldedHook.Store(nil)
+					logCheckpointCutHook.Store(nil)
 					logCheckpointEvery.Store(0)
 				})
 
@@ -2317,10 +2341,10 @@ func TestLogStoreReadersHoldWithTheirRefs(t *testing.T) {
 						}
 					}
 
-					logCheckpointFoldedHook.Store(checkpointFoldedHookFor(s, archivedThenFolding))
+					logCheckpointCutHook.Store(checkpointCutHookFor(s, archivedThenFolding))
 
 					Reset(func() {
-						logCheckpointFoldedHook.Store(nil)
+						logCheckpointCutHook.Store(nil)
 						logHoldRefsHook.Store(nil)
 					})
 
@@ -2545,10 +2569,10 @@ func checkpointed(s *logStore) uint32 {
 	return cut
 }
 
-// checkpointFoldedHookFor returns a logCheckpointFoldedHook that calls fn for
+// checkpointCutHookFor returns a logCheckpointCutHook that calls fn for
 // s's checkpoints only: the hook is global, so a store another test left open,
 // whose checkpoints logCheckpointEvery may make due, calls it too.
-func checkpointFoldedHookFor(s *logStore, fn func()) *func(*logStore) {
+func checkpointCutHookFor(s *logStore, fn func()) *func(*logStore) {
 	hook := func(st *logStore) {
 		if st == s {
 			fn()

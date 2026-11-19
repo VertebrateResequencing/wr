@@ -30,8 +30,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"maps"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -641,6 +641,86 @@ func TestStoreFoldSplitCrashImages(t *testing.T) {
 	})
 }
 
+func TestStoreFoldSplitCrashBacklogSpec(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given 40 jobs of rep group one added and archived, the first by key added again in rep group two, "+
+		"a checkpoint carrying the archives in its backlog, all unfolded, and the bound at 1 byte, so that the "+
+		"fold records their completions 16 a transaction", t, func() {
+		pauseLogFolder()
+		setFoldTxBytes(1)
+
+		s, dir := openTestLogStore(t, ctx)
+
+		jobs := testLogJobs("fold split backlog spec", "one", 40)
+		_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+		So(err, ShouldBeNil)
+
+		for _, job := range jobs {
+			archiveTestJob(s, job, time.Now().Add(-time.Minute), time.Now())
+		}
+
+		first := sortedByKey(jobs)[0]
+		again := testDBJob(first.Cmd, "two")
+		So(again.Key(), ShouldEqual, first.Key())
+
+		_, err = s.storeNewJobsGuarded(ctx, []*Job{again}, false, nil)
+		So(err, ShouldBeNil)
+
+		checkpointed(s)
+
+		Convey("a store imaged before the fold's third transaction commits, when history.bolt holds the 32 "+
+			"completions of its second, the first's among them, but not its folded position, then given an "+
+			"earlier completion in rep group two, still answers that completion's end time once it has "+
+			"folded the backlog, as the first's completion it folds again is of rep group one", func() {
+			images := imageFoldTransactions(t, dir, 3)
+
+			So(s.foldNow(), ShouldBeNil)
+			logFoldTxHook.Store(nil)
+			So(*images, ShouldHaveLength, 3)
+
+			r := openLogStoreIn(ctx, (*images)[2])
+
+			Reset(func() { So(r.close(ctx), ShouldBeNil) })
+
+			So(historyCompleteCount(r), ShouldEqual, 32)
+
+			two := testDBJob("echo fold split backlog spec two", "two")
+			_, err = r.storeNewJobsGuarded(ctx, []*Job{two}, false, nil)
+			So(err, ShouldBeNil)
+
+			end := time.Now().Add(-time.Hour).Truncate(time.Second).UTC()
+			archiveTestJob(r, two, end.Add(-time.Minute), end)
+
+			want := map[string]time.Time{"two": end}
+			So(lastCompletions(r, "two"), ShouldResemble, want)
+
+			reads := 0
+
+			var missed []map[string]time.Time
+
+			read := func() {
+				reads++
+
+				if got := lastCompletions(r, "two"); !maps.EqualFunc(got, want, time.Time.Equal) {
+					missed = append(missed, got)
+				}
+			}
+			logFoldReadHook.Store(&read)
+			Reset(func() { logFoldReadHook.Store(nil) })
+
+			So(r.foldNow(), ShouldBeNil)
+			So(reads, ShouldBeGreaterThan, 1)
+			So(missed, ShouldBeEmpty)
+			So(lastCompletions(r, "two"), ShouldResemble, want)
+		})
+	})
+}
+
 // historyCompleteCount returns how many completed jobs s's history.bolt holds.
 func historyCompleteCount(s *logStore) int {
 	n := 0
@@ -720,6 +800,15 @@ func foldTxPageAllocs(s *logStore) []int64 {
 	}
 
 	return allocs
+}
+
+// lastCompletions returns what s answers as the last completion time of
+// repGroup.
+func lastCompletions(s *logStore, repGroup string) map[string]time.Time {
+	got, err := s.retrieveLastCompletionTimeByRepGroup([]string{repGroup})
+	So(err, ShouldBeNil)
+
+	return got
 }
 
 // sumInt64 returns the sum of vs.
@@ -818,39 +907,4 @@ func soImagesAnswerAsBefore(ctx context.Context, images []string, jobs []*Job, w
 		So(r.checkpoint(), ShouldBeNil)
 		So(r.close(ctx), ShouldBeNil)
 	}
-}
-
-// foldCrashAnswers describes every answer s gives about jobs: the rep groups
-// ever added, each one's complete jobs, each job's live and complete state and
-// std, and the complete records an inspection finds.
-func foldCrashAnswers(ctx context.Context, s *logStore, jobs []*Job) string {
-	var b strings.Builder
-
-	rgs, err := s.retrieveRepGroups()
-	So(err, ShouldBeNil)
-	slices.Sort(rgs)
-	fmt.Fprintf(&b, "rgs=%v\n", rgs)
-
-	for _, rg := range rgs {
-		got, errr := s.retrieveCompleteJobsByRepGroup(rg)
-		So(errr, ShouldBeNil)
-		fmt.Fprintf(&b, "complete[%s]=%v\n", rg, jobKeys(sortedByKey(got)))
-	}
-
-	for _, job := range sortedByKey(jobs) {
-		key := job.Key()
-
-		live, errl := s.checkIfLive(key)
-		So(errl, ShouldBeNil)
-
-		complete, errc := s.checkIfComplete(key)
-		So(errc, ShouldBeNil)
-
-		stdo, stde := s.retrieveJobStd(ctx, key)
-		fmt.Fprintf(&b, "%s live=%v complete=%v stdo=%q stde=%q\n", key, live, complete, stdo, stde)
-	}
-
-	fmt.Fprintf(&b, "inspect complete=%d\n", inspectedCount(s, kindComplete))
-
-	return b.String()
 }
