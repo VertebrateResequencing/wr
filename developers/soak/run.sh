@@ -17,6 +17,9 @@
 #                               induced commit stall of STALL_SECS (180)
 #                               STALL_AFTER_MIN (15) minutes in. Needs FUSE.
 #   RUNNER_FILELOG=1            runners keep logs in $SOAK_ROOT/runnerlogs
+#   PORTAL_MAX_INCOMPLETE       prodsim skips portal bursts while the manager
+#                               has more incomplete jobs than this (300000, as
+#                               battery10 and production; 0: no cap)
 #   EXTRA_ARGS                  more prodsim flags
 #
 # LSF: SCHED=lsf (the default) needs bjobs and bkill on PATH; SCHED=local runs
@@ -85,7 +88,8 @@ echo "$ramp0" > "$SOAK_ROOT/portal_target"
 ctr=""
 [ -n "${CTR_IMAGE:-}" ] && ctr="-ctr-image $CTR_IMAGE -ctr-jobs 25"
 export WRDEV_PRODSIM_ARGS="-portal-target-file $SOAK_ROOT/portal_target -portal-gap 5m -portal-median-mins 4 \
--portal-cmd-kb 10 -portal-limit $ramp0 -operator-limits=false $ctr \
+-portal-cmd-kb 10 -portal-limit $ramp0 -portal-max-incomplete ${PORTAL_MAX_INCOMPLETE:-300000} \
+-operator-limits=false $ctr \
 -spike-call 15s -spike-gap 10m ${EXTRA_ARGS:-}"
 t0=$(date +%s)
 "$WRDEV" prodsim "${HOURS:-3}" "${SIMMIN:-6}" "${SCALE:-1}" &

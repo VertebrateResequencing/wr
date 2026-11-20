@@ -44,6 +44,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/jobqueue"
 )
 
 const (
@@ -59,6 +61,15 @@ const (
 	pingSpikeFraction = 10
 )
 
+const (
+	// defaultPortalMaxIncomplete holds the live set near battery10's and
+	// production's, about 300,000 jobs, however fast the store adds.
+	defaultPortalMaxIncomplete = 300000
+	// portalRecheck is the longest a paused dynamic portal waits between
+	// counts of the incomplete jobs.
+	portalRecheck = 30 * time.Second
+)
+
 // spikeExempt says which ops are slow by design, so never trigger a capture.
 func spikeExempt(op string) bool {
 	return op == "submit_and_wait" || op == "status_portal_summary"
@@ -66,15 +77,16 @@ func spikeExempt(op string) bool {
 
 // soakConfig holds the soak additions' flags.
 type soakConfig struct {
-	ctrImage         string
-	ctrJobs          int
-	ctrEvery         time.Duration // simulated
-	portalTargetFile string
-	portalGap        time.Duration // real
-	portalMedianMins float64
-	operatorLimits   bool
-	spikeCall        time.Duration
-	spikeGap         time.Duration
+	ctrImage            string
+	ctrJobs             int
+	ctrEvery            time.Duration // simulated
+	portalTargetFile    string
+	portalGap           time.Duration // real
+	portalMedianMins    float64
+	portalMaxIncomplete int
+	operatorLimits      bool
+	spikeCall           time.Duration
+	spikeGap            time.Duration
 }
 
 func soakFlags(c *soakConfig) {
@@ -86,6 +98,8 @@ func soakFlags(c *soakConfig) {
 	flag.DurationVar(&c.portalGap, "portal-gap", defaultPortalGap, "real time between dynamic-mode portal bursts")
 	flag.Float64Var(&c.portalMedianMins, "portal-median-mins", portalMedianMins,
 		"median portal job run time (sim minutes)")
+	flag.IntVar(&c.portalMaxIncomplete, "portal-max-incomplete", defaultPortalMaxIncomplete,
+		"dynamic portal mode: skip bursts while the manager has more incomplete jobs than this (0 = no cap)")
 	flag.BoolVar(&c.operatorLimits, "operator-limits", true, "let the operator change the portal limit")
 	flag.DurationVar(&c.spikeCall, "spike-call", defaultSpikeCall,
 		"a call this slow (or a ping a tenth of it) triggers an extra profile capture while it is still slow")
@@ -97,6 +111,70 @@ type spiker struct {
 	mu   sync.Mutex
 	last time.Time
 	pp   *pprofClient
+}
+
+// incompleteCounter counts the manager's incomplete jobs for the dynamic
+// portal over a raw client, connected on first use and again after a failure,
+// so it survives the manager's restarts.
+type incompleteCounter struct {
+	s  *sim
+	jq *jobqueue.Client
+}
+
+// count returns how many incomplete jobs the manager holds, timed as the
+// portal's count_incomplete op. It is the per-state count `wr status -o
+// counts` asks for, which walks the queue once without decoding any job.
+func (c *incompleteCounter) count(ctx context.Context) (int, error) {
+	var total int
+
+	//nolint:contextcheck // a spike capture outlives the call
+	err := c.s.timed(actorPortal, "count_incomplete", func() (int, error) {
+		if c.jq == nil {
+			jq, err := jobqueue.ConnectUsingConfig(ctx, c.s.cfg.deployment, c.s.cfg.clientTimeout)
+			if err != nil {
+				return 0, err
+			}
+
+			c.jq = jq
+		}
+
+		//nolint:contextcheck // no Context variant; the client's Timeout bounds it
+		summaries, err := c.jq.GetStatusByRepGroupMatch("", jobqueue.RepGroupMatchExact, nil, false, false)
+		if err != nil {
+			c.close()
+
+			return 0, err
+		}
+
+		total = incompleteTotal(summaries)
+
+		return total, nil
+	})
+
+	return total, err
+}
+
+// incompleteTotal sums the counts of every state but complete.
+func incompleteTotal(summaries map[string]*jobqueue.RepGroupStatus) int {
+	total := 0
+
+	for _, summary := range summaries {
+		for state, n := range summary.Counts {
+			if state != jobqueue.JobStateComplete {
+				total += n
+			}
+		}
+	}
+
+	return total
+}
+
+// close disconnects the client, if connected.
+func (c *incompleteCounter) close() {
+	if c.jq != nil {
+		disconnect(c.jq)
+		c.jq = nil
+	}
 }
 
 func writeJSONLine(b *strings.Builder, v any) {
@@ -169,7 +247,14 @@ func (s *sim) portalDynamic(ctx context.Context) {
 	sigma2 := portalSigma * portalSigma / 2 //nolint:mnd // lognormal mean factor exp(sigma^2/2)
 	meanSecs := s.sim(time.Duration(s.cfg.soak.portalMedianMins*float64(time.Minute))).Seconds() * math.Exp(sigma2)
 
+	counter := &incompleteCounter{s: s}
+	defer counter.close()
+
 	for {
+		if !s.portalWaitUnderMax(ctx, counter.count) {
+			return
+		}
+
 		t0 := time.Now()
 		target := s.portalTarget(s.cfg.portalLimit)
 		n := max(1, int(float64(target)*s.cfg.soak.portalGap.Seconds()/meanSecs))
@@ -187,6 +272,54 @@ func (s *sim) portalDynamic(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// portalWaitUnderMax waits until count says the manager has at most
+// -portal-max-incomplete incomplete jobs, counting again every -portal-gap or
+// portalRecheck, whichever is shorter, but at most once a second. It logs a
+// pause event when it first finds too many and a resume event when it stops
+// waiting. A count that fails is waited out like too many, since the burst
+// could not be added either. It returns false if the run ends first. With no
+// cap it returns true at once.
+func (s *sim) portalWaitUnderMax(ctx context.Context, count func(context.Context) (int, error)) bool {
+	limit := s.cfg.soak.portalMaxIncomplete
+	if limit <= 0 {
+		return true
+	}
+
+	paused := false
+
+	for {
+		if n, err := count(ctx); err == nil {
+			paused = s.portalCapEvent(paused, n, limit)
+			if !paused {
+				return true
+			}
+		}
+
+		if !sleep(ctx, max(time.Second, min(s.cfg.soak.portalGap, portalRecheck))) {
+			return false
+		}
+	}
+}
+
+// portalCapEvent logs a pause if a count of n incomplete jobs is over limit and
+// the portal was not paused, or a resume if it is not over and the portal was
+// paused, and returns whether the portal is now paused.
+func (s *sim) portalCapEvent(paused bool, n, limit int) bool {
+	over := n > limit
+	if over == paused {
+		return paused
+	}
+
+	verb := "resume"
+	if over {
+		verb = "pause"
+	}
+
+	s.event(actorPortal, fmt.Sprintf("%s incomplete=%d max=%d", verb, n, limit))
+
+	return over
 }
 
 // containers adds, every -ctr-every, a batch of singularity jobs that each

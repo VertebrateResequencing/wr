@@ -128,10 +128,21 @@ The first three use the local scheduler.
 `run.sh` also reads `HOURS SIMMIN SCALE` (`3 6 1`), `RESTART_MIN` (`30`),
 `RESTART_KINDS` (`clean,crash,clean,crash,clean`), `RAMP0` (`600`), `RAMP`,
 `FIXTURE`, `CTR_IMAGE`, `FUSE_ON_AT FUSE_OFF_AT` (`3 4`),
-`STALL_AFTER_MIN STALL_SECS` (`15 180`), `RUNNER_FILELOG` and `EXTRA_ARGS`.
-Its header says what each does. Any `WRDEV_PRODSIM_*` variable that `run.sh`
-does not set, such as `WRDEV_PRODSIM_KEEP_DB=1`, passes through to
-`wrdev.sh prodsim`.
+`STALL_AFTER_MIN STALL_SECS` (`15 180`), `RUNNER_FILELOG`,
+`PORTAL_MAX_INCOMPLETE` (`300000`) and `EXTRA_ARGS`.
+Its header says what each does. `run.sh` runs prodsim's portal in dynamic
+mode: every 5 minutes it submits a burst sized to keep the `ramp.sh`
+concurrency busy. It skips a burst, and checks again every 30 seconds, while
+the manager holds more than `PORTAL_MAX_INCOMPLETE` incomplete jobs, so a
+store with fast adds keeps the live set near battery10's and production's
+instead of growing it by up to 0.9M jobs an hour. The check is prodsim's
+`count_incomplete` call in `calls.tsv`, the per-state count
+`wr status -o counts` makes. `events.tsv` gets a
+`portal pause incomplete=<n> max=<m>` line when bursts stop and a
+`portal resume` line when they start again; one burst can take the live set
+past the cap. A `crashon.sh ... burst` waits through a pause. Any
+`WRDEV_PRODSIM_*` variable that `run.sh` does not set, such as
+`WRDEV_PRODSIM_KEEP_DB=1`, passes through to `wrdev.sh prodsim`.
 
 ## Running a soak
 

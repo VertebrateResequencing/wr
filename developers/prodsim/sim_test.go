@@ -60,6 +60,7 @@ type outageRun struct {
 	s      *sim
 	out    string
 	server *jobqueue.Server
+	config jobqueue.ServerConfig
 	cancel context.CancelFunc
 	ended  chan struct{}
 	undo   []func()
@@ -88,6 +89,7 @@ func startOutageRun(t *testing.T, simMinute time.Duration, scale float64,
 
 	config.Deployment = "production"
 	config.Timings.RetryTime = testRetryTime
+	r.config = config
 	r.server = clienttesting.Serve(t, config)
 	r.undo = append(r.undo, func() { r.server.Stop(context.Background(), true) })
 
@@ -177,6 +179,18 @@ func TestActorEndsWithTheRunWhileTheManagerIsDown(t *testing.T) {
 	})
 }
 
+// waitForCallsWithin waits up to within for calls.tsv in out to have n rows for
+// op.
+func waitForCallsWithin(out, op string, n int, within time.Duration) bool {
+	for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(testPoll) {
+		if len(callRows(out, op)) >= n {
+			return true
+		}
+	}
+
+	return false
+}
+
 // simTestConfig is a run against the development deployment that
 // clienttesting.PrepareWrConfig configured, writing its TSVs to out. Its jobs
 // are never run: the test manager has no runner command.
@@ -196,13 +210,7 @@ func simTestConfig(out string) config {
 
 // waitForCalls waits for calls.tsv in out to have n rows for op.
 func waitForCalls(out, op string, n int) bool {
-	for deadline := time.Now().Add(testCallWait); time.Now().Before(deadline); time.Sleep(testPoll) {
-		if len(callRows(out, op)) >= n {
-			return true
-		}
-	}
-
-	return false
+	return waitForCallsWithin(out, op, n, testCallWait)
 }
 
 // callRows returns calls.tsv's rows for op in out.
