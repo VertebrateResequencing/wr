@@ -64,6 +64,21 @@ func TestReleaseDurabilityResendWaitsForWrite(t *testing.T) {
 		})
 	})
 
+	Convey("Given a restarted manager that applied runner A's release before runner B took the job on", t, func() {
+		f := newReleaseResendFixture(t, storeKindBolt, releaseDurabilityRetries, true, releasedByRunner)
+		defer f.stop()
+
+		runnerB, _ := f.reserveAgain()
+		defer disconnect(runnerB)
+
+		Convey("A's re-sent release is acknowledged, but not while writes are held off disk", func() {
+			_, acked := reportWithWriteHeld(f.server, f.resend)
+
+			So(acked, ShouldBeFalse)
+			So(f.state().State, ShouldEqual, JobStateRunning)
+		})
+	})
+
 	Convey("Given a job a runner has buried", t, func() {
 		server, jq, job := startedJobForResend(ctx, t, releaseDurabilityRetries, withBoltStore)
 

@@ -5603,7 +5603,7 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 // updateJobAfterChangeDurable is updateJobAfterChange, but it blocks until the
 // drain that covers this job's write has committed, and returns that write's
 // outcome. It is what lets a caller acknowledge a change only once recovery
-// would see it (see handleReportOnOwnBuriedJob and ackAlreadyReleased).
+// would see it (see handleReportAlreadyApplied and ackAlreadyReleased).
 // Reservations and starts write only the run state, with
 // updateJobRunStateDurable.
 //

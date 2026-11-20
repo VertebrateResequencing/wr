@@ -73,6 +73,13 @@ const defaultMountRetries = 10
 // "singularity:", so a key with the prefix can never equal one without it.
 const imageUserKeyPrefix = "imageuser."
 
+// releasedByKept is how many of the runners whose release or bury of a job was
+// applied a job remembers (Job.ReleasedBy). A runner re-sends a report it never
+// had answered for up to ClientRetryTime, and in that time the job may be run
+// and released again by others; this covers a job with the default Retries of 3
+// run twice over in between, at 16 bytes a runner, on jobs that failed only.
+const releasedByKept = 8
+
 // errNoTargets is returned by Mount when a MountConfig has no usable Targets.
 var errNoTargets = errors.New("no Targets specified")
 
@@ -548,6 +555,62 @@ func (j *Job) restoreRunDetailsLocked(d runDetails) {
 	j.StartTime, j.EndTime = d.startTime, d.endTime
 	j.PeakRAM, j.PeakDisk, j.CPUtime = d.peakRAM, d.peakDisk, d.cpuTime
 	j.StdOutC, j.StdErrC = d.stdOutC, d.stdErrC
+}
+
+// noteReleasedByLocked records that the manager applied the release or bury
+// that the runner with client ID reporter made of this job's run, keeping the
+// last releasedByKept reporters, the newest last. A reporter already listed
+// moves to the newest place, so one runner releasing the job repeatedly does
+// not push the others out. The zero ID, a manager's own release, is not
+// recorded. It replaces ReleasedBy rather than changing it in place, since a
+// run state taken for a write may share it (newLogRunState). The caller must
+// hold the Job's lock.
+func (j *Job) noteReleasedByLocked(reporter uuid.UUID) {
+	if reporter == (uuid.UUID{}) {
+		return
+	}
+
+	kept := append(slices.DeleteFunc(slices.Clone(j.ReleasedBy), func(id uuid.UUID) bool { return id == reporter }),
+		reporter)
+
+	j.ReleasedBy = kept[max(0, len(kept)-releasedByKept):]
+}
+
+// forgetReleasedByLocked takes the runner with client ID runner out of
+// ReleasedBy, as the manager has ended a later run of that runner's without
+// applying its report: a report it sends now is of that run, not a re-send of
+// one applied. Like noteReleasedByLocked it replaces ReleasedBy, leaving it nil
+// if no one is left. The zero ID is never in it. The caller must hold the Job's
+// lock.
+func (j *Job) forgetReleasedByLocked(runner uuid.UUID) {
+	if runner == (uuid.UUID{}) || !slices.Contains(j.ReleasedBy, runner) {
+		return
+	}
+
+	kept := slices.DeleteFunc(slices.Clone(j.ReleasedBy), func(id uuid.UUID) bool { return id == runner })
+	if len(kept) == 0 {
+		kept = nil
+	}
+
+	j.ReleasedBy = kept
+}
+
+// reportAppliedFor reports whether the manager applied a release or bury of
+// this job made by the runner with client ID reporter, given the state of the
+// job's queue item: the job names reporter in its ReleasedBy, or the item is
+// buried and the job is still buried and reserved by reporter, other than by
+// the manager's own release of reporter's run as lost.
+//
+// The second rule is for a job buried by its runner under an older manager,
+// which kept no ReleasedBy; on any other job it adds nothing, as a runner's
+// own bury names it in ReleasedBy.
+func (j *Job) reportAppliedFor(reporter uuid.UUID, state queue.ItemState) bool {
+	j.RLock()
+	defer j.RUnlock()
+
+	return slices.Contains(j.ReleasedBy, reporter) ||
+		(state == queue.ItemStateBury && j.State == JobStateBuried && j.ReservedBy == reporter &&
+			j.FailReason != FailReasonLost)
 }
 
 // runsAsImageUser tells you if the Cmd's processes of a job with the given
@@ -1210,6 +1273,20 @@ type Job struct {
 	// the jobs clients are sent (itemToJob). It means nothing once the job has
 	// left the run sub-queue.
 	RunnerReservation uint64 `codec:",omitempty"`
+	// the manager adds to this the client ID of each runner whose own release
+	// or bury of the job it applies, oldest first, keeping the last
+	// releasedByKept. A runner whose report was applied, but which never had
+	// the reply, as when the manager crashed first, sends it again, perhaps
+	// after another runner has taken the job on; this is how the manager knows
+	// to acknowledge it (see Job.reportAppliedFor). The manager takes a runner
+	// out of it again when it ends a later run of that runner's itself, without
+	// its report (Job.forgetReleasedByLocked). It is exported only so that it is
+	// stored with the job and survives a restart: it is server side only,
+	// cleared on a job a client adds and on a completed run, so never kept in a
+	// job's complete record, where a re-sent report is acknowledged as one of a
+	// complete job (jobAlreadyComplete), and not copied to the jobs clients are
+	// sent (itemToJob).
+	ReleasedBy []uuid.UUID `codec:",omitempty"`
 	// on the server we don't store EnvC with the job, but look it up in db via
 	// this key.
 	EnvKey string

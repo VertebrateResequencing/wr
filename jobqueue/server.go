@@ -1297,6 +1297,14 @@ type releaseReport struct {
 	// errReleaseReporterSupplanted.
 	reporter uuid.UUID
 
+	// unreported is, for a manager-initiated release, the client ID of the
+	// runner whose run it ends, if it ends one: the job is in the run
+	// sub-queue on that runner's reservation. That runner's report of the run
+	// is not applied, so the release takes it out of the job's ReleasedBy (see
+	// Job.forgetReleasedByLocked). It is filled in by releaseJobSnapshot, never
+	// by a caller.
+	unreported uuid.UUID
+
 	// attempted is true when the job's OWNER reported this release having
 	// actually tried to run the job's Cmd (a cmd.Start() failure, or a command
 	// that ran and then ended badly). Such a release spends one of the job's
@@ -1381,17 +1389,20 @@ func releaseSpendsARetry(job *Job, rep releaseReport) bool {
 }
 
 // applyRunEndLocked applies a release's end of run to job: the end state (only
-// if rep.endState exited and the job has not already recorded one), the fail
-// reason, the run's own requirements as FailedRunReqs, and the retry budget
-// and state. As this is a new failure, any user's modification no longer
-// clears its increase. It then recomputes the requirements from rec, the
-// cached learned values, so the job waits at its retry size. It returns the
-// scheduler group and log message applyReleaseLocked returns. The caller
-// holds job's lock.
+// if rep.endState exited and the job has not already recorded one), for a
+// manager's release the forgetting of the runner whose run it ends from
+// ReleasedBy (rep.unreported), the fail reason, the run's own requirements as
+// FailedRunReqs, and the retry budget and state. As this is a new failure, any
+// user's modification no longer clears its increase. It then recomputes the
+// requirements from rec, the cached learned values, so the job waits at its
+// retry size. It returns the scheduler group and log message
+// applyReleaseLocked returns. The caller holds job's lock.
 func (j *Job) applyRunEndLocked(rep releaseReport, rec *scheduler.Requirements) (string, string) {
 	if !j.Exited && rep.endState != nil && rep.endState.Exited {
 		j.recordEndStateLocked(rep.endState)
 	}
+
+	j.forgetReleasedByLocked(rep.unreported)
 
 	j.FailedRunReqs = runReqs(j.Requirements)
 	j.FailBumpsCleared = 0
@@ -1405,8 +1416,9 @@ func (j *Job) applyRunEndLocked(rep releaseReport, rec *scheduler.Requirements) 
 }
 
 // applyReleaseLocked sets a released job's retry budget, state and fail
-// reason, and returns its scheduler group and a message saying whether it was
-// buried or released. The caller holds job's lock.
+// reason, notes the runner whose report it is, if it is one
+// (noteReleasedByLocked), and returns its scheduler group and a message saying
+// whether it was buried or released. The caller holds job's lock.
 func (j *Job) applyReleaseLocked(rep releaseReport) (string, string) {
 	if rep.forceBury {
 		j.UntilBuried = 0
@@ -1423,6 +1435,7 @@ func (j *Job) applyReleaseLocked(rep releaseReport) (string, string) {
 	}
 
 	j.FailReason = rep.failReason
+	j.noteReleasedByLocked(rep.reporter)
 
 	if j.UntilBuried <= 0 {
 		j.State = JobStateBuried
@@ -3989,7 +4002,8 @@ func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseRe
 
 // replaceLostEndState records the owner's report rep over the end state of the
 // manager's own lost release of job (replaceLostEndStateLocked) and, if it did,
-// recomputes job's requirements for the failure the report gives it, both under
+// notes the owner as one whose report was applied (noteReleasedByLocked) and
+// recomputes job's requirements for the failure the report gives it, all under
 // one hold of job's lock. It reports whether it replaced the end state.
 //
 // The job's item is waiting to run again, so a reserve can take it as soon as
@@ -4007,6 +4021,7 @@ func (s *Server) replaceLostEndState(job *Job, rep releaseReport) bool {
 		return false
 	}
 
+	job.noteReleasedByLocked(rep.reporter)
 	s.recomputeJobRequirementsLocked(job)
 
 	return true
@@ -7094,6 +7109,8 @@ func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 		// or say which runner reservation came first (see moved_on_runner.go).
 		job.RerunAfterRun = false
 		job.RunnerReservation = 0
+		// nor say whose reports of its runs it applied (see Job.ReleasedBy).
+		job.ReleasedBy = nil
 		// nor say when it will be ready, which is only for the jobs clients are
 		// sent, never stored.
 		job.ReadyTime = time.Time{}
@@ -7499,6 +7516,14 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 	// getijForReport accepted the report.
 	if rep.reporter != (uuid.UUID{}) && !job.runHeldByLocked(rep.reporter, stats) {
 		return releaseSnapshot{supplanted: true}
+	}
+
+	// a manager's release of a run its runner still holds ends that run with
+	// no report of the runner's applied. A run part way through being reserved
+	// is not yet its new runner's, and ReservedBy still names the last.
+	runnersRun := stats.State == queue.ItemStateRun && job.runHeldByLocked(job.ReservedBy, stats)
+	if rep.reporter == (uuid.UUID{}) && runnersRun {
+		rep.unreported = job.ReservedBy
 	}
 
 	// an item already out of Run, in delay, ready or dependent, had this run released

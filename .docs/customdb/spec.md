@@ -457,12 +457,15 @@ checkpoint:
 - Flat run state (`logRunState`): every `jobRunState` field plus the
   persisted fields that a transition changes after the add without writing a
   new spec: UntilBuried (release, bury, kick, lost-job refresh),
-  FailBumpsCleared, ModifiedReqs and FailedRunReqs (release and bury), and
-  WaitingForDepGroups (dependency resolution).
+  FailBumpsCleared, ModifiedReqs and FailedRunReqs (release and bury),
+  WaitingForDepGroups (dependency resolution), and ReleasedBy (a runner's
+  own release or bury, and the manager's release of that runner's later run,
+  which drops it; see `handleReportAlreadyApplied`).
   bbolt writes the whole job on exits and kicks, so these survive a restart
   today; carrying them in every state record keeps that. `jobRunState`
   itself is unchanged, since bbolt's run-state records are its Binc encoding.
-  Variable length, first byte version (1).
+  Variable length, first byte version: 1, or 2 for a record that ends with a
+  non-empty ReleasedBy (a count, then 16 bytes per client ID).
 - Archive (`archiveCompletion`, as `archiveJobTx`): one block of, if the
   key is not live, the job's spec record, then a `complete` record holding
   `recordCompleteTx`'s complete record (for a keep-live archive,
@@ -1705,6 +1708,7 @@ type logRunState struct {
 	UntilBuried, FailBumpsCleared uint8
 	ModifiedReqs, FailedRunReqs   *scheduler.Requirements
 	WaitingForDepGroups           []string
+	ReleasedBy                    []uuid.UUID
 }
 
 func newLogRunState(j *Job) logRunState

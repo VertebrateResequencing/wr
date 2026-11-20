@@ -44,13 +44,14 @@ import (
 
 // transitionChangedFields are the persisted Job fields outside jobRunState
 // that a transition changes after the add without writing a new spec: release
-// and bury (UntilBuried, FailBumpsCleared, ModifiedReqs, FailedRunReqs), kick
-// and lost-job refresh (UntilBuried) and dependency resolution
-// (WaitingForDepGroups). wr mod is a modify, which writes a new spec.
+// and bury (UntilBuried, FailBumpsCleared, ModifiedReqs, FailedRunReqs, and
+// ReleasedBy for a runner's own), kick and lost-job refresh (UntilBuried) and
+// dependency resolution (WaitingForDepGroups). wr mod is a modify, which writes
+// a new spec.
 //
 //nolint:gochecknoglobals // a read-only list.
 var transitionChangedFields = []string{
-	"UntilBuried", "FailBumpsCleared", "ModifiedReqs", "FailedRunReqs", "WaitingForDepGroups",
+	"UntilBuried", "FailBumpsCleared", "ModifiedReqs", "FailedRunReqs", "WaitingForDepGroups", "ReleasedBy",
 }
 
 func TestFlatCodec(t *testing.T) {
@@ -385,12 +386,60 @@ func TestFlatCodec(t *testing.T) {
 			So(decodeFlatSpec(encoded, &Job{}, bdb.ch), ShouldWrap, errStoreVersionTooNew)
 		})
 
-		Convey("a run state whose version byte is 2 does not decode", func() {
+		Convey("a run state whose version byte is 3 does not decode", func() {
 			rs := newLogRunState(fullFlatJob())
 			encoded := appendFlatRunState(nil, &rs)
-			encoded[0] = 2
+			encoded[0] = 3
 
 			So(decodeFlatRunState(encoded, &logRunState{}), ShouldWrap, errStoreVersionTooNew)
+		})
+
+		Convey("a run state with no ReleasedBy is version 1 and ends where version 2 adds it", func() {
+			job := fullFlatJob()
+			rs := newLogRunState(job)
+			withReleased := appendFlatRunState(nil, &rs)
+
+			rs.ReleasedBy = nil
+			without := appendFlatRunState(nil, &rs)
+
+			So(withReleased[0], ShouldEqual, flatRunStateVersion)
+			So(without[0], ShouldEqual, flatVersion)
+
+			var fromV1, fromV2 logRunState
+			So(decodeFlatRunState(without, &fromV1), ShouldBeNil)
+			So(fromV1.ReleasedBy, ShouldBeNil)
+
+			So(decodeFlatRunState(withReleased, &fromV2), ShouldBeNil)
+			So(fromV2.ReleasedBy, ShouldResemble, job.ReleasedBy)
+
+			fromV2.ReleasedBy = nil
+			So(fromV2, ShouldResemble, fromV1)
+
+			So(decodeFlatRunState(append([]byte{flatRunStateVersion}, without[1:]...), &logRunState{}),
+				ShouldWrap, errFlatMalformed)
+			So(decodeFlatRunState(append(append([]byte{flatRunStateVersion}, without[1:]...), 0), &logRunState{}),
+				ShouldWrap, errFlatMalformed)
+		})
+
+		Convey("a version 2 run state claiming more ReleasedBy than it holds is malformed", func() {
+			So(decodeFlatRunState(flatRunStateClaiming(1<<62), &logRunState{}), ShouldWrap, errFlatMalformed)
+			So(decodeFlatRunState(flatRunStateClaiming(3), &logRunState{}), ShouldWrap, errFlatMalformed)
+		})
+
+		Convey("a version 1 run state decoded into one a version 2 run state was decoded into has no "+
+			"ReleasedBy", func() {
+			rs := newLogRunState(fullFlatJob())
+			withReleased := appendFlatRunState(nil, &rs)
+
+			rs.ReleasedBy = nil
+			without := appendFlatRunState(nil, &rs)
+
+			var reused logRunState
+			So(decodeFlatRunState(withReleased, &reused), ShouldBeNil)
+			So(reused.ReleasedBy, ShouldHaveLength, 2)
+
+			So(decodeFlatRunState(without, &reused), ShouldBeNil)
+			So(reused.ReleasedBy, ShouldBeNil)
 		})
 
 		Convey("every truncation of a spec or run state is an error", func() {
@@ -400,6 +449,12 @@ func TestFlatCodec(t *testing.T) {
 
 			So(truncationsDecoded(spec, func(b []byte) error { return decodeFlatSpec(b, &Job{}, bdb.ch) }), ShouldEqual, 0)
 			So(truncationsDecoded(state, func(b []byte) error { return decodeFlatRunState(b, &logRunState{}) }), ShouldEqual, 0)
+
+			rs.ReleasedBy = nil
+			stateV1 := appendFlatRunState(nil, &rs)
+			So(truncationsDecoded(stateV1, func(b []byte) error {
+				return decodeFlatRunState(b, &logRunState{})
+			}), ShouldEqual, 0)
 			So(decodeFlatSpec(append(spec, 0), &Job{}, bdb.ch), ShouldWrap, errFlatMalformed)
 			So(decodeFlatRunState(append(state, 0), &logRunState{}), ShouldWrap, errFlatMalformed)
 		})
@@ -478,10 +533,10 @@ func TestFlatCodecAllocations(t *testing.T) {
 			So(allocs, ShouldEqual, 0)
 		})
 
-		Convey("decoding a run state without Requirements or dep groups allocates nothing", func() {
+		Convey("decoding a run state without Requirements, dep groups or ReleasedBy allocates nothing", func() {
 			rs := newLogRunState(job)
 			rs.Requirements, rs.RequirementsOrig, rs.ModifiedReqs, rs.FailedRunReqs = nil, nil, nil, nil
-			rs.WaitingForDepGroups = nil
+			rs.WaitingForDepGroups, rs.ReleasedBy = nil, nil
 			encoded := appendFlatRunState(nil, &rs)
 
 			var (
@@ -552,6 +607,12 @@ func FuzzFlatRunState(f *testing.F) {
 	f.Add(appendFlatRunState(nil, &empty))
 	f.Add(appendFlatRunState(nil, &full))
 	f.Add([]byte{flatVersion, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f})
+	f.Add([]byte{flatRunStateVersion})
+
+	f.Add(flatRunStateClaiming(1 << 62))
+
+	full.ReleasedBy = nil
+	f.Add(appendFlatRunState(nil, &full))
 
 	f.Fuzz(func(t *testing.T, src []byte) {
 		var rs logRunState
@@ -624,6 +685,20 @@ func mustFlatSpec(bdb *db, job *Job) []byte {
 	return spec
 }
 
+// flatRunStateClaiming returns fullFlatJob's version 2 flat run state, which
+// holds 2 ReleasedBy, with its ReleasedBy count changed to claimed.
+func flatRunStateClaiming(claimed uint64) []byte {
+	rs := newLogRunState(fullFlatJob())
+	encoded := appendFlatRunState(nil, &rs)
+	held := len(rs.ReleasedBy)
+	ids := encoded[len(encoded)-held*len(uuid.UUID{}):]
+	countAt := len(encoded) - len(ids) - 1
+
+	claiming := binary.AppendUvarint(slices.Clone(encoded[:countAt]), claimed)
+
+	return append(claiming, ids...)
+}
+
 // fullFlatJob returns a Job with every field encodeJob persists set to a
 // non-zero value, nested ones included.
 func fullFlatJob() *Job {
@@ -668,6 +743,7 @@ func fullFlatJob() *Job {
 		State: JobStateRunning, Attempts: 1 << 20, UntilBuried: 2, FailBumpsCleared: 1,
 		ModifiedReqs: reqs(200), FailedRunReqs: reqs(300),
 		ReservedBy:    uuid.Must(uuid.NewV4()),
+		ReleasedBy:    []uuid.UUID{uuid.Must(uuid.NewV4()), uuid.Must(uuid.NewV4())},
 		RerunAfterRun: true, RunnerReservation: 1 << 40, EnvKey: "envkey", Similar: 9,
 		Queue: "q", BsubID: 1 << 40, DelayTime: time.Second,
 		ReadyTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),

@@ -69,6 +69,12 @@ Performance only.
 - Runners no longer wait for the manager's scheduling pass before they can
   take newly added, kicked or resumed commands.
 
+#### If the manager crashed
+- A runner whose report of a failed command was saved just before a crash, but
+  which never had the reply, no longer fails with "bad job" when it sends the
+  report again after the restart, if another runner has taken the command on
+  meanwhile.
+
 
 ## [0.39.0] - 2026-10-12
 ### Added

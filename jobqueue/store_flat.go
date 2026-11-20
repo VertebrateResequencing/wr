@@ -54,9 +54,15 @@ import (
 	"github.com/ugorji/go/codec"
 )
 
-// flatVersion is the first byte of every flat spec and run state this wr
-// writes; a decoder refuses a higher one.
+// flatVersion is the first byte of every flat spec this wr writes, and of every
+// flat run state with no ReleasedBy; a spec decoder refuses a higher one.
 const flatVersion byte = 1
+
+// flatRunStateVersion is the first byte of a flat run state that ends with its
+// ReleasedBy, which only a job a runner's release or bury was applied to has.
+// A run state decoder refuses a higher one, and reads ReleasedBy only from
+// this one, so every other run state is as it was before ReleasedBy.
+const flatRunStateVersion byte = 2
 
 // Flag bits of a flat spec's flags byte.
 const (
@@ -119,10 +125,12 @@ type logRunState struct {
 	ModifiedReqs        *scheduler.Requirements
 	FailedRunReqs       *scheduler.Requirements
 	WaitingForDepGroups []string
+	ReleasedBy          []uuid.UUID
 }
 
 // newLogRunState returns j's run state, deep-copying its Requirements and
-// WaitingForDepGroups. The caller holds j's read lock.
+// WaitingForDepGroups. ReleasedBy is shared, as it is replaced, never changed
+// in place (Job.noteReleasedByLocked). The caller holds j's read lock.
 func newLogRunState(j *Job) logRunState {
 	return logRunState{
 		jobRunState:         newJobRunState(j),
@@ -131,6 +139,7 @@ func newLogRunState(j *Job) logRunState {
 		ModifiedReqs:        cloneRequirements(j.ModifiedReqs),
 		FailedRunReqs:       cloneRequirements(j.FailedRunReqs),
 		WaitingForDepGroups: slices.Clone(j.WaitingForDepGroups),
+		ReleasedBy:          j.ReleasedBy,
 	}
 }
 
@@ -142,18 +151,31 @@ func (rs *logRunState) applyTo(j *Job) {
 	j.ModifiedReqs = rs.ModifiedReqs
 	j.FailedRunReqs = rs.FailedRunReqs
 	j.WaitingForDepGroups = rs.WaitingForDepGroups
+	j.ReleasedBy = rs.ReleasedBy
 
 	rs.jobRunState.applyTo(j)
 }
 
+// flatVersion returns the version byte of rs's flat run state:
+// flatRunStateVersion if it has a ReleasedBy, otherwise flatVersion.
+func (rs *logRunState) flatVersion() byte {
+	if len(rs.ReleasedBy) > 0 {
+		return flatRunStateVersion
+	}
+
+	return flatVersion
+}
+
 // decodeFlatRunState sets every field of rs from src. Strings and byte slices
 // in rs alias src, so src must not change while rs, or a Job it is applied to,
-// is in use. Requirements and WaitingForDepGroups are always new, so rs may be
-// applied to a Job and then decoded into again; without them it allocates
-// nothing.
+// is in use. Requirements, WaitingForDepGroups and ReleasedBy are always new,
+// so rs may be applied to a Job and then decoded into again; without them it
+// allocates nothing.
 func decodeFlatRunState(src []byte, rs *logRunState) error {
 	r := flatReader{b: src}
-	if err := r.version(); err != nil {
+
+	version, err := r.version(flatRunStateVersion)
+	if err != nil {
 		return err
 	}
 
@@ -161,14 +183,20 @@ func decodeFlatRunState(src []byte, rs *logRunState) error {
 	rs.Requirements, rs.RequirementsOrig = r.reqs(), r.reqs()
 	rs.ModifiedReqs, rs.FailedRunReqs = r.reqs(), r.reqs()
 	rs.WaitingForDepGroups = r.stringSlice(nil)
+	rs.ReleasedBy = nil
+
+	if version == flatRunStateVersion {
+		rs.ReleasedBy = r.uuids()
+	}
 
 	return r.end()
 }
 
 // appendFlatRunState appends rs's flat run state to dst: every logRunState
-// field. It allocates nothing when dst has room.
+// field, ReleasedBy only if it is not empty, in a flatRunStateVersion record.
+// It allocates nothing when dst has room.
 func appendFlatRunState(dst []byte, rs *logRunState) []byte {
-	dst = append(dst, flatVersion)
+	dst = append(dst, rs.flatVersion())
 	dst = appendFlatStrings(dst, string(rs.State), rs.FailReason, rs.Host,
 		rs.HostID, rs.HostIP, rs.ActualCwd)
 	dst = append(dst, flatFlags(rs.Exited, rs.Lost, rs.RerunAfterRun))
@@ -190,8 +218,9 @@ func appendFlatRunState(dst []byte, rs *logRunState) []byte {
 	dst = appendFlatReqs(dst, rs.RequirementsOrig)
 	dst = appendFlatReqs(dst, rs.ModifiedReqs)
 	dst = appendFlatReqs(dst, rs.FailedRunReqs)
+	dst = appendFlatStringSlice(dst, rs.WaitingForDepGroups)
 
-	return appendFlatStringSlice(dst, rs.WaitingForDepGroups)
+	return appendFlatReleasedBy(dst, rs.ReleasedBy)
 }
 
 // appendFlatStrings appends each of ss, length-prefixed.
@@ -290,6 +319,22 @@ func appendFlatStringSlice(dst []byte, ss []string) []byte {
 	return appendFlatStrings(dst, ss...)
 }
 
+// appendFlatReleasedBy appends a non-empty ids' count and then each one's
+// bytes, and nothing for an empty one.
+func appendFlatReleasedBy(dst []byte, ids []uuid.UUID) []byte {
+	if len(ids) == 0 {
+		return dst
+	}
+
+	dst = binary.AppendUvarint(dst, uint64(len(ids)))
+
+	for _, id := range ids {
+		dst = append(dst, id[:]...)
+	}
+
+	return dst
+}
+
 // flatBlob is the Binc-encoded part of a flat spec.
 type flatBlob struct {
 	Dependencies Dependencies
@@ -347,16 +392,16 @@ func (r *flatReader) runStateFields(rs *logRunState) {
 	r.uuid(&rs.ReservedBy)
 }
 
-// version reads the record's version byte, returning an error unless it is
-// flatVersion.
-func (r *flatReader) version() error {
+// version reads and returns the record's version byte, returning an error if
+// it is 0 or above highest.
+func (r *flatReader) version(highest byte) (byte, error) {
 	switch v := r.u8(); {
 	case r.bad || v == 0:
-		return errFlatMalformed
-	case v > flatVersion:
-		return fmt.Errorf("flat record version %d: %w", v, errStoreVersionTooNew)
+		return 0, errFlatMalformed
+	case v > highest:
+		return 0, fmt.Errorf("flat record version %d: %w", v, errStoreVersionTooNew)
 	default:
-		return nil
+		return v, nil
 	}
 }
 
@@ -523,6 +568,24 @@ func (r *flatReader) uuid(u *uuid.UUID) {
 	copy(u[:], r.span(uint64(len(u))))
 }
 
+// uuids returns the next UUIDs, a count and then each one's bytes, newly made.
+// A count of 0 marks the record bad: an empty ReleasedBy is never written.
+func (r *flatReader) uuids() []uuid.UUID {
+	n := r.uvarint()
+	if r.bad || n == 0 || n > r.left()/uint64(len(uuid.UUID{})) {
+		r.bad = true
+
+		return nil
+	}
+
+	ids := make([]uuid.UUID, n)
+	for i := range ids {
+		r.uuid(&ids[i])
+	}
+
+	return ids
+}
+
 // reqs returns the next Requirements, newly made. A tag other than 0 (nil)
 // or flatReqsPresent marks the record bad.
 func (r *flatReader) reqs() *scheduler.Requirements {
@@ -671,7 +734,7 @@ func (r *flatReader) specFields(j *Job) {
 // With those reused and no blob, it allocates nothing.
 func decodeFlatSpec(src []byte, j *Job, ch codec.Handle) error {
 	r := flatReader{b: src}
-	if err := r.version(); err != nil {
+	if _, err := r.version(flatVersion); err != nil {
 		return err
 	}
 

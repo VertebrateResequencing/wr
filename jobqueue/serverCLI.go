@@ -1756,6 +1756,9 @@ func markJobComplete(job *Job, item *queue.Item, endState *JobEndState,
 	job.applySuccessfulEndStateLocked(endState, lim)
 	job.State = JobStateComplete
 	job.FailReason = ""
+	// a complete job needs no record of whose releases of it were applied, and
+	// its complete record must name no runner (see Job.ReleasedBy).
+	job.ReleasedBy = nil
 	// until archiveCompletedJob has finished with it, this completion holds the
 	// job in the run queue (see Job.archivePendingLocked).
 	job.archivesPending++
@@ -1939,20 +1942,22 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 	// released it) - not just Run - mirroring handleArchive, so a
 	// genuine failure report is applied rather than discarded and the job re-run.
 	// A job that is already gone-and-complete is handled idempotently
-	// (jobAlreadyComplete). A new owner yields ErrMustReserve (new-run-wins). A
-	// terminal (e.g. a winning double-reservation runner already buried it) or
-	// otherwise-gone item yields ErrBadJob, which lands in the client's give-up
-	// set so the losing runner abandons the dead reservation promptly instead of
-	// looping for the full 24h retryTime (reliable2 D1); a missing item during
-	// recovery yields ErrRecovering.
+	// (jobAlreadyComplete), as is a re-send of a report the manager already
+	// applied (handleReportAlreadyApplied). Otherwise a new owner yields
+	// ErrMustReserve (new-run-wins). A terminal (e.g. a winning
+	// double-reservation runner already buried it) or otherwise-gone item yields
+	// ErrBadJob, which lands in the client's give-up set so the losing runner
+	// abandons the dead reservation promptly instead of looping for the full 24h
+	// retryTime (reliable2 D1); a missing item during recovery yields
+	// ErrRecovering.
 	_, job, srerr := s.getijForReport(cr, itemIsReleasable)
 	if srerr != "" {
 		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
 			return nil, "", "" // idempotent: the job is already terminal
 		}
 
-		if srerr == ErrBadJob {
-			return s.handleReportOnOwnBuriedJob(ctx, cr, failMsg)
+		if srerr == ErrBadJob || srerr == ErrMustReserve {
+			return s.handleReportAlreadyApplied(ctx, cr, srerr, failMsg)
 		}
 
 		return nil, srerr, ""
@@ -1976,7 +1981,7 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 		reporter:     cr.ClientID,
 	})
 	if errors.Is(errq, errReleaseReporterSupplanted) {
-		return nil, ErrMustReserve, ""
+		return s.handleReportAlreadyApplied(ctx, cr, ErrMustReserve, failMsg)
 	}
 
 	if errq != nil {
@@ -1988,33 +1993,39 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 	return nil, "", ""
 }
 
-// handleReportOnOwnBuriedJob answers a release or bury report that
-// getijForReport refused as ErrBadJob. If this client already buried the job,
-// the report is a re-send of the bury or of the release that buried it, such as
-// after the first request timed out on a slow commit or was answered with
-// ErrInternalError because its write failed. Rather than ErrBadJob, on which the
-// runner gives up at once, either is acknowledged once the job's buried state is
-// on disk, as releaseJob does for a redundant release; otherwise a crash could
-// still recover the job running with no runner behind it. Any other job gets
-// ErrBadJob as before.
-func (s *Server) handleReportOnOwnBuriedJob(ctx context.Context, cr *clientRequest,
+// handleReportAlreadyApplied answers a release or bury report that handleRelease
+// refused with the given refusal, ErrBadJob or ErrMustReserve. If the manager
+// already applied a report of this client's on the job, this is a re-send of it,
+// such as after the first request timed out on a slow commit, or was applied
+// just before the manager crashed and so was never answered. The job may since
+// have been buried by that report, or run again by another runner, which may
+// still be running it, or have released or buried it too. Rather than the
+// refusal, on which the runner gives up at once and reports a failure it does
+// not have, the re-send is acknowledged and changes nothing, as releaseJob does
+// for a re-send while the job waits to run again.
+//
+// The manager knows it applied a client's report if the job names that client
+// in its ReleasedBy, which survives a restart, or, for a job its runner buried
+// under an older manager, if it is buried and still reserved by that client
+// (see Job.reportAppliedFor). A client that never held the job, or whose last
+// run of it the manager released itself without its report being applied,
+// gets the refusal.
+//
+// The acknowledgement waits until the whole job is on disk, written again after
+// the applied report, as releaseJob does for a redundant release; otherwise a
+// crash could still lose the report the runner was told was kept. That holds for
+// a job another runner is running too: if the applied report's own write had
+// failed, a write of the job's run state alone would not carry it.
+func (s *Server) handleReportAlreadyApplied(ctx context.Context, cr *clientRequest, refusal,
 	failMsg string) (*serverResponse, string, string) {
 	item, err := s.q.Get(cr.key())
-	if err != nil || item.Stats().State != queue.ItemStateBury {
-		return nil, ErrBadJob, ""
+	if err != nil {
+		return nil, refusal, ""
 	}
 
 	job, ok := item.Data().(*Job)
-	if !ok {
-		return nil, ErrBadJob, ""
-	}
-
-	job.RLock()
-	ownBury := job.State == JobStateBuried && job.ReservedBy == cr.ClientID
-	job.RUnlock()
-
-	if !ownBury {
-		return nil, ErrBadJob, ""
+	if !ok || !job.reportAppliedFor(cr.ClientID, item.Stats().State) {
+		return nil, refusal, ""
 	}
 
 	if errw := s.db.updateJobAfterChangeDurable(job); errw != nil {
