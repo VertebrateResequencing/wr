@@ -360,6 +360,11 @@ func TestStoreFoldBacklogCapacity(t *testing.T) {
 	}
 
 	Convey("Given a log store with 2,000 completions of jobs with 8KiB commands unfolded", t, func() {
+		// Each store's stats reporter would otherwise log, and so reset, its
+		// fold maxLag a minute after it opened, which a slow archive under
+		// load can put between a fold and the assertion on its maxLag.
+		reserveTestReportAtStop()
+
 		Convey("a fold whose records have waited 20 foldLagSteps commits them in at most 2 transactions, "+
 			"as with the bound off, writing at most 1.25 times as much; one whose records have just been "+
 			"written splits them by the bound", func() {
@@ -375,10 +380,14 @@ func TestStoreFoldBacklogCapacity(t *testing.T) {
 
 			lagged.foldLagFrom = time.Now().Add(-20 * foldLagStep)
 
+			laggedFoldFrom := time.Now()
 			lagAllocs := foldTxPageAllocs(lagged)
 			So(lagged.foldStats.maxLag.Load(), ShouldBeGreaterThanOrEqualTo, uint64(20*foldLagStep))
 
+			// fresh's archive, under load, can take minutes since its last
+			// fold, so its records are made to have just been written.
 			fresh := newBacklog()
+			fresh.foldLagFrom = time.Now()
 			freshAllocs := foldTxPageAllocs(fresh)
 
 			So(len(offAllocs), ShouldEqual, 1)
@@ -392,13 +401,15 @@ func TestStoreFoldBacklogCapacity(t *testing.T) {
 				_, err := lagged.storeNewJobsGuarded(ctx, testLogJobs("fold capacity next", "a", 10), false, nil)
 				So(err, ShouldBeNil)
 				So(lagged.foldNow(), ShouldBeNil)
-				So(lagged.foldStats.maxLag.Load(), ShouldBeLessThan, uint64(foldLagStep))
+				So(lagged.foldStats.maxLag.Load(), ShouldBeLessThanOrEqualTo,
+					uint64(time.Since(laggedFoldFrom))) //nolint:gosec // a duration
 			})
 		})
 	})
 
 	Convey("Given a log store with an add of 200 jobs unfolded, folded with the bound at 1 byte and each "+
 		"transaction taking 100ms", t, func() {
+		reserveTestReportAtStop()
 		pauseLogFolder()
 
 		s, _ := openTestLogStore(t, ctx)

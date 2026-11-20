@@ -365,8 +365,9 @@ func TestStoreReserveHealthy(t *testing.T) {
 	})
 }
 
-// reserveTestReportAtStop makes managers started from now until the Convey
-// block ends log their wait lines only when they stop.
+// reserveTestReportAtStop makes managers started, and log stores opened, from
+// now until the Convey block ends log their wait and "db writer" lines only
+// when they stop.
 func reserveTestReportAtStop() {
 	productionInterval := archiveFoldReportInterval
 	archiveFoldReportInterval = time.Hour

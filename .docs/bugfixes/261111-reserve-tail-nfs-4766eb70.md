@@ -252,7 +252,8 @@
       most 2 transactions writing at most 1.25 times as much, and `maxLag`
       at least that; with
       records just written, more than 4; and once the lagged fold reached
-      its target, the next fold's `maxLag` is under `foldLagStep`. Red
+      its target, the next fold's `maxLag` is under `foldLagStep` (since
+      261119 item E, at most the time since the lagged fold began). Red
       against the fixed bound (G4's code, as mutant `nolaggrow`). Its
       second Convey (round 5): 200 jobs folded with the bound at 1 byte and
       each transaction taking 100ms (about 0.4s in all), then 10 more
