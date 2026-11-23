@@ -68,6 +68,9 @@ Grouped by when each bug could affect you, most likely first.
 Performance only.
 - Runners no longer wait for the manager's scheduling pass before they can
   take newly added, kicked or resumed commands.
+- Runners asking for a command no longer wait while the manager lists every
+  ready command for its scheduler, a wait that grew with the number of ready
+  commands (about 2ms per 20,000).
 
 #### If the manager crashed
 - A runner whose report of a failed command was saved just before a crash, but

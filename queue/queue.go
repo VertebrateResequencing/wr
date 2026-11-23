@@ -1034,19 +1034,29 @@ func (queue *Queue) runReadyAddedCb(ctx context.Context, source string) {
 // sub-queue, and has the ready sub-queue record, from that moment, the items
 // that leave it (see GetRunningDataAndLeftReady), until runReadyAddedCb stops
 // it once the callback given this data has returned.
+//
+// It holds the queue's lock only to copy the ready items' pointers, and reads
+// their data after releasing it: reading every ready item's data under the
+// lock kept every reserve waiting for as long as that took, which grows with
+// the number of ready items (about 2ms for 20,000). An item's data that changes
+// after the copy is read as changed, as a gather a moment later would read it,
+// and an item that leaves ready after the copy is recorded as a leaver.
 func (queue *Queue) readyItemData() []any {
-	queue.mutex.RLock()
-	defer queue.mutex.RUnlock()
+	items := make([]*Item, 0, queue.readyQueue.len())
 
-	data := make([]any, 0, queue.readyQueue.len())
+	queue.mutex.RLock()
 
 	for _, il := range queue.readyQueue.groupedItems {
-		for _, item := range il {
-			data = append(data, item.Data())
-		}
+		items = append(items, il...)
 	}
 
 	queue.readyQueue.recordLeavers()
+	queue.mutex.RUnlock()
+
+	data := make([]any, len(items))
+	for i, item := range items {
+		data[i] = item.Data()
+	}
 
 	return data
 }
