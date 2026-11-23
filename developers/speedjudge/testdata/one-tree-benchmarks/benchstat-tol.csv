@@ -1,0 +1,10 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+"cpu: Intel Xeon Processor (Skylake, IBRS)"
+,base,,head,,,
+,sec/op,CI,sec/op,CI,vs base,P
+Same-8,5.05e-07,4%,6.312500000000001e-07,4%,+25.00%,p=0.002 n=6
+Old-8,5.05e-07,4%
+New-8,,,2.02e-07,4%
+geomean,5.049999999999996e-07,,3.5708892449920653e-07,,+25.00%,

@@ -1,0 +1,20 @@
+REGRESSION ResumeUnderReserveLoad-8 (d) median slow-reserve wait, slow-reserve-p50-us: +29.34% (p=0.043)
+
+WINDOW KickUnderReserveLoad-8: PASS
+  (a) operation duration, sec/op: -44.73% (p=0.002) ok
+  (b) slow reserves per op, slow-reserves/op: -91.95% (p=0.002) ok
+  (c) longest queue-lock hold, max-qlock-us: -71.41% (p=0.009) ok
+  (d) median slow-reserve wait, slow-reserve-p50-us: +8.71% (p=0.180) ok
+  (e) median reserve wait, reserve-p50-us: +10.12% (p=0.394) ok
+  informational, reserve-p99-us: -76.53% (p=0.002)
+  informational, reserve-max-us: -68.24% (p=0.002)
+  informational, reserves/op: -19.78% (p=0.004)
+WINDOW ResumeUnderReserveLoad-8: FAIL (d)
+  (a) operation duration, sec/op: -48.85% (p=0.002) ok
+  (b) slow reserves per op, slow-reserves/op: -93.53% (p=0.002) ok
+  (c) longest queue-lock hold, max-qlock-us: -61.96% (p=0.026) ok
+  (d) median slow-reserve wait, slow-reserve-p50-us: +29.34% (p=0.043) REGRESSION
+  (e) median reserve wait, reserve-p50-us: -2.01% (p=0.818) ok
+  informational, reserve-p99-us: -74.79% (p=0.002)
+  informational, reserve-max-us: -62.12% (p=0.002)
+  informational, reserves/op: -16.34% (p=0.004)

@@ -87,7 +87,29 @@ const (
 	percentile50            = 50
 	percentile99            = 99
 	percentileMax           = 100
+
+	slowReservesUnit    = "slow-reserves/op"
+	slowReserveWaitUnit = "slow-reserve-wait-us/op"
+	slowReserveP50Unit  = "slow-reserve-p50-us"
 )
+
+// slowReserveTailThresholds are the latencies past which the window-aware
+// rule counts reserves per op. Removing a reserve cannot raise such a count
+// and lengthening one can only raise it, so the counts catch an op that
+// leaves fewer slow reserves, each waiting much longer, which their total
+// wait can miss (see developers/speedjudge). Each is 1.2 to 1.33 times the
+// one before, and the first 1.25 times slowReserveThreshold. Each also has a
+// count of reserves over 1.1 times it, which the rule compares with base's
+// count over it, so a wait no more than 10% longer cannot fail it.
+//
+//nolint:gochecknoglobals // A fixed table.
+var slowReserveTailThresholds = []time.Duration{
+	1250 * time.Microsecond, 1500 * time.Microsecond, 2 * time.Millisecond, 2500 * time.Microsecond,
+	3 * time.Millisecond, 4 * time.Millisecond, 5 * time.Millisecond, 6 * time.Millisecond,
+	8 * time.Millisecond, 10 * time.Millisecond, 12 * time.Millisecond, 16 * time.Millisecond,
+	20 * time.Millisecond, 24 * time.Millisecond, 32 * time.Millisecond, 40 * time.Millisecond,
+	48 * time.Millisecond, 64 * time.Millisecond,
+}
 
 // kickResumeBenchBury reserves and buries the n ready targets on s.
 func kickResumeBenchBury(ctx context.Context, b *testing.B, s *Server, n int) ([]*Job, []string) {
@@ -334,30 +356,69 @@ func isClosed(ch <-chan struct{}) bool {
 	}
 }
 
-// reportUnderReserveLoad reports, per op, how long the op took in all and how
-// many reserves ran meanwhile, and the 50th, 99th and 100th percentiles of
-// their latencies. The tail percentiles depend on how many reserves the op's
-// window held, so for developers/speed.sh's window-aware rule it also
-// reports, per op, the reserves slower than slowReserveThreshold
-// (slow-reserves/op), the median latency of those (slow-reserve-p50-us, 0 if
-// there were none) and the probe's estimate of the longest hold of the
-// queue's lock during an op (see kickResumeBenchLockProbe), averaged over the
-// ops (max-qlock-us); holdTotal is the sum of each op's estimate.
+// reportUnderReserveLoad reports underReserveLoadMetrics of b's b.N ops.
 func reportUnderReserveLoad(b *testing.B, opTotal, holdTotal time.Duration, latencies []time.Duration) {
 	b.Helper()
 
-	slow := slices.DeleteFunc(slices.Clone(latencies), func(d time.Duration) bool {
-		return d <= slowReserveThreshold
-	})
+	for _, m := range underReserveLoadMetrics(b.N, opTotal, holdTotal, latencies) {
+		b.ReportMetric(m.value, m.unit)
+	}
+}
 
-	b.ReportMetric(float64(opTotal.Nanoseconds())/float64(b.N), "ns/op")
-	b.ReportMetric(float64(len(latencies))/float64(b.N), "reserves/op")
-	b.ReportMetric(durationPercentileMicros(latencies, percentile50), "reserve-p50-us")
-	b.ReportMetric(durationPercentileMicros(latencies, percentile99), "reserve-p99-us")
-	b.ReportMetric(durationPercentileMicros(latencies, percentileMax), "reserve-max-us")
-	b.ReportMetric(float64(len(slow))/float64(b.N), "slow-reserves/op")
-	b.ReportMetric(durationPercentileMicros(slow, percentile50), "slow-reserve-p50-us")
-	b.ReportMetric(float64(holdTotal.Nanoseconds())/float64(time.Microsecond)/float64(b.N), "max-qlock-us")
+// underReserveLoadMetrics returns, per op of n, how long the op took in all
+// and how many reserves ran meanwhile, and the 50th, 99th and 100th
+// percentiles of their latencies. The tail percentiles depend on how many
+// reserves the op's window held, so for developers/speed.sh's window-aware
+// rule it also returns, per op, the reserves slower than slowReserveThreshold
+// (slow-reserves/op), the sum of their latencies (slow-reserve-wait-us/op),
+// the reserves slower than each of slowReserveTailThresholds
+// (reserves-over-<N>ms/op) and than 1.1 times it (reserves-over-<N>ms-tol/op),
+// the median latency of the slow reserves (slow-reserve-p50-us, 0 if there
+// were none) and the probe's estimate of the longest hold of the queue's lock
+// during an op (see kickResumeBenchLockProbe), averaged over the ops
+// (max-qlock-us); holdTotal is the sum of each op's estimate.
+func underReserveLoadMetrics(n int, opTotal, holdTotal time.Duration,
+	latencies []time.Duration,
+) []underReserveLoadMetric {
+	perOp := func(v float64) float64 { return v / float64(n) }
+	micros := func(d time.Duration) float64 { return float64(d.Nanoseconds()) / float64(time.Microsecond) }
+
+	slow := slowerThan(latencies, slowReserveThreshold)
+
+	var slowTotal time.Duration
+	for _, d := range slow {
+		slowTotal += d
+	}
+
+	metrics := []underReserveLoadMetric{
+		{perOp(float64(opTotal.Nanoseconds())), "ns/op"},
+		{perOp(float64(len(latencies))), "reserves/op"},
+		{durationPercentileMicros(latencies, percentile50), "reserve-p50-us"},
+		{durationPercentileMicros(latencies, percentile99), "reserve-p99-us"},
+		{durationPercentileMicros(latencies, percentileMax), "reserve-max-us"},
+		{perOp(float64(len(slow))), slowReservesUnit},
+		{perOp(micros(slowTotal)), slowReserveWaitUnit},
+	}
+
+	for _, t := range slowReserveTailThresholds {
+		unit := "reserves-over-" + strconv.FormatFloat(float64(t)/float64(time.Millisecond), 'f', -1, 64) + "ms"
+		metrics = append(metrics,
+			underReserveLoadMetric{perOp(float64(len(slowerThan(slow, t)))), unit + "/op"},
+			underReserveLoadMetric{perOp(float64(len(slowerThan(slow, t*11/10)))), unit + "-tol/op"},
+		)
+	}
+
+	return append(metrics,
+		underReserveLoadMetric{durationPercentileMicros(slow, percentile50), slowReserveP50Unit},
+		underReserveLoadMetric{perOp(micros(holdTotal)), "max-qlock-us"},
+	)
+}
+
+// slowerThan returns the latencies in ds longer than t.
+func slowerThan(ds []time.Duration, t time.Duration) []time.Duration {
+	return slices.DeleteFunc(slices.Clone(ds), func(d time.Duration) bool {
+		return d <= t
+	})
 }
 
 // durationPercentileMicros returns the pth percentile (nearest rank) of ds in
@@ -494,6 +555,12 @@ func kickResumeBenchFillerJobs(reqs *jqs.Requirements) []*Job {
 	}
 
 	return fillers
+}
+
+// underReserveLoadMetric is one figure an under-load benchmark reports.
+type underReserveLoadMetric struct {
+	value float64
+	unit  string
 }
 
 // kickResumeBenchOp kicks, resumes or suspends the parked targets, returning how many it

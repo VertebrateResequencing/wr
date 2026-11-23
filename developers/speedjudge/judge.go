@@ -44,6 +44,45 @@ import (
 // operation, which a shorter window does not skew the way it skews the tail,
 // and it is the one figure that catches a uniform sub-millisecond slowdown of
 // every reserve, which delays none past the slow-reserve threshold.
+//
+// (d) judges how long the slow reserves wait, by figures that removing
+// reserves cannot raise, not by their median: a faster operation that removes
+// the short lock waits which made up most of base's slow reserves leaves only
+// the rarer, longer stalls base also has, so the median rises with no reserve
+// worse off (bugfix 261119 item D). (d)'s total wait per operation rises when
+// the slow reserves wait longer at the same count, but it is count times
+// mean, so when (b) falls to 1/k of base's each remaining reserve can wait up
+// to k times as long before it rises. (d)'s counts per operation of reserves
+// over each of tailThresholds close most of that gap: removing a reserve
+// cannot raise them and lengthening one can only raise them, so a head whose
+// reserves wait past a threshold more often per operation than base's fails,
+// however few slow reserves it has in all.
+//
+// Each count compares head's reserves over 1.1 times the threshold T (the
+// harness's reserves-over-<T>ms-tol/op, which speed.sh gives the plain name
+// in a second benchstat run, the tolerant CSV) with base's over T. A count at
+// one threshold amplifies a small change in waits clustered just under it:
+// an add whose hold of the queue's lock delays reserves 15 to 17ms, held 5%
+// longer, nearly doubles the count over 16ms (testdata
+// addmany-hold-5pc-longer). With the tolerance, a head whose every wait is at
+// most 10% longer than base's has no more reserves over 1.1T than base has
+// over T, so a slowdown within the gate's 10% cannot fail a count.
+//
+// What (d) still lets through:
+//   - A wait that lengthens without crossing 1.1 times the next threshold up,
+//     while its count per operation stays within 10% of base's count over the
+//     threshold below and the total falls: from just over 1ms ((b)'s
+//     threshold) to just under 1.375ms, 1.375 times; from just over 1.25,
+//     2.5, 5, 10, 20 or 40ms, 1.32 times (the next is 1.2 times higher); from
+//     just over 2, 4, 8, 16 or 32ms, 1.375 times (1.25 times higher); from
+//     just over 1.5, 3, 6, 12, 24 or 48ms, 1.47 times (1.33 times higher);
+//     and past 64ms without limit, where only the total can see it.
+//   - Sparse long stalls, as 6 rounds rarely make a count of 0.1 per
+//     operation significant.
+//   - Stalls at a constant rate per second, which a faster operation's
+//     shorter window holds fewer of (a fixed-length observation window per
+//     operation would close that).
+//   - Reserves still waiting when the operation ends, which the harness drops.
 const (
 	// slowReservesUnit is the figure whose presence on both trees puts a
 	// benchmark under the window-aware rule.
@@ -53,36 +92,94 @@ const (
 	// it gets a note when both trees ran it but the rule cannot judge it.
 	underLoadUnit = "reserve-p99-us"
 
+	// slowWaitID is (d)'s id, which its figures share.
+	slowWaitID = "(d)"
+
+	// tailUnitPrefix starts the unit of each of (d)'s counts.
+	tailUnitPrefix = "reserves-over-"
+
+	// toleranceFactor is how much higher than base's threshold head's
+	// reserves must wait to count against a (d) count.
+	toleranceFactor = 1.1
+
 	statusOK         = "ok"
 	statusRegression = "REGRESSION"
 )
 
 // informationalUnits are reported for a benchmark under the window-aware rule
-// but never fail it: they depend on how many reserves the window held.
+// but never fail it: they depend on how many reserves the window held, or, for
+// the slow reserves' median, on which of them the operation removed.
 //
 //nolint:gochecknoglobals // A fixed table.
-var informationalUnits = []string{"reserve-p99-us", "reserve-max-us", "reserves/op"}
+var informationalUnits = []string{"reserve-p99-us", "reserve-max-us", "reserves/op", "slow-reserve-p50-us"}
+
+// tailThresholds are the thresholds, in ms, of (d)'s counts: jobqueue's
+// slowReserveTailThresholds.
+//
+//nolint:gochecknoglobals // A fixed table.
+var tailThresholds = []string{
+	"1.25", "1.5", "2", "2.5", "3", "4", "5", "6", "8", "10", "12", "16", "20", "24", "32", "40", "48", "64",
+}
 
 // criterion is one figure the window-aware rule judges. (c)'s figure
 // approximates the longest queue-lock hold the probe saw: it can fall short by
 // up to the probe's period, or miss a short hold, and it adds the probe's own
 // scheduling delay. It is close for an add's hold of about 15ms, and mostly
 // that delay for the microsecond holds of per-item operations.
+// tolerant criteria are judged on the tolerant CSV.
 type criterion struct {
 	id, what, unit string
+	tolerant       bool
 }
 
 //nolint:gochecknoglobals // A fixed table.
-var windowCriteria = []criterion{
-	{"(a)", "operation duration", "sec/op"},
-	{"(b)", "slow reserves per op", slowReservesUnit},
-	{"(c)", "longest queue-lock hold", "max-qlock-us"},
-	{"(d)", "median slow-reserve wait", "slow-reserve-p50-us"},
-	{"(e)", "median reserve wait", "reserve-p50-us"},
+var windowCriteria = slices.Concat([]criterion{
+	{"(a)", "operation duration", "sec/op", false},
+	{"(b)", "slow reserves per op", slowReservesUnit, false},
+	{"(c)", "longest queue-lock hold", "max-qlock-us", false},
+	{slowWaitID, "total slow-reserve wait", "slow-reserve-wait-us/op", false},
+}, tailCriteria(), []criterion{
+	{"(e)", "median reserve wait", "reserve-p50-us", false},
+})
+
+// tailCriteria returns (d)'s count criterion for each of tailThresholds,
+// judged on the tolerant CSV.
+func tailCriteria() []criterion {
+	criteria := make([]criterion, len(tailThresholds))
+
+	for i, ms := range tailThresholds {
+		t, err := strconv.ParseFloat(ms, 64)
+		if err != nil {
+			panic(err)
+		}
+
+		criteria[i] = criterion{
+			slowWaitID,
+			fmt.Sprintf("reserves over %sms per op (head's over %sms)", ms,
+				strconv.FormatFloat(t*toleranceFactor, 'g', 4, 64)),
+			tailUnitPrefix + ms + "ms/op",
+			true,
+		}
+	}
+
+	return criteria
 }
 
+// figure returns c's figure of b, or of tolerant, b in the tolerant CSV, if c
+// is tolerant.
+func (c criterion) figure(b, tolerant benchmark) figure {
+	if c.tolerant {
+		return tolerant.figures[c.unit]
+	}
+
+	return b.figures[c.unit]
+}
+
+// isWindowUnit says if the window-aware rule, not the raw rule, owns unit:
+// its criteria, its informational figures, and every count of reserves over
+// a threshold, the 1.1 times ones included.
 func isWindowUnit(unit string) bool {
-	return slices.Contains(informationalUnits, unit) ||
+	return slices.Contains(informationalUnits, unit) || strings.HasPrefix(unit, tailUnitPrefix) ||
 		slices.ContainsFunc(windowCriteria, func(c criterion) bool { return c.unit == unit })
 }
 
@@ -156,9 +253,11 @@ func describeChange(f figure) string {
 
 // judge returns the judgement of figures: a REGRESSION line per failure, then
 // a WINDOW block per benchmark under the window-aware rule and a NOTE per
-// under-load benchmark that is not.
-func judge(figures []figure, threshold, alpha float64) string {
+// under-load benchmark that is not. The rule judges (d)'s counts on
+// tolerant, the figures of the tolerant CSV.
+func judge(figures, tolerant []figure, threshold, alpha float64) string {
 	benches := groupBenchmarks(figures)
+	tolerantBenches := groupBenchmarks(tolerant)
 	regressions := rawRegressions(figures, benches, threshold, alpha)
 
 	var details []string
@@ -168,7 +267,7 @@ func judge(figures []figure, threshold, alpha float64) string {
 
 		switch {
 		case b.windowed():
-			block, failed := windowJudgement(b, threshold, alpha)
+			block, failed := windowJudgement(b, tolerantBenches[key], threshold, alpha)
 			details = append(details, block...)
 			regressions = append(regressions, failed...)
 		case b.isUnderLoad():
@@ -271,21 +370,25 @@ func change(f figure) float64 {
 }
 
 // windowJudgement returns b's WINDOW block and the REGRESSION line of each
-// criterion it fails.
-func windowJudgement(b benchmark, threshold, alpha float64) ([]string, []string) {
+// criterion it fails, judging tolerant criteria on tolerant, b in the
+// tolerant CSV.
+func windowJudgement(b, tolerant benchmark, threshold, alpha float64) ([]string, []string) {
 	var regressions, failedIDs []string
 
 	lines := make([]string, 0, len(windowCriteria)+len(informationalUnits))
 
 	for _, c := range windowCriteria {
 		label := fmt.Sprintf("%s %s, %s", c.id, c.what, c.unit)
-		result, failed := judgeCriterion(b.figures[c.unit], threshold, alpha)
+		result, failed := judgeCriterion(c.figure(b, tolerant), threshold, alpha)
 
 		status := statusOK
 		if failed {
 			status = statusRegression
 
-			failedIDs = append(failedIDs, c.id)
+			if !slices.Contains(failedIDs, c.id) {
+				failedIDs = append(failedIDs, c.id)
+			}
+
 			regressions = append(regressions, fmt.Sprintf("REGRESSION %s %s: %s", b.name, label, result))
 		}
 

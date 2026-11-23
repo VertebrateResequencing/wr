@@ -1,0 +1,117 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+"cpu: Intel Xeon Processor (Skylake, IBRS)"
+,base,,head,,,
+,sec/op,CI,sec/op,CI,vs base,P
+KickUnderReserveLoad-8,0.11601987550000001,9%,0.0590621715,10%,-49.09%,p=0.002 n=6
+ResumeUnderReserveLoad-8,0.10377183100000001,11%,0.046006325,36%,-55.67%,p=0.002 n=6
+geomean,0.10972508789254645,,0.052127089475959974,,-52.49%,
+
+,base,,head,,,
+,max-qlock-us,CI,max-qlock-us,CI,vs base,P
+KickUnderReserveLoad-8,1332,47%,243.05,63%,-81.75%,p=0.002 n=6
+ResumeUnderReserveLoad-8,1382,38%,253.65,147%,-81.65%,p=0.002 n=6
+geomean,1356.7696930577426,,248.29344030803531,,-81.70%,
+
+,base,,head,,,
+,reserve-max-us,CI,reserve-max-us,CI,vs base,P
+KickUnderReserveLoad-8,7268.5,69%,1457,87%,-79.95%,p=0.002 n=6
+ResumeUnderReserveLoad-8,7508,48%,2008,104%,-73.26%,p=0.002 n=6
+geomean,7387.279472173775,,1710.4549102504864,,-76.85%,
+
+,base,,head,,,
+,reserve-p50-us,CI,reserve-p50-us,CI,vs base,P
+KickUnderReserveLoad-8,8.501,56%,7.6775,48%,~,p=0.937 n=6
+ResumeUnderReserveLoad-8,11.128499999999999,51%,5.752000000000001,302%,~,p=0.065 n=6
+geomean,9.72642681049932,,6.645372826260389,,-31.68%,
+
+,base,,head,,,
+,reserve-p99-us,CI,reserve-p99-us,CI,vs base,P
+KickUnderReserveLoad-8,932.5,34%,141.6,34%,-84.82%,p=0.002 n=6
+ResumeUnderReserveLoad-8,1121,45%,144.7,50%,-87.09%,p=0.002 n=6
+geomean,1022.4150331445647,,143.14160820669855,,-86.00%,
+
+,base,,head,,,
+,reserves/op,CI,reserves/op,CI,vs base,P
+KickUnderReserveLoad-8,4924,29%,4341,7%,~,p=0.589 n=6
+ResumeUnderReserveLoad-8,3677,28%,3654,12%,~,p=0.818 n=6
+geomean,4255.061456665461,,3982.714401008438,,-6.40%,
+
+,base,,head,,,
+,slow-reserve-p50-us,CI,slow-reserve-p50-us,CI,vs base,P
+KickUnderReserveLoad-8,1182.5,5%,1163,?,~,p=0.790 n=6
+ResumeUnderReserveLoad-8,1208.5,2%,1167,47%,~,p=1.000 n=6
+geomean,1195.429316187285,,1164.9982832605372,,-2.55%,
+
+,base,,head,,,
+,slow-reserves/op,CI,slow-reserves/op,CI,vs base,P
+KickUnderReserveLoad-8,43.400000000000006,56%,0.7,?,-98.39%,p=0.002 n=6
+ResumeUnderReserveLoad-8,50,52%,1.2,433%,-97.60%,p=0.002 n=6
+geomean,46.58325879540847,,0.9165151389911679,,-98.03%,
+
+,base,,head,,,
+,slow-reserve-wait-us/op,CI,slow-reserve-wait-us/op,CI,vs base,P
+KickUnderReserveLoad-8,69642.15,52%,1181.65,?,-98.30%,p=0.002 n=6
+ResumeUnderReserveLoad-8,80085.2,49%,2241.55,325%,-97.20%,p=0.002 n=6
+geomean,74681.35986429275,,1627.491185075975,,-97.82%,
+
+,base,,head,,,
+,reserves-over-2ms/op,CI,reserves-over-2ms/op,CI,vs base,P
+KickUnderReserveLoad-8,7.4,54%,0,?,-100.00%,p=0.002 n=6
+ResumeUnderReserveLoad-8,8.2,107%,0.25,?,-96.95%,p=0.002 n=6
+geomean,7.78973683766018,,,,?,
+
+,base,,head,,,
+,reserves-over-3ms/op,CI,reserves-over-3ms/op,CI,vs base,P
+KickUnderReserveLoad-8,3.65,62%,0,0%,-100.00%,p=0.002 n=6
+ResumeUnderReserveLoad-8,4.15,105%,0,?,-100.00%,p=0.002 n=6
+geomean,3.8919789310837745,,,,?,
+
+,base,,head,,,
+,reserves-over-4ms/op,CI,reserves-over-4ms/op,CI,vs base,P
+KickUnderReserveLoad-8,2.15,49%,0,0%,-100.00%,p=0.002 n=6
+ResumeUnderReserveLoad-8,2.1,143%,0,?,-100.00%,p=0.002 n=6
+geomean,2.124852936087578,,,,?,
+
+,base,,head,,,
+,reserves-over-6ms/op,CI,reserves-over-6ms/op,CI,vs base,P
+KickUnderReserveLoad-8,0.45,?,0,0%,-100.00%,p=0.015 n=6
+ResumeUnderReserveLoad-8,0.75,233%,0,0%,-100.00%,p=0.002 n=6
+geomean,0.5809475019311126,,,,?,
+
+,base,,head,,,
+,reserves-over-8ms/op,CI,reserves-over-8ms/op,CI,vs base,P
+KickUnderReserveLoad-8,0,?,0,0%,~,p=1.000 n=6
+ResumeUnderReserveLoad-8,0.1,?,0,0%,~,p=0.182 n=6
+geomean,,,,,?,
+
+,base,,head,,,
+,reserves-over-12ms/op,CI,reserves-over-12ms/op,CI,vs base,P
+KickUnderReserveLoad-8,0,?,0,0%,~,p=1.000 n=6
+ResumeUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,,head,,,
+,reserves-over-16ms/op,CI,reserves-over-16ms/op,CI,vs base,P
+KickUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+ResumeUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,,head,,,
+,reserves-over-24ms/op,CI,reserves-over-24ms/op,CI,vs base,P
+KickUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+ResumeUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,,head,,,
+,reserves-over-32ms/op,CI,reserves-over-32ms/op,CI,vs base,P
+KickUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+ResumeUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,,head,,,
+,reserves-over-64ms/op,CI,reserves-over-64ms/op,CI,vs base,P
+KickUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+ResumeUnderReserveLoad-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,

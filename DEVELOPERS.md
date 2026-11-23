@@ -256,9 +256,10 @@ built in a temporary worktree. Knobs:
 
 The header of `developers/speed.sh` lists the rest. Every run keeps its raw
 results, `benchstat.txt` and the verdict's `judgement.txt` under
-`$SPEED_DIR/run-<epoch>/`. `developers/speedjudge` reads benchstat's CSV and
-makes the verdict; its tests (part of `make test`) replay recorded runs,
-1g.4's among them, and the synthetic cases `testdata/synthetic.py` writes.
+`$SPEED_DIR/run-<epoch>/`. `developers/speedjudge` reads benchstat's two
+CSVs (below) and makes the verdict; its tests (part of `make test`) replay
+recorded runs, 1g.4's among them, and the synthetic cases
+`testdata/synthetic.py` writes.
 
 **Benchmarks under reserve load.** jobqueue's `BenchmarkKickUnderReserveLoad`,
 `BenchmarkResumeUnderReserveLoad`, `BenchmarkSuspendUnderReserveLoad` and
@@ -285,11 +286,65 @@ as every other figure):
   adds the reader's own scheduling delay. It is close for an add's hold of
   about 15ms; for the per-item holds of kick, resume and suspend (a few
   microseconds) it mostly measures that delay.
-- (d) `slow-reserve-p50-us`: the median latency of the reserves counted in
-  (b). The median, because the mean and p99 of so few are set by the longest
-  wait, which (c) judges, and their total per operation would repeat (b). It
-  is noisy, and for kick, resume and suspend it fails safe but has little
-  power.
+- (d) how long the delayed reserves wait, by 19 figures per operation:
+  - `slow-reserve-wait-us/op`: the total latency of the reserves counted in
+    (b). At an equal count it rises when they wait longer. It is count times
+    mean, so when (b) falls to 1/k of base's, each remaining reserve can wait
+    up to k times as long before the total rises.
+  - `reserves-over-<T>ms/op`, for T of 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10,
+    12, 16, 20, 24, 32, 40, 48 and 64: how many reserves took over T ms.
+    Removing a reserve cannot raise these and lengthening one can only raise
+    them, so they fail a head whose few remaining slow reserves wait past a
+    threshold more often than base's, which the total can miss. A rise from
+    0 fails like any other, at p < 0.05.
+
+  Each count compares head's reserves over 1.1T with base's over T. The
+  harness also reports `reserves-over-<T>ms-tol/op`, the count over 1.1T;
+  `speed.sh` gives head's those plain names in `head-tol.txt` and runs
+  benchstat on it against `base.txt` a second time (`benchstat-tol.csv`),
+  and the judge takes the counts from that run. Without the tolerance, a
+  count amplifies a small change in waits clustered just under its
+  threshold: an add's hold of 15 to 17ms delays reserves just under and
+  just over 16ms, and a hold 5% longer nearly doubles the count over 16ms
+  (+76% in the judge's `addmany-hold-5pc-longer` case) while (c) and the
+  total rise 5%. With it, a head whose every wait is at most 10% longer than
+  base's has no more reserves over 1.1T than base has over T, so a slowdown
+  within the gate's 10% cannot fail a count (`addmany-hold-5pc-longer` and
+  `addmany-hold-9pc-longer` pass; `addmany-hold-15pc-longer` fails).
+
+  What (d) still lets through:
+  - A wait that lengthens without passing 1.1 times the next threshold up,
+    while its count per operation stays within 10% of base's count over the
+    threshold below and the total falls. The thresholds are 1.2 to 1.33
+    times apart, so base's waits just over one threshold can become waits
+    just under 1.1 times the next: from just over 1ms ((b)'s threshold) to
+    just under 1.375ms, 1.375 times as long; from just over 1.25, 2.5, 5,
+    10, 20 or 40ms, 1.32 times; from just over 2, 4, 8, 16 or 32ms, 1.375
+    times; from just over 1.5, 3, 6, 12, 24 or 48ms, 1.47 times (such as a
+    few 4.3ms waits per operation where base's were just over 3ms). Past
+    64ms the counts set no bound and only the total sees a longer wait.
+    The judge's tests include the review's adversarial heads, and their
+    verdicts are in the bugfix 261119 item D record.
+  - Sparse long stalls. A stall that comes once in several operations gives
+    a count such as 0.1 per operation in a few rounds and 0 in the rest, and
+    6 rounds rarely make that significant (0 to 0.1 per operation gave
+    p = 0.470 in the judge's tests), so a new rare long stall passes. More
+    rounds would give the counts more power.
+  - Stalls that arrive at a constant rate, such as background work. Every
+    figure is per operation, so a head whose operation is twice as fast
+    spans half as many of them; a head that halves the operation and doubles
+    their rate looks unchanged. A fixed-length observation window per
+    operation would close this.
+  - A reserve still waiting when the operation ends. The harness drops
+    reserves that return after it closes the window, so a reserve stalled
+    across the operation's end is not counted at all.
+
+  The slow reserves' median (`slow-reserve-p50-us`) was (d) until
+  2026-11-23, and is now informational: a kick or resume that stopped
+  holding the queue's lock per item removed nearly all of base's 1.1ms lock
+  waits, so the few slow reserves left were the rarer, longer stalls base
+  also had, and their median rose up to 48% while every (d) figure fell or
+  stayed at 0 (bugfix 261119 item D).
 - (e) `reserve-p50-us`: the median latency of every reserve taken during the
   operation. A median over thousands of reserves per operation, which a
   shorter window does not skew the way it skews the tail. It catches a
@@ -299,13 +354,15 @@ as every other figure):
 On an idle host, kick, resume and suspend delay almost no reserve past 1ms, so
 (b) and (d) are mostly 0 on both trees, and (c) reads tens to hundreds of
 microseconds. Load raises all three on both trees alike: on a loaded host,
-1g.4's review measured 17 to 43 slow reserves per operation, a
-`slow-reserve-p50-us` of 1.2 to 3.5ms and a `max-qlock-us` of 0.5 to 13ms.
+1g.4's review measured 17 to 43 slow reserves per operation, of 1.2 to 3.5ms
+at the median, and a `max-qlock-us` of 0.5 to 13ms.
 
-A criterion whose figure either tree lacks fails. `reserve-p99-us`,
-`reserve-max-us` and `reserves/op` are reported as informational; `B/op` and
-`allocs/op` are judged as usual. The verdict prints a `WINDOW` block for each
-such benchmark, naming any criterion that failed.
+A criterion whose figure either tree lacks fails, so a base given a harness
+from before (d)'s figures fails (d) until it gets this tree's harness
+(below). `reserve-p99-us`, `reserve-max-us`, `reserves/op` and
+`slow-reserve-p50-us` are reported as informational; `B/op` and `allocs/op`
+are judged as usual. The verdict prints a `WINDOW` block for each such
+benchmark, naming any criterion that failed.
 
 A base from before these figures reports none of them, so its under-load
 benchmarks are judged by their raw figures, reserve percentiles included, and

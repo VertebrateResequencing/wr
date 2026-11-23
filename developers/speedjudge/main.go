@@ -27,10 +27,12 @@
 // tree, and prints developers/speed.sh's judgement of it: a "REGRESSION" line
 // for each figure that fails the gate, then a "WINDOW" block for each
 // benchmark judged by the window-aware rule and a "NOTE" for each under-load
-// benchmark that could not be. See DEVELOPERS.md "Performance gate". It is
-// developer tooling, not part of the shipped binary.
+// benchmark that could not be. The rule judges its counts of reserves over
+// each threshold on a second, tolerant CSV, comparing head's counts over 1.1
+// times each threshold with base's (see judge.go). See DEVELOPERS.md
+// "Performance gate". It is developer tooling, not part of the shipped binary.
 //
-//	speedjudge [-threshold 10] [-alpha 0.05] benchstat.csv
+//	speedjudge [-threshold 10] [-alpha 0.05] benchstat.csv benchstat-tol.csv
 package main
 
 import (
@@ -52,18 +54,18 @@ func main() {
 
 	flag.Parse()
 
-	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: speedjudge [-threshold pct] [-alpha p] benchstat.csv")
+	if flag.NArg() != 2 { //nolint:mnd
+		fmt.Fprintln(os.Stderr, "usage: speedjudge [-threshold pct] [-alpha p] benchstat.csv benchstat-tol.csv")
 		os.Exit(exitUsage)
 	}
 
-	if err := judgeFile(flag.Arg(0), *threshold, *alpha); err != nil {
+	if err := judgeFiles(flag.Arg(0), flag.Arg(1), *threshold, *alpha); err != nil {
 		fmt.Fprintln(os.Stderr, "speedjudge:", err)
 		os.Exit(1)
 	}
 }
 
-func judgeFile(path string, threshold, alpha float64) error {
+func judgeFiles(path, tolerantPath string, threshold, alpha float64) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -71,17 +73,30 @@ func judgeFile(path string, threshold, alpha float64) error {
 
 	defer f.Close()
 
-	return run(f, os.Stdout, threshold, alpha)
+	tf, err := os.Open(tolerantPath)
+	if err != nil {
+		return err
+	}
+
+	defer tf.Close()
+
+	return run(f, tf, os.Stdout, threshold, alpha)
 }
 
-// run judges the benchstat CSV read from r, writing the judgement to w.
-func run(r io.Reader, w io.Writer, threshold, alpha float64) error {
+// run judges the benchstat CSV read from r, and the tolerant one read from
+// tolerant, writing the judgement to w.
+func run(r, tolerant io.Reader, w io.Writer, threshold, alpha float64) error {
 	figures, err := parseBenchstatCSV(r)
 	if err != nil {
 		return err
 	}
 
-	_, err = io.WriteString(w, judge(figures, threshold, alpha))
+	tolerantFigures, err := parseBenchstatCSV(tolerant)
+	if err != nil {
+		return fmt.Errorf("tolerant CSV: %w", err)
+	}
+
+	_, err = io.WriteString(w, judge(figures, tolerantFigures, threshold, alpha))
 
 	return err
 }

@@ -1,0 +1,17 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkSame-8 2 643.75 ns/op
+BenchmarkSame-8 2 618.75 ns/op
+BenchmarkSame-8 2 637.5 ns/op
+BenchmarkSame-8 2 606.25 ns/op
+BenchmarkSame-8 2 650 ns/op
+BenchmarkSame-8 2 625 ns/op
+BenchmarkNew-8 2 206 ns/op
+BenchmarkNew-8 2 198 ns/op
+BenchmarkNew-8 2 204 ns/op
+BenchmarkNew-8 2 194 ns/op
+BenchmarkNew-8 2 208 ns/op
+BenchmarkNew-8 2 200 ns/op
+PASS

@@ -1,0 +1,54 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      19	  58325043 ns/op	       221.0 max-qlock-us	      1860 reserve-max-us	         9.845 reserve-p50-us	       155.3 reserve-p99-us	      4319 reserves/op	      1084 slow-reserve-p50-us	      1330 slow-reserve-wait-us/op	         0.9474 slow-reserves/op	 6634499 B/op	   88824 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      24	  52787634 ns/op	       316.8 max-qlock-us	      2233 reserve-max-us	        12.62 reserve-p50-us	       169.6 reserve-p99-us	      3964 reserves/op	      1133 slow-reserve-p50-us	      1244 slow-reserve-wait-us/op	         0.9167 slow-reserves/op	 4471165 B/op	   56736 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      18	  65931596 ns/op	       406.3 max-qlock-us	      2227 reserve-max-us	        11.17 reserve-p50-us	       183.5 reserve-p99-us	      4580 reserves/op	      1227 slow-reserve-p50-us	      4577 slow-reserve-wait-us/op	         3.056 slow-reserves/op	 6881648 B/op	   92026 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      33	  51717078 ns/op	       235.8 max-qlock-us	      1829 reserve-max-us	        12.81 reserve-p50-us	       160.0 reserve-p99-us	      3893 reserves/op	      1697 slow-reserve-p50-us	       799.9 slow-reserve-wait-us/op	         0.5152 slow-reserves/op	 4501966 B/op	   56408 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      21	  63226814 ns/op	       322.1 max-qlock-us	      2442 reserve-max-us	        11.35 reserve-p50-us	       170.8 reserve-p99-us	      4486 reserves/op	      1461 slow-reserve-p50-us	      2183 slow-reserve-wait-us/op	         1.429 slow-reserves/op	 6759025 B/op	   89688 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      25	  55196172 ns/op	       348.6 max-qlock-us	      2251 reserve-max-us	        16.96 reserve-p50-us	       201.8 reserve-p99-us	      3818 reserves/op	      1565 slow-reserve-p50-us	      4226 slow-reserve-wait-us/op	         2.720 slow-reserves/op	 4731531 B/op	   56085 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      20	  74338216 ns/op	       993.4 max-qlock-us	      2341 reserve-max-us	        13.16 reserve-p50-us	       231.4 reserve-p99-us	      4580 reserves/op	      1331 slow-reserve-p50-us	     11246 slow-reserve-wait-us/op	         7.500 slow-reserves/op	 7564223 B/op	   91979 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      24	  75099416 ns/op	      1064 max-qlock-us	      3542 reserve-max-us	        28.03 reserve-p50-us	       257.6 reserve-p99-us	      4473 reserves/op	      1433 slow-reserve-p50-us	     14839 slow-reserve-wait-us/op	         9.875 slow-reserves/op	 5975970 B/op	   63736 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      20	  76044752 ns/op	       795.7 max-qlock-us	      5203 reserve-max-us	        17.50 reserve-p50-us	       213.7 reserve-p99-us	      4718 reserves/op	      1485 slow-reserve-p50-us	      9879 slow-reserve-wait-us/op	         5.500 slow-reserves/op	 7390264 B/op	   91140 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      22	  60854056 ns/op	       467.6 max-qlock-us	      3308 reserve-max-us	        18.51 reserve-p50-us	       208.1 reserve-p99-us	      4118 reserves/op	      1225 slow-reserve-p50-us	      6079 slow-reserve-wait-us/op	         3.682 slow-reserves/op	 4931322 B/op	   57758 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      19	  62202966 ns/op	       373.8 max-qlock-us	      2853 reserve-max-us	         9.288 reserve-p50-us	       173.6 reserve-p99-us	      4435 reserves/op	      1191 slow-reserve-p50-us	      3677 slow-reserve-wait-us/op	         2.474 slow-reserves/op	 6764666 B/op	   89417 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      21	  50664051 ns/op	       221.0 max-qlock-us	      2605 reserve-max-us	        12.09 reserve-p50-us	       182.6 reserve-p99-us	      3743 reserves/op	      1908 slow-reserve-p50-us	      1136 slow-reserve-wait-us/op	         0.5714 slow-reserves/op	 4493099 B/op	   55582 allocs/op
+PASS
+PASS
+PASS

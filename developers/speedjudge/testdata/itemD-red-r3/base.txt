@@ -1,0 +1,54 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	       9	 116978486 ns/op	      1238 max-qlock-us	     11074 reserve-max-us	         9.114 reserve-p50-us	       828.4 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         5.889 reserves-over-2ms/op	         0 reserves-over-32ms/op	         4.000 reserves-over-3ms/op	         2.778 reserves-over-4ms/op	         0 reserves-over-64ms/op	         1.333 reserves-over-6ms/op	         0.5556 reserves-over-8ms/op	      5159 reserves/op	      1176 slow-reserve-p50-us	     62492 slow-reserve-wait-us/op	        36.11 slow-reserves/op	201743847 B/op	   97235 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      12	 104013272 ns/op	      3411 max-qlock-us	     12177 reserve-max-us	         8.573 reserve-p50-us	      1104 reserve-p99-us	         0.4167 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	        12.67 reserves-over-2ms/op	         0 reserves-over-32ms/op	         8.000 reserves-over-3ms/op	         4.667 reserves-over-4ms/op	         0 reserves-over-64ms/op	         2.417 reserves-over-6ms/op	         1.333 reserves-over-8ms/op	      3348 reserves/op	      1187 slow-reserve-p50-us	     94225 slow-reserve-wait-us/op	        44.50 slow-reserves/op	191446780 B/op	   52759 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      10	 117666376 ns/op	       824.1 max-qlock-us	      6543 reserve-max-us	        11.34 reserve-p50-us	       574.7 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         3.100 reserves-over-2ms/op	         0 reserves-over-32ms/op	         1.800 reserves-over-3ms/op	         0.8000 reserves-over-4ms/op	         0 reserves-over-64ms/op	         0.6000 reserves-over-6ms/op	         0 reserves-over-8ms/op	      5704 reserves/op	      1171 slow-reserve-p50-us	     35716 slow-reserve-wait-us/op	        22.50 slow-reserves/op	202822184 B/op	   98905 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      10	 106294964 ns/op	       740.6 max-qlock-us	      9893 reserve-max-us	        17.35 reserve-p50-us	       901.1 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         3.400 reserves-over-2ms/op	         0 reserves-over-32ms/op	         2.100 reserves-over-3ms/op	         2.100 reserves-over-4ms/op	         0 reserves-over-64ms/op	         1.700 reserves-over-6ms/op	         0.5000 reserves-over-8ms/op	      4565 reserves/op	      1199 slow-reserve-p50-us	     59016 slow-reserve-wait-us/op	        36.30 slow-reserves/op	195930373 B/op	   61933 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      12	  99266301 ns/op	       777.1 max-qlock-us	      4469 reserve-max-us	         7.969 reserve-p50-us	       383.2 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         3.583 reserves-over-2ms/op	         0 reserves-over-32ms/op	         2.083 reserves-over-3ms/op	         0.4167 reserves-over-4ms/op	         0 reserves-over-64ms/op	         0 reserves-over-6ms/op	         0 reserves-over-8ms/op	      5279 reserves/op	      1153 slow-reserve-p50-us	     25926 slow-reserve-wait-us/op	        15.92 slow-reserves/op	187994068 B/op	   93749 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      12	  85696576 ns/op	       943.6 max-qlock-us	      7322 reserve-max-us	        10.23 reserve-p50-us	       549.6 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         4.417 reserves-over-2ms/op	         0 reserves-over-32ms/op	         1.500 reserves-over-3ms/op	         0.9167 reserves-over-4ms/op	         0 reserves-over-64ms/op	         0.2500 reserves-over-6ms/op	         0 reserves-over-8ms/op	      4080 reserves/op	      1199 slow-reserve-p50-us	     29237 slow-reserve-wait-us/op	        17.50 slow-reserves/op	187005609 B/op	   54702 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	      10	 114466206 ns/op	       753.5 max-qlock-us	      6156 reserve-max-us	         8.829 reserve-p50-us	       494.8 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         3.700 reserves-over-2ms/op	         0 reserves-over-32ms/op	         1.800 reserves-over-3ms/op	         0.8000 reserves-over-4ms/op	         0 reserves-over-64ms/op	         0.4000 reserves-over-6ms/op	         0 reserves-over-8ms/op	      5611 reserves/op	      1184 slow-reserve-p50-us	     31231 slow-reserve-wait-us/op	        18.70 slow-reserves/op	200474756 B/op	   99589 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      12	  97812943 ns/op	       922.9 max-qlock-us	      8918 reserve-max-us	        14.94 reserve-p50-us	       831.4 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         3.583 reserves-over-2ms/op	         0 reserves-over-32ms/op	         2.083 reserves-over-3ms/op	         1.250 reserves-over-4ms/op	         0 reserves-over-64ms/op	         0.2500 reserves-over-6ms/op	         0.08333 reserves-over-8ms/op	      4149 reserves/op	      1125 slow-reserve-p50-us	     46999 slow-reserve-wait-us/op	        32.33 slow-reserves/op	189525113 B/op	   55303 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	       9	 123732226 ns/op	       806.5 max-qlock-us	      5249 reserve-max-us	         8.950 reserve-p50-us	       602.2 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         5.333 reserves-over-2ms/op	         0 reserves-over-32ms/op	         1.000 reserves-over-3ms/op	         0.7778 reserves-over-4ms/op	         0 reserves-over-64ms/op	         0 reserves-over-6ms/op	         0 reserves-over-8ms/op	      6046 reserves/op	      1157 slow-reserve-p50-us	     48786 slow-reserve-wait-us/op	        33.11 slow-reserves/op	201819196 B/op	  107760 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      12	  99472275 ns/op	      1041 max-qlock-us	      6951 reserve-max-us	        14.10 reserve-p50-us	       747.8 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         4.833 reserves-over-2ms/op	         0 reserves-over-32ms/op	         2.500 reserves-over-3ms/op	         1.750 reserves-over-4ms/op	         0 reserves-over-64ms/op	         1.083 reserves-over-6ms/op	         0 reserves-over-8ms/op	      4363 reserves/op	      1174 slow-reserve-p50-us	     43869 slow-reserve-wait-us/op	        25.75 slow-reserves/op	200360824 B/op	   59721 allocs/op
+PASS
+PASS
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkKickUnderReserveLoad-8     	       9	 130168459 ns/op	       804.4 max-qlock-us	      5545 reserve-max-us	         9.703 reserve-p50-us	       638.1 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         2.556 reserves-over-2ms/op	         0 reserves-over-32ms/op	         1.333 reserves-over-3ms/op	         1.111 reserves-over-4ms/op	         0 reserves-over-64ms/op	         0 reserves-over-6ms/op	         0 reserves-over-8ms/op	      6180 reserves/op	      1163 slow-reserve-p50-us	     44832 slow-reserve-wait-us/op	        31.33 slow-reserves/op	196438292 B/op	  102936 allocs/op
+BenchmarkResumeUnderReserveLoad-8   	      12	  96701179 ns/op	      1106 max-qlock-us	      6206 reserve-max-us	        15.94 reserve-p50-us	       679.3 reserve-p99-us	         0 reserves-over-12ms/op	         0 reserves-over-16ms/op	         0 reserves-over-24ms/op	         4.167 reserves-over-2ms/op	         0 reserves-over-32ms/op	         1.583 reserves-over-3ms/op	         1.000 reserves-over-4ms/op	         0 reserves-over-64ms/op	         0.3333 reserves-over-6ms/op	         0 reserves-over-8ms/op	      4431 reserves/op	      1170 slow-reserve-p50-us	     40453 slow-reserve-wait-us/op	        26.75 slow-reserves/op	186185458 B/op	   59567 allocs/op
+PASS
+PASS
+PASS

@@ -270,13 +270,31 @@ for l in "${LABELS[@]}"; do
   cat "$RUN/$l.bench" "$RUN/$l.scenarios" 2>/dev/null >"$RUN/$l.txt" || true
 done
 
+# tolerant_counts <bench file> prints it with each count of reserves over a
+# threshold replaced by the count over 1.1 times it (the harness's
+# reserves-over-<T>ms-tol/op), under the plain name: the window-aware rule
+# compares head's counts over 1.1T with base's over T (developers/speedjudge).
+tolerant_counts() {
+  awk '/^Benchmark/ {
+    out = $1 " " $2
+    for (i = 3; i < NF; i += 2) {
+      u = $(i + 1)
+      if (u ~ /^reserves-over-[0-9.]+ms\/op$/) continue
+      if (u ~ /^reserves-over-[0-9.]+ms-tol\/op$/) sub(/-tol\/op$/, "/op", u)
+      out = out " " $i " " u
+    }
+    print out; next } { print }' "$1"
+}
+
 echo
 echo "================ benchstat ================"
 if [ -n "$BASE_DIR" ]; then
   ( cd "$RUN" && "$BENCHSTAT" base=base.txt head=head.txt ) | tee "$RUN/benchstat.txt"
   ( cd "$RUN" && "$BENCHSTAT" -format csv base=base.txt head=head.txt ) >"$RUN/benchstat.csv" 2>/dev/null
-  "$RUN/speedjudge" -threshold "$SPEED_THRESHOLD" -alpha "$SPEED_ALPHA" "$RUN/benchstat.csv" >"$RUN/judgement.txt" \
-    || die "could not judge $RUN/benchstat.csv"
+  tolerant_counts "$RUN/head.txt" >"$RUN/head-tol.txt"
+  ( cd "$RUN" && "$BENCHSTAT" -format csv base=base.txt head=head-tol.txt ) >"$RUN/benchstat-tol.csv" 2>/dev/null
+  "$RUN/speedjudge" -threshold "$SPEED_THRESHOLD" -alpha "$SPEED_ALPHA" "$RUN/benchstat.csv" "$RUN/benchstat-tol.csv" \
+    >"$RUN/judgement.txt" || die "could not judge $RUN/benchstat.csv and $RUN/benchstat-tol.csv"
   grep '^REGRESSION ' "$RUN/judgement.txt" >"$RUN/regressions.txt" || true
   while read -r r; do FAILED+=("$r"); done <"$RUN/regressions.txt"
 else

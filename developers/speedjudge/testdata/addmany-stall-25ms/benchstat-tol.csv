@@ -1,0 +1,238 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+"cpu: Intel Xeon Processor (Skylake, IBRS)"
+,base,,head,,,
+,sec/op,CI,sec/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0.5656000000000001,4%,0.28280000000000005,4%,-50.00%,p=0.002 n=6
+geomean,0.5656000000000001,,0.28280000000000005,,-50.00%,
+
+,base,,head,,,
+,reserves/op,CI,reserves/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,15150,4%,8080,4%,-46.67%,p=0.002 n=6
+geomean,15150.000000000013,,8080.0000000000055,,-46.67%,
+
+,base,,head,,,
+,reserve-p50-us,CI,reserve-p50-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,6.5649999999999995,4%,6.5649999999999995,4%,~,p=1.000 n=6
+geomean,6.5649999999999995,,6.5649999999999995,,+0.00%,
+
+,base,,head,,,
+,reserve-p99-us,CI,reserve-p99-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,126.25,4%,126.25,4%,~,p=1.000 n=6
+geomean,126.25000000000003,,126.25000000000003,,+0.00%,
+
+,base,,head,,,
+,reserve-max-us,CI,reserve-max-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,17170,4%,25250,4%,+47.06%,p=0.002 n=6
+geomean,17169.999999999993,,25250.00000000002,,+47.06%,
+
+,base,,head,,,
+,slow-reserves/op,CI,slow-reserves/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,18.45,17%,1.025,17%,-94.44%,p=0.002 n=6
+geomean,18.45,,1.025,,-94.44%,
+
+,base,,head,,,
+,max-qlock-us,CI,max-qlock-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,17170,4%,14140,4%,-17.65%,p=0.002 n=6
+geomean,17169.999999999993,,14140.00000000001,,-17.65%,
+
+,base,,head,,,
+,slow-reserve-p50-us,CI,slow-reserve-p50-us,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,1515,4%,25250,4%,+1566.67%,p=0.002 n=6
+geomean,1514.9999999999995,,25250.00000000002,,+1566.67%,
+
+,base,,head,,,
+,slow-reserve-wait-us/op,CI,slow-reserve-wait-us/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,61500,17%,25625,17%,-58.33%,p=0.002 n=6
+geomean,61500.00000000001,,25624.999999999993,,-58.33%,
+
+,base,,head,,,
+,reserves-over-1.25ms/op,CI,reserves-over-1.25ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,18.45,17%,1.025,17%,-94.44%,p=0.002 n=6
+geomean,18.45,,1.025,,-94.44%,
+
+,base,
+,reserves-over-1.25ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,5.125,17%
+geomean,5.125,
+
+,base,,head,,,
+,reserves-over-1.5ms/op,CI,reserves-over-1.5ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,5.125,17%,1.025,17%,-80.00%,p=0.002 n=6
+geomean,5.125,,1.025,,-80.00%,
+
+,base,
+,reserves-over-1.5ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,5.125,17%
+geomean,5.125,
+
+,base,,head,,,
+,reserves-over-2ms/op,CI,reserves-over-2ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,5.125,17%,1.025,17%,-80.00%,p=0.002 n=6
+geomean,5.125,,1.025,,-80.00%,
+
+,base,
+,reserves-over-2ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,5.125,17%
+geomean,5.125,
+
+,base,,head,,,
+,reserves-over-2.5ms/op,CI,reserves-over-2.5ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,4.1,17%,1.025,17%,-75.00%,p=0.002 n=6
+geomean,4.1,,1.025,,-75.00%,
+
+,base,
+,reserves-over-2.5ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,4.1,17%
+geomean,4.1,
+
+,base,,head,,,
+,reserves-over-3ms/op,CI,reserves-over-3ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,4.1,17%,1.025,17%,-75.00%,p=0.002 n=6
+geomean,4.1,,1.025,,-75.00%,
+
+,base,
+,reserves-over-3ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,4.1,17%
+geomean,4.1,
+
+,base,,head,,,
+,reserves-over-4ms/op,CI,reserves-over-4ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,3.075,17%,1.025,17%,-66.67%,p=0.002 n=6
+geomean,3.075,,1.025,,-66.67%,
+
+,base,
+,reserves-over-4ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,3.075,17%
+geomean,3.075,
+
+,base,,head,,,
+,reserves-over-5ms/op,CI,reserves-over-5ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,2.05,17%,1.025,17%,-50.00%,p=0.002 n=6
+geomean,2.05,,1.025,,-50.00%,
+
+,base,
+,reserves-over-5ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,2.05,17%
+geomean,2.05,
+
+,base,,head,,,
+,reserves-over-6ms/op,CI,reserves-over-6ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,2.05,17%,1.025,17%,-50.00%,p=0.002 n=6
+geomean,2.05,,1.025,,-50.00%,
+
+,base,
+,reserves-over-6ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,2.05,17%
+geomean,2.05,
+
+,base,,head,,,
+,reserves-over-8ms/op,CI,reserves-over-8ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,2.05,17%,1.025,17%,-50.00%,p=0.002 n=6
+geomean,2.05,,1.025,,-50.00%,
+
+,base,
+,reserves-over-8ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,2.05,17%
+geomean,2.05,
+
+,base,,head,,,
+,reserves-over-10ms/op,CI,reserves-over-10ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,2.05,17%,1.025,17%,-50.00%,p=0.002 n=6
+geomean,2.05,,1.025,,-50.00%,
+
+,base,
+,reserves-over-10ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,2.05,17%
+geomean,2.05,
+
+,base,,head,,,
+,reserves-over-12ms/op,CI,reserves-over-12ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,2.05,17%,1.025,17%,-50.00%,p=0.002 n=6
+geomean,2.05,,1.025,,-50.00%,
+
+,base,
+,reserves-over-12ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,2.05,17%
+geomean,2.05,
+
+,base,,head,,,
+,reserves-over-16ms/op,CI,reserves-over-16ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,1.025,17%,1.025,17%,~,p=1.000 n=6
+geomean,1.025,,1.025,,+0.00%,
+
+,base,
+,reserves-over-16ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,0,0%
+geomean,,
+
+,base,,head,,,
+,reserves-over-20ms/op,CI,reserves-over-20ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0,0%,1.025,17%,?,p=0.002 n=6
+geomean,,,1.025,,?,
+
+,base,
+,reserves-over-20ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,0,0%
+geomean,,
+
+,base,,head,,,
+,reserves-over-24ms/op,CI,reserves-over-24ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,
+,reserves-over-24ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,0,0%
+geomean,,
+
+,base,,head,,,
+,reserves-over-32ms/op,CI,reserves-over-32ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,
+,reserves-over-32ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,0,0%
+geomean,,
+
+,base,,head,,,
+,reserves-over-40ms/op,CI,reserves-over-40ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,
+,reserves-over-40ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,0,0%
+geomean,,
+
+,base,,head,,,
+,reserves-over-48ms/op,CI,reserves-over-48ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,
+,reserves-over-48ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,0,0%
+geomean,,
+
+,base,,head,,,
+,reserves-over-64ms/op,CI,reserves-over-64ms/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,0,0%,0,0%,~,p=1.000 n=6
+geomean,,,,,+0.00%,
+
+,base,
+,reserves-over-64ms-tol/op,CI
+AddManyUnderReserveLoad/norc-8,0,0%
+geomean,,
+
+,base,,head,,,
+,B/op,CI,B/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,1.6766e+08,4%,1.6766e+08,4%,~,p=1.000 n=6
+geomean,1.676600000000001e+08,,1.676600000000001e+08,,+0.00%,
+
+,base,,head,,,
+,allocs/op,CI,allocs/op,CI,vs base,P
+AddManyUnderReserveLoad/norc-8,808000,4%,808000,4%,~,p=1.000 n=6
+geomean,807999.9999999995,,807999.9999999995,,+0.00%,

@@ -127,6 +127,36 @@ on recorded base and head outputs, including the 1g.4 runs in
 [results/phase1-gate-1g4.md](../results/phase1-gate-1g4.md), then rerun
 `make speed-full` with it.
 
+Orchestrator change, 2026-11-23, made under the owner's direction of
+that date that speed-gate criteria are the orchestrator's to fix: "the
+delayed reserves wait longer" compares, per operation, the total wait of
+the reserves over 1ms and the count of reserves over each of 1.25, 1.5,
+2, 2.5, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48 and 64ms, not the
+median wait of the reserves over 1ms. A faster operation removes the
+short lock waits that set the median, so the few slow reserves left are
+rarer, longer stalls base also has and their median rises with no
+reserve worse off (bugfix 261119 item D: across its runs, Kick's and
+Resume's median slow wait rose by up to 48% while their total fell
+86.35 to 98.83%). The total rises when the slow reserves wait longer at
+an equal count, but a fall in their count to 1/k lets each wait up to k
+times as long first. The counts cannot be raised by removing reserves
+and rise when reserves wait longer, so they catch fewer reserves each
+waiting much longer. Each count compares head's reserves over 1.1 times
+the threshold with base's over it, so a head whose every wait is at most
+10% longer cannot fail one; compared at the same threshold, an add whose
+hold of about 16ms grows 5% nearly doubled the count over 16ms. What
+goes unflagged: a wait that lengthens to just under 1.1 times the next
+threshold up while its count stays within 10% of base's over the one
+below and the total falls (1.375 times from just over 1ms, 1.32 times
+from just over 1.25, 2.5, 5, 10, 20 or 40ms, 1.375 times from just over
+2, 4, 8, 16 or 32ms, 1.47 times from just over 1.5, 3, 6, 12, 24 or
+48ms, and without limit past 64ms); sparse long stalls, which 6 rounds
+rarely make significant; stalls at a constant rate per second, which a
+faster operation spans fewer of (a fixed-length observation window would
+close this); and reserves still waiting when the operation ends, which
+the harness drops (DEVELOPERS.md, "Benchmarks under reserve load"). The
+median is reported with the raw tail percentiles as informational.
+
 - [ ] implemented
 - [ ] reviewed
 
