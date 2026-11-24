@@ -1108,3 +1108,165 @@ diagnosis on the reserve path during a per-item queue operation (what
 adds about 10us to the median reserve while a kick or resume runs), or
 an owner ruling on these two criteria. The rule was not
 retuned.
+
+## Gate run with layout pooling (2026-11-24)
+
+This was to be the rerun of `make speed-full` with the current
+`speed.sh`: the window-aware judge with tolerant counts, 6 code layouts
+and 12 rounds.
+
+**Verdict: no verdict.** Both attempts stopped before the end, each
+when a jobqueue under-load benchmark could not bind the manager port
+its test helper had picked. `speed.sh` stops at the first benchmark
+failure, so neither attempt reached the scenarios or the judge. The
+first 6 complete rounds of attempt 2, one per layout, were judged by
+hand with the same benchstat and `speedjudge`. They fail one figure,
+`AddManyUnderReserveLoad/norc` (e) median reserve wait, +15.67%
+(p=0.026). Judged over the first 7 rounds the same figure reads +16.93%
+(p=0.165) and every criterion passes. This is not the gate result: it
+lacks rounds 7 to 12 and the scenarios. 1g.4 stays unticked.
+
+### Method
+
+HEAD was `a09b0a66` on `customdb-f397b547`, a clean tree. The base was
+`d1a4b6d7` with this tree's harness, prepared by the DEVELOPERS.md
+recipe in an earlier session (`scratchpad/i2/base`). It was checked
+before use: a fresh `git archive d1a4b6d7` differs from it only in
+`jobqueue/kick_resume_bench_test.go`, which is byte-identical to HEAD's,
+and the added `jobqueue/settle_stub_test.go` stub.
+
+`SPEED_BENCH` was the same union as the 2026-11-18 run: the jobqueue,
+queue and limiter defaults plus the four `*UnderReserveLoad` benchmarks.
+Everything was written to local `/tmp` (the session scratchpad), with
+the default Go build and module caches. The scenario fixtures were read
+from `/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures` and copied by
+`wrdev.sh` into the run directory. `pristine6` replaced `prod.db` for
+add-storm: with the run directory on local `/tmp`, a 5.1GB `prod.db`
+copy plus its backup would have taken `/tmp` below the 45GB it must keep
+free.
+
+```bash
+F=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures
+(unset $(compgen -v | grep '^OS_'); HOME=<scratch>/home/<tmp> \
+ GOCACHE=/software/hgi/envs/sb10/go/build_cache \
+ GOMODCACHE=/software/hgi/envs/sb10/go/pkg/mod \
+ SPEED_BASE=<scratch>/i2/base SPEED_DIR=<scratch>/g4/speed \
+ SPEED_BENCH='^Benchmark(AddJobs|UpdateJobState|ArchiveJobs|ArchiveSpacedArrivals|ReadyBacklogSnapshot|BuildSchedulerGroupsBacklog|RACCycleCounted|RepGroupStatusDetails|JobKey|ModifyLiveJobsReverseLookup|JobCleanup|JobCleanupDepth1|JobCleanupDepth8|AddDepGroupMember|KickUnderReserveLoad|ResumeUnderReserveLoad|SuspendUnderReserveLoad|AddManyUnderReserveLoad|QueueLifecycle|Limiter.*)$' \
+ SPEED_BIG_DB=$F/pristine6 WR_AS_DB=$F/pristine6 \
+ WR_ARCHRATE_DB=$F/pristine10 WR_AC_DB=$F/pristine6 \
+ DEV_PORT=51994 DEV_WEB=51995 PROD_PORT=51996 PROD_WEB=51997 \
+ developers/speed.sh full)
+```
+
+### What stopped it
+
+- Attempt 1, 06:43 to 06:52 GMT (`run-1795502634`): base's
+  `ResumeUnderReserveLoad` in round 1 failed with "the server's
+  publication gave up". The server log reads `listen tcp
+  0.0.0.0:41769: bind: address already in use`, retried for 5s.
+- Attempt 2, 06:53 to 09:13 GMT (`run-1795503198`): rounds 1 to 7
+  completed for both trees, and round 8 for base. Head's
+  `KickUnderReserveLoad` in round 8 failed the same way at 09:01, on
+  port 41455.
+
+`jobqueueTestInit` gives each test server ports from `pickTestPort`,
+which releases them before `Serve` binds. Both ports were inside the
+host's ephemeral range (32768 to 60999), so another process's
+outgoing connection can take one in that window. The `serve` helper's
+comment names this race and returns `errServePublishGaveUp` rather than
+retrying, as the caller already holds the ports in its config. Each
+under-load benchmark starts a fresh server per iteration, so a 12-round
+run starts several thousand servers. Two failures in two attempts (at
+about 8 minutes and 2 hours 18 minutes) suggest a full run is about as
+likely to fail as to finish on this host. Neither run of 2026-11-18 hit
+it. This is a defect in the test harness, not a speed result: a gate run
+needs the helper (or `pickTestPort`) to survive a lost port, for example
+by retrying with fresh ports in the benchmarks' server setup.
+
+### Host conditions
+
+farm22-wrstat01 (8 cores, 91GB). In attempt 2 the load average was 1.5
+to 4.0 until 08:58, and `/tmp` had 52 to 56GB free throughout. At about
+09:00 mercury's `wrstat-ui` restarted and its `syscalls` process went to
+470 to 630% CPU and 44GB RSS: the load average reached 80.8 at 09:03 and
+was still 10 to 16 at 09:15. So rounds 1 to 7 and base's round 8 ran on
+a quiet host, and head's partial round 8 did not. Five-minute samples:
+[layout-host.txt](phase1-gate-1g4/layout-host.txt).
+
+### Results of the first 6 rounds (informational)
+
+Rounds 1 to 6 ran layouts 0 to 5 once each for both trees. They were cut
+from attempt 2's raw `base.bench` and `head.bench` (the first 18 package
+headers of each), given `speed.sh`'s tolerant-count rewrite, and judged
+with `speedjudge -threshold 10 -alpha 0.05`:
+[layout-benchstat.txt](phase1-gate-1g4/layout-benchstat.txt),
+[layout-judgement.txt](phase1-gate-1g4/layout-judgement.txt).
+
+```text
+REGRESSION AddManyUnderReserveLoad/norc-8 (e) median reserve wait, reserve-p50-us: +15.67% (p=0.026)
+```
+
+The WINDOW blocks (`~` is not significant at p < 0.05; every (d) count
+not listed was 0 on both trees or `~`):
+
+| Criterion | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| Verdict | PASS | PASS | PASS | **FAIL (e)** | PASS |
+| (a) sec/op | -41.17% | -53.39% | -59.24% | -50.59% | -49.80% |
+| (b) slow-reserves/op | -96.34% | -96.75% | -100.00% | -41.21% | ~ |
+| (c) max-qlock-us | -80.51% | -79.26% | -86.04% | ~ | ~ |
+| (d) slow-reserve-wait-us/op | -96.82% | -97.76% | -100.00% | -15.38% | -15.01% |
+| (d) counts over 1.25 to 6ms | -99.4 to -100% | -98.8 to -100% (6ms ~) | -100.00% | -35.16%, -30.36% at 1.25, 1.5ms; ~ above | ~ |
+| (d) count over 16ms | ~ | ~ | ~ | -66.67% | -71.43% |
+| (e) reserve-p50-us | ~ (+24.01%, p=0.093) | ~ | ~ | **+15.67% (p=0.026)** | ~ |
+| reserve-p99-us (info) | -76.17% | -77.21% | -78.44% | +12.28% (p=0.026) | ~ |
+| reserve-max-us (info) | -72.66% | -72.41% | -87.07% | ~ | ~ |
+| reserves/op (info) | ~ | -17.30% | -30.12% | -41.43% | -50.35% |
+| slow-reserve-p50-us (info) | ~ | ~ | ~ | ~ | ~ |
+
+Significant changes are at p=0.002 except where shown or as follows:
+(b) norc p=0.009, (d) total norc p=0.041 and rc p=0.026, the 16ms
+counts p=0.009 (norc) and p=0.013 (rc), and Kick's 5 and 6ms counts and
+Resume's 5ms count p=0.015.
+
+`AddManyUnderReserveLoad/norc`'s reserve-p50-us per round, in microseconds
+(rounds 1 to 8; head's round 8 ran in the 09:00 load):
+
+```text
+base: 6.004 5.401 5.651 6.021 5.124 5.813 6.659 6.004
+head: 7.840 6.215 6.031 5.504 7.904 7.045 6.010 3.915
+```
+
+Over 6 rounds the medians are 5.73us against 6.63us; with round 7 added
+the change is +16.93% at p=0.165, not significant. The figure is a
+median of microsecond-scale waits on a host shared with other users,
+and in the 2026-11-18 run it was `~` in both the gate run and the
+rerun. Whether it is a real regression needs the full 12 rounds; it was
+not rerun here.
+
+Every other significant row of the 6 rounds, outside the window
+figures above:
+
+- sec/op: `AddDepGroupMember` -21.42%; no default-set benchmark is
+  significantly slower.
+- B/op: `RACCycleCounted/leavers=0` +9.08% and `leavers=100` +9.06%,
+  `AddDepGroupMember` +8.51%, `AddJobs` +3.01% (p=0.041),
+  `QueueLifecycle/groups=1` +1.78% and `groups=100` +1.71%,
+  `RepGroupStatusDetails/1000` +0.57%, `UpdateJobState` -2.54%
+  (p=0.004), and the under-load benchmarks -4.43% to -97.81%.
+- allocs/op: `RepGroupStatusDetails/1000` +1.25%, `RACCycleCounted/
+  leavers=100` +1.30%, `AddJobs` +1.24% (p=0.026), `QueueLifecycle`
+  +0.05% and +0.04%, `AddDepGroupMember` -48.75%, and the under-load
+  benchmarks -15.35% to -53.79%.
+- `AddJobs` bolt_pages/job and bolt_writes/job +2.71% (p=0.045).
+
+None of these is over 10%. The scenarios did not run.
+
+### What is left
+
+1g.4 stays unticked, and no gate rule, threshold or default was
+changed. The gate needs a full run, which first needs the harness's
+port race fixed: that is a bugfix item for the orchestrator to route.
+After it, rerun the command above on a quiet host (check that
+`wrstat-ui` is idle) and confirm or clear `AddManyUnderReserveLoad/norc`
+(e).
