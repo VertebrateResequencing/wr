@@ -409,13 +409,20 @@ benchmark, naming any criterion that failed.
 A base from before these figures reports none of them, so its under-load
 benchmarks are judged by their raw figures, reserve percentiles included, and
 the verdict notes it. To judge them by the window-aware rule, give that base
-this tree's harness and pass it as a prepared tree; a base without
-`settleStore` (no log store) needs the stub too, which does what
-`settleStore` does on bbolt, nothing:
+this tree's harness and pass it as a prepared tree. The harness's
+`serveOnFreshPorts` also lets the base's under-load benchmarks and
+`BenchmarkAddDepGroupMember` start their servers on fresh ports when another
+process takes a manager port. `settleStore` is in
+`jobqueue/store_settle_test.go`, which the harness does not include: a base
+with a log store but without that file (its `settleStore` was in the
+`dep_group_add_bench_test.go` the copy replaces) gets that file too, and a
+base with no log store gets the stub, which does what `settleStore` does on
+bbolt, nothing:
 
 ```bash
 git archive <base-sha> | tar -x -C <dir>
 cp jobqueue/kick_resume_bench_test.go <dir>/jobqueue/
+cp jobqueue/dep_group_add_bench_test.go <dir>/jobqueue/
 printf 'package jobqueue\n\nimport "testing"\n\nfunc settleStore(testing.TB, *Server) {}\n' \
   >"<dir>/jobqueue/settle_stub_test.go"
 SPEED_BASE=<dir> make speed-full

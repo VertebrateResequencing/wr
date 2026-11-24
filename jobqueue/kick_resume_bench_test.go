@@ -35,6 +35,8 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -45,6 +47,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 )
 
@@ -110,6 +113,10 @@ var slowReserveTailThresholds = []time.Duration{
 	20 * time.Millisecond, 24 * time.Millisecond, 32 * time.Millisecond, 40 * time.Millisecond,
 	48 * time.Millisecond, 64 * time.Millisecond,
 }
+
+// serveFreshPortsAttempts is how many servers serveOnFreshPorts starts, each
+// on freshly picked ports, before it gives up.
+const serveFreshPortsAttempts = 3
 
 // kickResumeBenchBury reserves and buries the n ready targets on s.
 func kickResumeBenchBury(ctx context.Context, b *testing.B, s *Server, n int) ([]*Job, []string) {
@@ -464,29 +471,29 @@ func kickResumeBenchServer(ctx context.Context, b *testing.B,
 // kickResumeBenchServe starts a server on its own database with an hour's TTR
 // and the given runner command, and connects a client to it. It returns them,
 // the standard requirements and a function that stops both.
-func kickResumeBenchServe(ctx context.Context, b *testing.B,
+func kickResumeBenchServe(ctx context.Context, tb testing.TB,
 	rc string,
 ) (*Server, *Client, *jqs.Requirements, func()) {
-	b.Helper()
+	tb.Helper()
 
-	_, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
-
-	dir := b.TempDir()
-	serverConfig.DBFile = filepath.Join(dir, "db")
-	serverConfig.DBFileBackup = filepath.Join(dir, "db.bk")
-	serverConfig.TokenFile = filepath.Join(dir, "token")
-	serverConfig.Timings.ItemTTR = time.Hour
-	serverConfig.RunnerCmd = rc
-
-	s, _, token, err := serve(ctx, serverConfig)
+	ts, err := serveOnFreshPorts(ctx, false, func(serverConfig *ServerConfig) {
+		dir := tb.TempDir()
+		serverConfig.DBFile = filepath.Join(dir, "db")
+		serverConfig.DBFileBackup = filepath.Join(dir, "db.bk")
+		serverConfig.TokenFile = filepath.Join(dir, "token")
+		serverConfig.Timings.ItemTTR = time.Hour
+		serverConfig.RunnerCmd = rc
+	})
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 
-	jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+	s := ts.server
+
+	jq, err := Connect(ts.addr, ts.config.CAFile, ts.config.CertDomain, ts.token, ts.clientConnectTime)
 	if err != nil {
 		s.Stop(ctx, true)
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	stop := func() {
@@ -494,7 +501,75 @@ func kickResumeBenchServe(ctx context.Context, b *testing.B,
 		s.Stop(ctx, true)
 	}
 
-	return s, jq, standardReqs, stop
+	return s, jq, ts.standardReqs, stop
+}
+
+// serveOnFreshPorts starts a server as jobqueueTestInit and serve do, with
+// configure (if not nil) applied to its config first, and returns it once it
+// is published.
+//
+// pickTestPort releases the ports it picks, so another process can take the
+// manager port before the server binds it: Serve then finds the port in use,
+// or publication gives up. Either way this stops that server and starts
+// another from a fresh jobqueueTestInit, on fresh ports with a fresh manager
+// directory, calling configure again, up to serveFreshPortsAttempts times. Any
+// other error is returned at once, as are all errors in --servermode and
+// --runnermode, where the ports come from the parent and a retry would only
+// pick them again.
+//
+// Each under-load benchmark iteration starts a fresh server, so a speed run
+// starts thousands, and without this a run failed about as often as it
+// finished. It is here, not beside serve, because DEVELOPERS.md has a
+// prepared base given this file and dep_group_add_bench_test.go, so on the
+// base too the *UnderReserveLoad benchmarks and BenchmarkAddDepGroupMember
+// start their servers through it.
+func serveOnFreshPorts(ctx context.Context, shortTTR bool,
+	configure func(*ServerConfig),
+) (freshPortsServer, error) {
+	var err error
+
+	for attempt := range serveFreshPortsAttempts {
+		_, config, addr, standardReqs, clientConnectTime := jobqueueTestInit(shortTTR)
+		if configure != nil {
+			configure(&config)
+		}
+
+		var (
+			server *Server
+			token  []byte
+		)
+
+		server, _, token, err = serve(ctx, config)
+		if err == nil {
+			return freshPortsServer{
+				server: server, config: config, addr: addr, token: token,
+				standardReqs: standardReqs, clientConnectTime: clientConnectTime,
+			}, nil
+		}
+
+		if server != nil {
+			server.Stop(ctx, true)
+		}
+
+		if !managerPortTaken(err) || servermode || runnermode {
+			return freshPortsServer{}, err
+		}
+
+		clog.Warn(ctx, "test server's manager port was taken; starting it on fresh ports",
+			"port", config.Port, "attempt", attempt+1, "err", err)
+	}
+
+	return freshPortsServer{}, fmt.Errorf("manager port taken in each of %d attempts: %w",
+		serveFreshPortsAttempts, err)
+}
+
+// managerPortTaken reports whether err, from serve, says the manager port was
+// taken: Serve found it in use, or publication gave up (which it also does if
+// the token file cannot be written, and a retry in a fresh directory does no
+// harm then).
+func managerPortTaken(err error) bool {
+	return errors.Is(err, errServePublishGaveUp) || errors.Is(err, errPortInUse) ||
+		errors.Is(err, errPortStillHeld)
 }
 
 // kickResumeBenchTargetJobs returns the target jobs, each with a distinct
@@ -555,6 +630,17 @@ func kickResumeBenchFillerJobs(reqs *jqs.Requirements) []*Job {
 	}
 
 	return fillers
+}
+
+// freshPortsServer is a server serveOnFreshPorts started, with what a client
+// needs to reach it.
+type freshPortsServer struct {
+	server            *Server
+	config            ServerConfig
+	addr              string
+	token             []byte
+	standardReqs      *jqs.Requirements
+	clientConnectTime time.Duration
 }
 
 // underReserveLoadMetric is one figure an under-load benchmark reports.

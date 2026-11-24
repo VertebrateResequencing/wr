@@ -48,16 +48,17 @@ const (
 // run, so none can have been archived since the add read it.
 func BenchmarkAddDepGroupMember(b *testing.B) {
 	ctx := context.Background()
-	_, serverConfig, addr, reqs, connectTime := jobqueueTestInit(true)
 
-	server, _, token, err := serve(ctx, serverConfig)
+	ts, err := serveOnFreshPorts(ctx, true, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
 
+	server, reqs := ts.server, ts.standardReqs
+
 	defer server.Stop(ctx, true)
 
-	jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, connectTime)
+	jq, err := Connect(ts.addr, ts.config.CAFile, ts.config.CertDomain, ts.token, ts.clientConnectTime)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -102,21 +103,6 @@ func BenchmarkAddDepGroupMember(b *testing.B) {
 
 		if _, _, err = jq.Add([]*Job{member}, envVars, true); err != nil {
 			b.Fatal(err)
-		}
-	}
-}
-
-// settleStore waits until s's store has done the background work it has
-// pending for what has been stored so far: the log store has appended every
-// job change it queued and its writes have finished, and its folder has folded
-// all of it into its history database (see flush). bbolt does no such work, so
-// for it this does nothing.
-func settleStore(tb testing.TB, s *Server) {
-	tb.Helper()
-
-	if ls, ok := s.db.(*logStore); ok {
-		if err := ls.flush(); err != nil {
-			tb.Fatal(err)
 		}
 	}
 }

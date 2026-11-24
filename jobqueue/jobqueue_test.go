@@ -1560,8 +1560,10 @@ var errServePublishGaveUp = errors.New("the server's publication gave up")
 // If publication gives up, for example because another process took the
 // picked manager port before the server bound it, the server is stopped and
 // errServePublishGaveUp returned, so the test fails there instead of
-// publishexit.Exit ending the whole test binary. It can't retry with fresh
-// ports: the caller already holds the ports in its config and address.
+// publishexit.Exit ending the whole test binary. serve itself does not retry
+// with fresh ports, as the caller already holds the ports in its config and
+// address; serveOnFreshPorts (kick_resume_bench_test.go) picks the ports
+// itself, so it does retry, and benchmarks that start many servers use it.
 func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, error) {
 	exits, restore := publishexit.Notify()
 

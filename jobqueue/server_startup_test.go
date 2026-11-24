@@ -35,6 +35,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
@@ -184,6 +185,170 @@ func TestServeSkipsPortWithIPv6OnlyListener(t *testing.T) {
 		So(errs, ShouldBeNil)
 		So(serverConfig.Port, ShouldNotEqual, strconv.Itoa(squatted))
 	})
+}
+
+// TestServeOnFreshPortsReturnsOtherErrorsAtOnce proves serveOnFreshPorts starts
+// a server on fresh ports only when the manager port was taken: a server that
+// fails for another reason would fail the same way on any ports.
+func TestServeOnFreshPortsReturnsOtherErrorsAtOnce(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("serveOnFreshPorts returns a database error after one attempt", t, func() {
+		ctx := context.Background()
+
+		notDir := filepath.Join(t.TempDir(), "file")
+		So(os.WriteFile(notDir, nil, 0o600), ShouldBeNil)
+
+		attempts := 0
+
+		ts, err := serveOnFreshPorts(ctx, false, func(config *ServerConfig) {
+			attempts++
+			config.DBFile = filepath.Join(notDir, "db")
+			config.DBFileBackup = filepath.Join(notDir, "db.bk")
+			config.TokenFile = filepath.Join(t.TempDir(), "token")
+		})
+		if ts.server != nil {
+			defer ts.server.Stop(ctx, true)
+		}
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, notDir)
+		So(attempts, ShouldEqual, 1)
+		So(ts.server, ShouldBeNil)
+	})
+}
+
+// portSquatter takes one port with a listener, as another process might.
+type portSquatter struct {
+	mu       sync.Mutex
+	port     string
+	tried    bool
+	listener net.Listener
+	err      error
+}
+
+// note records port as the one to take, reporting whether it is the first port
+// noted.
+func (p *portSquatter) note(port int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.port != "" {
+		return false
+	}
+
+	p.port = strconv.Itoa(port)
+
+	return true
+}
+
+// take listens on the noted port, the first time it is called.
+func (p *portSquatter) take(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.tried || p.port == "" {
+		return
+	}
+
+	p.tried = true
+	p.listener, p.err = (&net.ListenConfig{}).Listen(ctx, "tcp", "0.0.0.0:"+p.port)
+}
+
+// taken returns the port taken, or "" if none was, and any error taking it.
+func (p *portSquatter) taken() (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.tried || p.err != nil {
+		return "", p.err
+	}
+
+	return p.port, nil
+}
+
+// close stops listening on the taken port.
+func (p *portSquatter) close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.listener != nil {
+		_ = p.listener.Close()
+		p.listener = nil
+	}
+}
+
+// underLoadBenchServerSurvivesTakenManagerPort is the body of each
+// TestUnderLoadBenchServerSurvivesTakenManagerPort case. A listener takes the
+// first manager port pickTestPort picks: as soon as it is picked, or, if
+// beforePublication, when the first server's recovery reaches its pause hook,
+// after Serve has reserved the port and before publication binds it.
+func underLoadBenchServerSurvivesTakenManagerPort(t *testing.T, beforePublication bool) {
+	t.Helper()
+
+	ctx := context.Background()
+	squat := &portSquatter{}
+
+	Reset(squat.close)
+
+	originalPick, originalHook := pickTestPort, recoveryPauseHookForTest
+
+	Reset(func() { pickTestPort, recoveryPauseHookForTest = originalPick, originalHook })
+
+	pickTestPort = func() (int, error) {
+		port, err := originalPick()
+		if err == nil && squat.note(port) && !beforePublication {
+			squat.take(ctx)
+		}
+
+		return port, err
+	}
+
+	if beforePublication {
+		recoveryPauseHookForTest = func() { squat.take(ctx) }
+	}
+
+	var stop func()
+
+	Reset(func() {
+		if stop != nil {
+			stop()
+		}
+	})
+
+	// kickResumeBenchServe's configure puts each attempt's database and token
+	// file in a new t.TempDir(), numbered after this one.
+	probe := t.TempDir()
+
+	s, jq, _, stopServer := kickResumeBenchServe(ctx, t, serverRC)
+	stop = stopServer
+
+	taken, err := squat.taken()
+	So(err, ShouldBeNil)
+	So(taken, ShouldNotBeEmpty)
+	So(s.ServerInfo.Port, ShouldNotEqual, taken)
+
+	info, err := jq.Ping(ClientMinRequestTimeout)
+	So(err, ShouldBeNil)
+	So(info.Port, ShouldEqual, s.ServerInfo.Port)
+
+	So(s.timings.ItemTTR, ShouldEqual, time.Hour)
+	So(s.runnerCommand(), ShouldEqual, serverRC)
+
+	entries, err := os.ReadDir(filepath.Dir(probe))
+	So(err, ShouldBeNil)
+	So(entries, ShouldHaveLength, 3)
+
+	retried := filepath.Join(filepath.Dir(probe), entries[2].Name())
+
+	token, err := os.ReadFile(filepath.Join(retried, "token"))
+	So(err, ShouldBeNil)
+	So(token, ShouldResemble, s.token)
+
+	_, err = os.Stat(filepath.Join(retried, "db"))
+	So(err, ShouldBeNil)
 }
 
 type serveStartupResult struct {
@@ -342,6 +507,31 @@ func pausedRecoveringFixtureServer(ctx context.Context, serverConfig ServerConfi
 	}
 
 	return server, token, releaseFn
+}
+
+// TestUnderLoadBenchServerSurvivesTakenManagerPort covers the under-load
+// benchmarks' server setup, which starts a fresh server per iteration on ports
+// pickTestPort picked and released. Another process can take the manager port
+// before the server binds it: before Serve reserves it, or, as a listener
+// bound beside the reservation, before publication binds it. Either way setup
+// must start the server on fresh ports, not fail the benchmark run.
+func TestUnderLoadBenchServerSurvivesTakenManagerPort(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	for _, beforePublication := range []bool{false, true} {
+		when := "before Serve reserves it"
+		if beforePublication {
+			when = "before publication binds it"
+		}
+
+		t.Run(when, func(t *testing.T) {
+			Convey("the under-load benchmarks' server starts if its manager port is taken "+when, t, func() {
+				underLoadBenchServerSurvivesTakenManagerPort(t, beforePublication)
+			})
+		})
+	}
 }
 
 func unblockFIFOReader(tokenFile string) {
