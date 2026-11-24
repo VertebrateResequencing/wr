@@ -7,8 +7,11 @@
 # status, and the farm-safe local wrdev.sh speed scenarios, for the tree under
 # test (HEAD) and, unless SPEED_BASE=none, for a baseline (BASE) built in a
 # temporary git worktree. BASE and HEAD rounds are interleaved so drift in host
-# load hits both alike. benchstat compares them; a change worse than
-# SPEED_THRESHOLD percent at p < SPEED_ALPHA fails the gate, as does any
+# load hits both alike, and each round builds both trees' benchmarks in the same
+# one of several code layouts (developers/speedlayout.sh), so a benchmark that
+# depends on where the linker happens to place its code is compared over the
+# same set of placements on both trees. benchstat compares them; a change worse
+# than SPEED_THRESHOLD percent at p < SPEED_ALPHA fails the gate, as does any
 # scenario that fails its own absolute thresholds on HEAD. developers/speedjudge
 # applies that rule, and judges jobqueue's *UnderReserveLoad benchmarks by its
 # window-aware rule instead of their raw reserve tail percentiles
@@ -17,9 +20,9 @@
 #   developers/speed.sh [quick|full]
 #
 # quick (make speed): the benchmarks, plus report-storm and
-#   dep-granularity-check. About 10 minutes with a baseline.
+#   dep-granularity-check. About 30 minutes with a baseline.
 # full (make speed-full): quick, plus add-storm, archive-rate and
-#   archive-ceiling on copies of big production-shaped DBs. About an hour with
+#   archive-ceiling on copies of big production-shaped DBs. Over an hour with
 #   a baseline. Needs SPEED_BIG_DB, or WR_AS_DB / WR_ARCHRATE_DB / WR_AC_DB for
 #   each scenario.
 #
@@ -29,8 +32,17 @@
 #                           tree as-is.
 #   SPEED_HEAD=<ref>|<dir>  tree under test; default this working tree,
 #                           uncommitted changes included.
-#   SPEED_COUNT=6           benchmark rounds per tree (benchstat needs >= 6 to
-#                           call a 10% change significant).
+#   SPEED_COUNT=12          benchmark rounds per tree, two per code layout
+#                           (benchstat needs >= 6 to call a 10% change
+#                           significant; with layouts pooled, 6 rounds caught
+#                           a 10 to 16% slowdown too rarely, DEVELOPERS.md).
+#   SPEED_LAYOUTS=6         code layouts the benchmark rounds cycle through:
+#                           round i runs both trees in layout (i-1) mod
+#                           SPEED_LAYOUTS (1 = the tree as is only). Keep
+#                           SPEED_COUNT a multiple of it so every layout gets
+#                           the same number of rounds. Each layout costs a
+#                           build of each package per tree (about 13s for
+#                           jobqueue).
 #   SPEED_BENCHTIME=1s      -benchtime per benchmark per round.
 #   SPEED_BENCH=<regex>     -bench regex for every package, in place of the
 #                           default hot-path set.
@@ -56,7 +68,8 @@ case "$MODE" in (quick|full) ;; (*) echo "usage: $0 [quick|full]" >&2; exit 2 ;;
 REPO="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 WRDEV="$REPO/developers/wrdev.sh"
 SPEED_DIR="${SPEED_DIR:-${TMPDIR:-/tmp}/wr-speed-$(id -un)}"
-SPEED_COUNT="${SPEED_COUNT:-6}"
+SPEED_COUNT="${SPEED_COUNT:-12}"
+SPEED_LAYOUTS="${SPEED_LAYOUTS:-6}"
 SPEED_BENCHTIME="${SPEED_BENCHTIME:-1s}"
 SPEED_BENCH="${SPEED_BENCH:-}"
 SPEED_SCENARIO_COUNT="${SPEED_SCENARIO_COUNT:-1}"
@@ -71,6 +84,7 @@ SPEED_SCENARIOS="${SPEED_SCENARIOS:-$QUICK_SCENARIOS}"
 [ "$SPEED_SCENARIOS" = none ] && SPEED_SCENARIOS=""
 
 die() { echo "speed: $*" >&2; exit 1; }
+case "$SPEED_LAYOUTS" in (''|0|*[!0-9]*) die "SPEED_LAYOUTS must be a whole number of at least 1" ;; esac
 for s in $SPEED_SCENARIOS; do
   case " $FULL_SCENARIOS " in (*" $s "*) ;; (*) die "unknown scenario $s (the local ones are: $FULL_SCENARIOS)" ;; esac
 done
@@ -149,22 +163,37 @@ echo "speed ($MODE): results in $RUN"
 for l in "${LABELS[@]}"; do echo "  $l: $(desc_of "$l") ($(dir_of "$l"))"; done
 
 # --- benchmarks -----------------------------------------------------------------
+# A benchmark's speed can vary by about 15% from one layout to another, where
+# a layout is where the linker places the test binary's code, so a test-only
+# change can move it (bugfix 261119 item I). Each package is built in LAYOUTS
+# layouts (layout k adds k empty Test functions through a build overlay; the
+# tree is not written to), round i runs both trees in layout (i-1) mod
+# LAYOUTS, and benchstat pools the rounds.
+LAYOUTS=$SPEED_LAYOUTS
+[ "$SPEED_COUNT" -gt 0 ] && [ "$SPEED_COUNT" -lt "$LAYOUTS" ] && LAYOUTS=$SPEED_COUNT
 for l in "${LABELS[@]}"; do
+  : >"$RUN/$l.build.log"
   for p in "${BENCH_PKGS[@]}"; do
-    ( cd "$(dir_of "$l")" && CGO_ENABLED=0 go test -c -tags netgo -o "$RUN/$l.$p.test" "./$p/" ) \
-      >"$RUN/$l.build.log" 2>&1 || die "could not build $l's $p benchmarks; see $RUN/$l.build.log"
+    for k in $(seq 0 $((LAYOUTS - 1))); do
+      overlay=$("$REPO/developers/speedlayout.sh" "$(dir_of "$l")" "$p" "$k" "$RUN/layouts-$l" 2>>"$RUN/$l.build.log") \
+        || die "could not make $l's $p layout $k; see $RUN/$l.build.log"
+      ( cd "$(dir_of "$l")" && CGO_ENABLED=0 go test -c -tags netgo ${overlay:+-overlay "$overlay"} \
+          -o "$RUN/$l.$p.L$k.test" "./$p/" ) \
+        >>"$RUN/$l.build.log" 2>&1 || die "could not build $l's $p benchmarks (layout $k); see $RUN/$l.build.log"
+    done
   done
 done
 
 if [ "$SPEED_COUNT" -gt 0 ]; then
   for round in $(seq 1 "$SPEED_COUNT"); do
+    k=$(( (round - 1) % LAYOUTS ))
     for l in "${LABELS[@]}"; do
-      echo "benchmarks: round $round/$SPEED_COUNT, $l"
+      echo "benchmarks: round $round/$SPEED_COUNT (layout $k), $l"
       for p in "${BENCH_PKGS[@]}"; do
-        [ -x "$RUN/$l.$p.test" ] || continue
+        [ -x "$RUN/$l.$p.L$k.test" ] || continue
         re="${BENCH_RE[$p]}"; [ -n "$SPEED_BENCH" ] && re="$SPEED_BENCH"
         # Benchmarks log to stderr, which would otherwise split result lines.
-        ( cd "$(dir_of "$l")/$p" && "$RUN/$l.$p.test" -test.run '^$' -test.bench "$re" \
+        ( cd "$(dir_of "$l")/$p" && "$RUN/$l.$p.L$k.test" -test.run '^$' -test.bench "$re" \
             -test.benchmem -test.benchtime "$SPEED_BENCHTIME" -test.count 1 ) \
           >>"$RUN/$l.bench" 2>>"$RUN/$l.bench.stderr" \
           || die "$l's $p benchmarks failed; see $RUN/$l.bench and $RUN/$l.bench.stderr"

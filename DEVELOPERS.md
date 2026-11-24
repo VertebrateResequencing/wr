@@ -206,7 +206,7 @@ For churn/responsiveness the authoritative evidence is a **real-LSF** run; the
 
 `make speed` (`developers/speed.sh`) checks that the hot paths have not got
 slower. It is **not** part of `make test`, `make race` or CI: it needs a quiet
-host and about 10 minutes, and its numbers depend on that host.
+host and about 30 minutes, and its numbers depend on that host.
 
 **When to run it.** Run it before you open a PR, and again before it merges if
 the hot-path code changed since, when the change touches any of:
@@ -223,8 +223,9 @@ any regression the change accepts.
 
 **What it measures.** For the tree under test and for a baseline, it runs:
 
-- the hot-path Go benchmarks, 6 rounds each, interleaved so that drift in
-  host load hits both trees alike:
+- the hot-path Go benchmarks, 12 rounds each (two in each of 6 code
+  layouts, below), interleaved so that drift in host load hits both trees
+  alike:
   - `jobqueue`: `BenchmarkAddJobs`, `BenchmarkUpdateJobState`,
     `BenchmarkArchiveJobs`, `BenchmarkArchiveSpacedArrivals`,
     `BenchmarkReadyBacklogSnapshot`, `BenchmarkBuildSchedulerGroupsBacklog`,
@@ -243,14 +244,54 @@ bolt write/transaction count or scenario figure gets more than 10% worse at
 p < 0.05. It also fails when a scenario misses its own thresholds on the tree
 under test. With about 30 comparisons per run, a lone benchmark can cross the
 line by chance: confirm a failure with a re-run of just that one
-(`SPEED_BENCH='^BenchmarkName$' SPEED_COUNT=10 make speed`) before acting on it.
+(`SPEED_BENCH='^BenchmarkName$' SPEED_COUNT=18 make speed`) before acting on it.
 The baseline defaults to the merge-base with `origin/develop`,
-built in a temporary worktree. Knobs:
+built in a temporary worktree.
+
+**Code layouts.** A benchmark's speed can depend on where the linker places
+the test binary's code. `BenchmarkReadyBacklogSnapshot` read 7 to 11% slower
+after a commit that changed only test code: its product functions compiled to
+the same instructions, and adding one to four empty Test functions to the
+package lowered it from +8.67% against the baseline to between -1.4% and
++6.86%. Each binary's speed is stable from round to round, so more rounds of
+one binary cannot average the placement out (bugfix 261119 item I). So
+`speed.sh` builds every benchmarked package in `SPEED_LAYOUTS` layouts
+(default 6): layout 0 is the tree as it is, and layout k adds k empty Test
+functions in a generated `aaa_speed_layout_test.go`, which sorts before the
+package's own test files and so moves all of their code, and the closures and
+other code laid out after it. The product's top-level functions compile
+before the test files and do not move, so noise from where product code lands
+is not averaged out. `developers/speedlayout.sh` writes that file and a
+`go build -overlay` file under the run directory, so neither tree is written
+to. Round i runs both trees in layout (i-1) mod `SPEED_LAYOUTS`, and
+benchstat compares the pooled rounds, so each tree's figure averages over the
+same placements. Keep `SPEED_COUNT` a multiple of `SPEED_LAYOUTS`. A layout
+costs one more build per package and tree (about 13s for jobqueue).
+
+The layouts widen each tree's spread, so the default rounds rose from 6 to
+12. Measured on `BenchmarkReadyBacklogSnapshot` (d1a4b6d7 against
+8d82da66, 36 rounds of each, 6 per layout), each tree's six layouts spanned
+about 15% (base -5.8% to +9.5%, head -6.7% to +10.1% of base's median), so
+one layout alone compared the trees at anything from -12.5% to +10.2%,
+while the pooled rounds read -1.3% (p=0.810). Resampling those rounds into
+gates, with head's rounds scaled to model a slowdown: with one fixed layout,
+as before, an unchanged head failed in 0 to 25% of draws depending on the
+layout (none in four of the six), and a head scaled 15% slower failed in
+72% (the layout drawn at random); with 6 layouts, an unchanged head never
+failed, and a head scaled 15% slower failed in 77% at 6 rounds and 87% at
+12. On the host itself, a head given an injected slowdown (a loop in
+`memoisedSchedulerGroupSnapshot`) measured about 10 to 16% slower than its
+own tree, varying by run (+15.64% and +9.59%). Against d1a4b6d7 it passed
+all three 6-round runs and failed 5 of 6 12-round runs (+13.06%, +10.94%,
++10.09%, +12.94% and +12.40%; the pass read +7.87%). Expect a miss when a
+run measures the slowdown under or near the 10% threshold.
+
+Knobs:
 
 - `SPEED_BASE=<ref>` picks another baseline, and `SPEED_BASE=none` skips the
   comparison.
 - `SPEED_THRESHOLD` and `SPEED_COUNT` change the threshold and the number of
-  rounds.
+  rounds, and `SPEED_LAYOUTS` the number of code layouts (above).
 - `SPEED_DIR` moves the work directory (default
   `${TMPDIR:-/tmp}/wr-speed-$USER`).
 
@@ -265,7 +306,7 @@ recorded runs, 1g.4's among them, and the synthetic cases
 `BenchmarkResumeUnderReserveLoad`, `BenchmarkSuspendUnderReserveLoad` and
 `BenchmarkAddManyUnderReserveLoad` time a background operation while 8
 goroutines reserve from the same queue. They are not in the default set: add
-them with `SPEED_BENCH` (6 rounds of both trees take about 1.5 hours). A raw
+them with `SPEED_BENCH` (12 rounds of both trees take about 3 hours). A raw
 tail percentile (p99, max) of the reserves taken during the operation
 misjudges them: a faster operation has a shorter window, which holds fewer
 reserves, so the same few slow ones make a larger share and the percentile
@@ -328,8 +369,9 @@ as every other figure):
   - Sparse long stalls. A stall that comes once in several operations gives
     a count such as 0.1 per operation in a few rounds and 0 in the rest, and
     6 rounds rarely make that significant (0 to 0.1 per operation gave
-    p = 0.470 in the judge's tests), so a new rare long stall passes. More
-    rounds would give the counts more power.
+    p = 0.470 in the judge's 6-round test fixtures), so a new rare long
+    stall can pass. `make speed` now defaults to 12 rounds, which gives the
+    counts more power, but such a stall can still pass.
   - Stalls that arrive at a constant rate, such as background work. Every
     figure is per operation, so a head whose operation is twice as fast
     spans half as many of them; a head that halves the operation and doubles
@@ -389,7 +431,7 @@ benchstat's verdict at its own alpha of 0.05.
 `make speed-full` adds the in-process big-DB scenarios: `add-storm`,
 `archive-rate` and `archive-ceiling`. They need copies of production-shaped
 databases (`SPEED_BIG_DB`, or `WR_AS_DB`/`WR_ARCHRATE_DB`/`WR_AC_DB` for each
-one) and take about an hour with a baseline. Run it as well for a change to
+one) and take over an hour with a baseline. Run it as well for a change to
 the bolt write path or to commit coalescing.
 
 **What `make test` already guards.** Structural cost tests fail `make test`

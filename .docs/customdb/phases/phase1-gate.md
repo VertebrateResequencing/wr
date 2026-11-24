@@ -157,6 +157,30 @@ close this); and reserves still waiting when the operation ends, which
 the harness drops (DEVELOPERS.md, "Benchmarks under reserve load"). The
 median is reported with the raw tail percentiles as informational.
 
+Orchestrator change, 2026-11-24, made under the owner's direction of
+2026-11-23 that speed-gate criteria are the orchestrator's to fix
+("redefine them if they are saying that things that are better are
+slower, but don't let real slowdowns that could be improved through"):
+`make speed` builds each tree's benchmark binaries in 6 code layouts (the
+tree as it is, and with 1 to 5 generated empty Test functions sorted
+before the package's own test files, added through a build overlay so no
+tree is written to), runs both trees in the same layout each round, and
+compares the pooled rounds; the default rounds rise from 6 to 12, two per
+layout. Bugfix 261119 item I found `BenchmarkReadyBacklogSnapshot` 7 to
+11% slower than d1a4b6d7 from a commit that changed only test code: the
+product functions compiled to the same instructions, adding 1 to 4 empty
+Test functions moved it from +8.67% to -0.6%, +6.86%, +0.3% and -1.4%,
+and each binary was stable across rounds, so more rounds of one binary
+could not remove it. Over 36 rounds a tree, each tree's six layouts
+spanned about 15%, and pooled they read -1.3% (p=0.810). Pooling widens
+each tree's spread, so 6 rounds detected a head scaled 15% slower no
+better than one fixed layout did (77% against 72% of resampled gates);
+12 rounds detect it in 87%. On the host, a head given an injected
+slowdown of about 10 to 16% (varying by run) passed all three 6-round
+runs and failed 5 of 6 12-round runs, the pass reading +7.87%; a miss is
+expected when a run measures the slowdown under or near the 10%
+threshold (DEVELOPERS.md, "Code layouts").
+
 - [ ] implemented
 - [ ] reviewed
 

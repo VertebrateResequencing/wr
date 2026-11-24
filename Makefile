@@ -98,13 +98,13 @@ bench:
 # any change to a hot path: add/createJobs, reserve, touch, start,
 # release/bury, archive, recovery, scheduler/rac, queue/, db.go write paths or
 # status queries. It benchmarks the add/reserve/touch/archive/status
-# benchmarks (benchstat, -count 6) and the local wrdev.sh speed
-# scenarios for this tree and for SPEED_BASE (default: the merge-base with
+# benchmarks (benchstat, 12 rounds over 6 code layouts) and the local wrdev.sh
+# speed scenarios for this tree and for SPEED_BASE (default: the merge-base with
 # origin/develop, built in a temporary worktree; SPEED_BASE=none skips it), and
 # fails on a worsening over SPEED_THRESHOLD% (default 10) at p<0.05 or a
-# scenario over its own thresholds. speed takes ~10 minutes; speed-full adds
+# scenario over its own thresholds. speed takes ~30 minutes; speed-full adds
 # the big-DB scenarios (add-storm, archive-rate, archive-ceiling; set
-# SPEED_BIG_DB) and takes about an hour. See DEVELOPERS.md "Performance gate".
+# SPEED_BIG_DB) and takes over an hour. See DEVELOPERS.md "Performance gate".
 speed:
 	@developers/speed.sh quick
 
