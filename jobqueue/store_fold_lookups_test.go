@@ -280,10 +280,17 @@ func TestStoreFoldTransactionsWriteAboutTheBound(t *testing.T) {
 	ctx := context.Background()
 
 	for _, cmdBytes := range []int{100, 8 * 1024, 40 * 1024} {
-		given := fmt.Sprintf("Given a log store with 1,000 jobs of %d byte commands archived and folded, then "+
-			"1 more, then its folder paused and 1,000 more archived, unfolded, and the bound at 2MiB", cmdBytes)
+		given := fmt.Sprintf("Given a log store, its folder paused, with 1,000 jobs of %d byte commands archived "+
+			"and folded, then 1 more, then 1,000 more archived, unfolded, and the bound at 2MiB", cmdBytes)
 
 		Convey(given, t, func() {
+			// Each transaction's write is the bound scaled by its own write
+			// per estimated byte over the last one's, which depends on
+			// history.bolt's node layout; a running folder would fold the
+			// first 1,000 archives in pieces as its ticks fall, so the layout,
+			// and the writes, would vary from run to run.
+			pauseLogFolder()
+
 			s, _ := openTestLogStore(t, ctx)
 
 			addArchived := func(prefix string) {
@@ -303,7 +310,6 @@ func TestStoreFoldTransactionsWriteAboutTheBound(t *testing.T) {
 			archiveIncTestJobs(s, one)
 			So(s.foldNow(), ShouldBeNil)
 
-			pauseLogFolder()
 			addArchived("fold size")
 
 			const bound = 2 << 20
@@ -313,6 +319,9 @@ func TestStoreFoldTransactionsWriteAboutTheBound(t *testing.T) {
 			Convey("a fold, after a fold of one, commits them in transactions each writing, but for its "+
 				"freelist, at most 1.5 times the bound (the first, on the last fold's scale, twice), and all "+
 				"but the last at least a third of it", func() {
+				// The archives, under load, can take over foldLagStep since
+				// the last fold, which would grow the bound with the lag.
+				s.foldLagFrom = time.Now()
 				allocs := foldTxPageAllocs(s)
 
 				So(len(allocs), ShouldBeGreaterThan, 1)
