@@ -78,6 +78,12 @@ Performance only.
   report again after the restart, if another runner has taken the command on
   meanwhile.
 
+#### If the manager could not be reached
+- A request to the manager (from `wr` commands, runners or the Go client)
+  made while the manager could not be reached, just as the same client's
+  previous request would have timed out, no longer sometimes hangs for good,
+  even after the manager is back, instead of failing at its own timeout.
+
 
 ## [0.39.0] - 2026-10-12
 ### Added

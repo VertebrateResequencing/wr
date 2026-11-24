@@ -58,6 +58,7 @@ import (
 	"github.com/VertebrateResequencing/wr/container/docker"
 	"github.com/VertebrateResequencing/wr/fs/local"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/internal/mangosreq"
 	"github.com/VertebrateResequencing/wr/internal/mangostlstcp"
 	"github.com/gofrs/uuid/v5"
 	"github.com/kballard/go-shellquote"
@@ -65,7 +66,6 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/ugorji/go/codec"
 	"go.nanomsg.org/mangos/v3"
-	"go.nanomsg.org/mangos/v3/protocol/req"
 )
 
 // FailReason* are the reasons for cmd line failure stored on Jobs.
@@ -2486,7 +2486,7 @@ func setRequestDeadlines(sock mangos.Socket, timeout time.Duration) error {
 // any redial after the connection drops, so a server that accepts connections
 // but never responds cannot block it forever.
 func dialClientSocket(addr, caFile, certDomain string, timeout time.Duration) (mangos.Socket, error) {
-	sock, err := req.NewSocket()
+	sock, err := mangosreq.NewSocket()
 	if err != nil {
 		return nil, err
 	}

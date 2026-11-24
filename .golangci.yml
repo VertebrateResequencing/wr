@@ -156,6 +156,23 @@ linters:
           - funlen
           - mnd
         path: internal
+      # A copy of mangos's protocol/req kept as upstream wrote it apart from a
+      # small documented fix, so it diffs cleanly against upstream.
+      - linters:
+          - cyclop
+          - err113
+          - errcheck
+          - errorlint
+          - forcetypeassert
+          - gocognit
+          - gocyclo
+          - gosec
+          - nestif
+          - nlreturn
+          - staticcheck
+          - whitespace
+          - wsl_v5
+        path: internal/mangosreq/req\.go
       - linters:
           - dupl
           - forbidigo

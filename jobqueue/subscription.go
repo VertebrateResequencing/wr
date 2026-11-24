@@ -36,10 +36,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal/mangosreq"
 	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
 	"github.com/ugorji/go/codec"
 	"go.nanomsg.org/mangos/v3"
-	"go.nanomsg.org/mangos/v3/protocol/req"
 )
 
 const (
@@ -739,9 +739,9 @@ func (c *Client) subscribe(ctx context.Context, cr *clientRequest) (*Subscriptio
 	return sub, nil
 }
 
-//nolint:ireturn // req.NewSocket exposes subscription sockets only as the mangos.Socket interface.
+//nolint:ireturn // mangosreq.NewSocket exposes subscription sockets only as the mangos.Socket interface.
 func dialSubscriptionSocket(addr, caFile, certDomain string, timeout time.Duration) (mangos.Socket, error) {
-	sock, err := req.NewSocket()
+	sock, err := mangosreq.NewSocket()
 	if err != nil {
 		return nil, err
 	}
