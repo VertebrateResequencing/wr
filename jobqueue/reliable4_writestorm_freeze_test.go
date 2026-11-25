@@ -65,7 +65,6 @@ package jobqueue
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -206,7 +205,7 @@ func wsfOpenBigDB(t *testing.T, ctx context.Context, dbFile string) *db {
 
 	t.Logf("WSFREEZE: copying big DB %s -> %s (mutated by the run)", dbFile, work)
 
-	if err := wsfCopyFile(dbFile, work); err != nil {
+	if err := copyBigDBSynced(dbFile, work); err != nil {
 		t.Fatalf("failed to copy big DB: %v", err)
 	}
 
@@ -363,27 +362,4 @@ func wsfPad(n int) string {
 	}
 
 	return string(b)
-}
-
-func wsfCopyFile(src, dst string) error {
-	in, err := os.Open(src) //nolint:gosec // test-controlled path
-	if err != nil {
-		return err
-	}
-
-	defer func() { _ = in.Close() }()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-
-	buf := make([]byte, 8<<20)
-	if _, err = io.CopyBuffer(out, in, buf); err != nil {
-		_ = out.Close()
-
-		return err
-	}
-
-	return out.Close()
 }

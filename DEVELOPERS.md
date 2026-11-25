@@ -425,8 +425,15 @@ cp jobqueue/kick_resume_bench_test.go <dir>/jobqueue/
 cp jobqueue/dep_group_add_bench_test.go <dir>/jobqueue/
 printf 'package jobqueue\n\nimport "testing"\n\nfunc settleStore(testing.TB, *Server) {}\n' \
   >"<dir>/jobqueue/settle_stub_test.go"
+cp jobqueue/bigdb_copy_sync_test.go <dir>/jobqueue/
+sed -i 's/wsfCopyFile(dbFile, work)/copyBigDBSynced(dbFile, work)/' \
+  <dir>/jobqueue/reliable4_*_test.go
 SPEED_BASE=<dir> make speed-full
 ```
+
+The last two commands give the base the big-DB scenarios' synced copy
+(below). `speed.sh` applies them itself to a tree it builds from a ref, but
+not to a prepared directory.
 
 Two outcomes are stricter than the awk rule `speed.sh` used before
 `speedjudge`. A figure that rises from 0 on base fails (at p < `SPEED_ALPHA`)
@@ -440,6 +447,18 @@ benchstat's verdict at its own alpha of 0.05.
 databases (`SPEED_BIG_DB`, or `WR_AS_DB`/`WR_ARCHRATE_DB`/`WR_AC_DB` for each
 one) and take over an hour with a baseline. Run it as well for a change to
 the bolt write path or to commit coalescing.
+
+Each of these scenarios copies its database to scratch and, through
+`copyBigDBSynced` (`jobqueue/bigdb_copy_sync_test.go`), writes the copy and
+the rest of that filesystem's dirty data to disk before its window opens.
+Before it did, writeback of the unsynced 4GB copy, and of the test binary
+`go test` had just linked into the same `/tmp`, stalled one bolt commit for
+tens to hundreds of ms some seconds into the window. `archive-rate`'s max-ms
+then read higher on the tree with the larger test binary, with the archive
+path unchanged; with both synced, it read 9 to 35ms on both trees in windows
+without writeback from other processes on the host, and up to 161ms in
+windows with it (bugfix 261119 item M). A base without that file measures
+the writeback again, so it needs the file and the call (the recipe above).
 
 **What `make test` already guards.** Structural cost tests fail `make test`
 outright, whatever the host's speed, for example:

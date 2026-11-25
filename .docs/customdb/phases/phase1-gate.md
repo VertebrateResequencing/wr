@@ -181,7 +181,26 @@ runs and failed 5 of 6 12-round runs, the pass reading +7.87%; a miss is
 expected when a run measures the slowdown under or near the 10%
 threshold (DEVELOPERS.md, "Code layouts").
 
-- [ ] implemented
+Orchestrator change, 2026-11-25, made under the same direction of
+2026-11-23: before the measured window opens, the big-DB scenarios
+(`archive-rate`, `archive-ceiling`, `add-storm`) fsync their copy of the
+database and sync the filesystem holding it, on both trees; max-ms stays
+gated. Bugfix 261119 item M found `archive-rate`'s max-ms about 35% higher
+on head than on `d1a4b6d7` with the archive path unchanged. The worst
+archive was one bolt commit stalled behind writeback of the unsynced 4GB
+copy and of the test binary `go test` had just linked into the same
+`/tmp`, which is 31% larger on head. With both synced, max-ms read 9 to
+35ms on either tree in windows without writeback from other processes,
+and 90 to 161ms in windows where another process on the host wrote back
+about 1GB. `developers/speed.sh` applies the change to a base it builds
+from a ref, and DEVELOPERS.md's recipe to a prepared base. In a 4-round
+interleaved A/B with the change on both trees, head's max-ms was not
+significantly higher (p=0.886). By default (`SPEED_SCENARIO_COUNT=1`) a
+scenario runs once a tree, so the judge cannot find its max-ms
+significant; a large move in it is checked with an interleaved A/B, as
+item M was.
+
+- [x] implemented
 - [ ] reviewed
 
 ### Item 1g.5: Daytime NFS targets

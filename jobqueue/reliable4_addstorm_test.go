@@ -722,7 +722,8 @@ func asConfigureDB(t *testing.T, serverConfig *ServerConfig, dbFile string, back
 	t.Logf("ADDSTORM: copying big DB %s -> %s (mutated by the run)", dbFile, work)
 
 	t0 := time.Now()
-	if err := wsfCopyFile(dbFile, work); err != nil {
+
+	if err := copyBigDBSynced(dbFile, work); err != nil {
 		t.Fatalf("failed to copy big DB: %v", err)
 	}
 

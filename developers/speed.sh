@@ -142,6 +142,19 @@ tree_dir() {
   TREE_DIR="$RUN/tree-$label"
   git -C "$REPO" worktree add --detach "$TREE_DIR" "$sha" >/dev/null 2>&1 || die "could not make a worktree of $spec"
   WORKTREES+=("$TREE_DIR")
+  sync_big_db_copies "$TREE_DIR"
+}
+
+# sync_big_db_copies <dir> gives an older tree this tree's copyBigDBSynced, so
+# its big-DB scenarios also write their DB copy to disk before the measured
+# window opens. Without it, writeback of the copy stalls a commit in that
+# tree's window and not in this one's (bugfix 261119 item M).
+sync_big_db_copies() {
+  local jq="$1/jobqueue"
+  [ -e "$jq/bigdb_copy_sync_test.go" ] && return 0
+  grep -qs 'wsfCopyFile(dbFile, work)' "$jq"/reliable4_*_test.go || return 0
+  cp "$REPO/jobqueue/bigdb_copy_sync_test.go" "$jq/"
+  sed -i 's/wsfCopyFile(dbFile, work)/copyBigDBSynced(dbFile, work)/' "$jq"/reliable4_*_test.go
 }
 
 HEAD_DIR="$REPO"

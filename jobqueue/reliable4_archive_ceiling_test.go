@@ -390,7 +390,8 @@ func acOpenBigDB(t *testing.T, ctx context.Context, dbFile string, backups bool)
 	t.Logf("ARCHCEIL: copying big DB %s -> %s (mutated by the run)", dbFile, work)
 
 	copyStart := time.Now()
-	if err := wsfCopyFile(dbFile, work); err != nil {
+
+	if err := copyBigDBSynced(dbFile, work); err != nil {
 		t.Fatalf("failed to copy big DB: %v", err)
 	}
 

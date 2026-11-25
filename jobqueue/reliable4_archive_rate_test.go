@@ -364,7 +364,7 @@ func arOpenBigDB(t *testing.T, ctx context.Context, dbFile string) *db {
 
 	t.Logf("ARCHRATE: copying big DB %s -> %s (mutated by the run)", dbFile, work)
 
-	if err := wsfCopyFile(dbFile, work); err != nil {
+	if err := copyBigDBSynced(dbFile, work); err != nil {
 		t.Fatalf("failed to copy big DB: %v", err)
 	}
 
