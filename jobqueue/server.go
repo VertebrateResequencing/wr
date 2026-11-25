@@ -111,6 +111,10 @@ const (
 // regroups in one hold of the queue's lock.
 const racRegroupChunk = 1024
 
+// racItemChunk is how many ready jobs' queue items a ready-added callback looks
+// up in one hold of the queue's read lock (see racReadyItems).
+const racItemChunk = 1024
+
 const (
 	maxJobsForStd                  = 1000
 	serverWaitPeriodToStartRunning = 1 * time.Millisecond
@@ -2782,12 +2786,16 @@ func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg 
 // hook, prepareForReady, gives the item its reserve group as it enters ready; this
 // function only moves it, via regroupJob, when rc is set and the group has changed,
 // eg. because newer learned values changed the requirements.)
-func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
+//
+// The job is items' ith candidate, whose item it is looked up from.
+func (s *Server) prepareReadyJob(ctx context.Context, items *racReadyItems, i int, rc string,
 	reqGroupToReqs map[string]*scheduler.Requirements) (schedulerGroupSnapshot, bool) {
 	// count one unit of EXPENSIVE per-job scheduling work (see Server.racScanWork):
 	// with a runner command, buildSchedulerGroups runs this only for the jobs it
 	// selects as schedulable this cycle.
 	s.racScanWork.Add(1)
+
+	job := items.candidates[i].job
 
 	job.RLock()
 	jobOverride := job.Override
@@ -2800,14 +2808,14 @@ func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, 
 	recommendedReq := s.recommendedReqForGroup(reqGroup, reqGroupToReqs)
 
 	if recommendedReq != nil || failureUpdateNeeded {
-		recomputeIfStillReady(q, job, jobOverride, recommendedReq)
+		recomputeIfStillReady(items.item(i), job, jobOverride, recommendedReq)
 	}
 
 	if rc == "" {
 		return schedulerGroupSnapshot{}, false
 	}
 
-	snapshot, _ := regroupJob(ctx, q, job)
+	snapshot, _ := regroupJob(ctx, items.q, job)
 
 	return snapshot, true
 }
@@ -2820,14 +2828,12 @@ func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, 
 // size, and the manager would record it as the run's. The item's state is read
 // under the job's lock, which that reset also takes, and a reserve moves the
 // item out of ready before its reset, so no reset can come between the check
-// and the recompute. A job with no item, which has left the queue, is
-// recomputed as before, since no run of it is in progress.
-func recomputeIfStillReady(q *queue.Queue, job *Job, jobOverride uint8, rec *scheduler.Requirements) {
-	item, err := q.Get(job.Key())
-	if err != nil {
-		item = nil
-	}
-
+// and the recompute. A job with no item (a nil item), which has left the queue,
+// is recomputed as before, since no run of it is in progress.
+//
+// item is the job's queue item, looked up before the call: an item looked up
+// earlier is checked just the same, as its state is read here.
+func recomputeIfStillReady(item *queue.Item, job *Job, jobOverride uint8, rec *scheduler.Requirements) {
 	job.Lock()
 	defer job.Unlock()
 
@@ -2954,7 +2960,12 @@ func (s *Server) refreshSkippedReadyJob(q *queue.Queue, job *Job, rec *scheduler
 	jobOverride := job.Override
 	job.RUnlock()
 
-	recomputeIfStillReady(q, job, jobOverride, rec)
+	item, err := q.Get(job.Key())
+	if err != nil {
+		item = nil
+	}
+
+	recomputeIfStillReady(item, job, jobOverride, rec)
 
 	return job.schedulerGroupSnapshot()
 }
@@ -3629,7 +3640,9 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 
 	var current *racCycleGroup
 
-	for _, candidate := range candidates {
+	items := newRACReadyItems(q, candidates)
+
+	for i, candidate := range candidates {
 		if current == nil || current.name != candidate.snapshot.group {
 			current = groupFor(candidate.snapshot.group)
 		}
@@ -3640,7 +3653,7 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 			continue
 		}
 
-		s.prepareAndCountReadyJob(ctx, q, groups, candidate.job, rc, reqGroupToReqs)
+		s.prepareAndCountReadyJob(ctx, groups, items, i, rc, reqGroupToReqs)
 	}
 
 	s.regroupSkippedReadyJobs(ctx, q, blocked.regroup)
@@ -3744,18 +3757,19 @@ func (s *Server) recordSkippedReadyJob(q *queue.Queue, groups map[string]*sgroup
 }
 
 // prepareAndCountReadyJob runs the expensive prepareReadyJob path for one
-// schedulable ready job (updating its requirements and, on change, its scheduler
-// and queue reserve group so runners can reserve it) and counts the resulting
-// post-update snapshot against its scheduler group, noting that group on the job
-// for accountForRunningJobs. prepareReadyJob increments racScanWork, so this is
-// the only per-job path that does.
-func (s *Server) prepareAndCountReadyJob(ctx context.Context, q *queue.Queue,
-	groups map[string]*sgroup, job *Job, rc string,
-	reqGroupToReqs map[string]*scheduler.Requirements) {
-	snapshot, ready := s.prepareReadyJob(ctx, q, job, rc, reqGroupToReqs)
+// schedulable ready job, items' ith candidate (updating its requirements and,
+// on change, its scheduler and queue reserve group so runners can reserve it)
+// and counts the resulting post-update snapshot against its scheduler group,
+// noting that group on the job for accountForRunningJobs. prepareReadyJob
+// increments racScanWork, so this is the only per-job path that does.
+func (s *Server) prepareAndCountReadyJob(ctx context.Context, groups map[string]*sgroup,
+	items *racReadyItems, i int, rc string, reqGroupToReqs map[string]*scheduler.Requirements) {
+	snapshot, ready := s.prepareReadyJob(ctx, items, i, rc, reqGroupToReqs)
 	if !ready {
 		return
 	}
+
+	job := items.candidates[i].job
 
 	group := s.ensureGroup(groups, snapshot)
 	group.count++
@@ -6848,8 +6862,10 @@ func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 		// still (re)compute every ready job's requirements so scheduling and
 		// learning see up-to-date values. prepareReadyJob leaves the scheduler and
 		// reserve group untouched when rc is empty.
-		for _, candidate := range candidates {
-			s.prepareReadyJob(ctx, q, candidate.job, rc, reqGroupToReqs)
+		items := newRACReadyItems(q, candidates)
+
+		for i := range candidates {
+			s.prepareReadyJob(ctx, items, i, rc, reqGroupToReqs)
 		}
 
 		return groups

@@ -27,6 +27,7 @@ package jobqueue
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -215,6 +216,60 @@ func (j *Job) markLearnedCurrent(learned learnedReqs, stamp uint32) {
 	if j.preparedLearned == learned {
 		j.preparedStamp.Store(stamp)
 	}
+}
+
+// racReadyItems gives a ready-added callback the queue items of its ready job
+// candidates, looked up racItemChunk at a time in one hold of the queue's read
+// lock each (queue.GetMany). Looked up one Get per job, a cycle over a large
+// ready backlog took the lock once per job, and every reserve made meanwhile
+// queued behind those takes: with 21,000 ready jobs a cycle doubled to
+// quadrupled the median reserve wait for as long as it ran (bugfix 261119 item
+// L). Each chunk reuses the slices of the one before.
+type racReadyItems struct {
+	q          *queue.Queue
+	candidates []readyJobCandidate
+	keys       []string
+	items      []*queue.Item
+	from       int
+}
+
+// newRACReadyItems returns a racReadyItems for candidates, which looks nothing
+// up until an item is asked for.
+func newRACReadyItems(q *queue.Queue, candidates []readyJobCandidate) *racReadyItems {
+	return &racReadyItems{q: q, candidates: candidates}
+}
+
+// item returns the queue item of the ith candidate, or nil if it has none.
+// Asked for an item outside the chunk last looked up, it looks up the chunk of
+// candidates starting with this one.
+func (r *racReadyItems) item(i int) *queue.Item {
+	if i < r.from || i >= r.from+len(r.items) {
+		r.lookUp(i)
+	}
+
+	return r.items[i-r.from]
+}
+
+// lookUp looks up the items of up to racItemChunk candidates, starting with
+// the ith, by their jobs' current keys: a job modified since the cycle's
+// snapshot has a new key, and its item moved to it. A closed queue gives no
+// items, so every candidate in the chunk gets nil, and the chunk is not looked
+// up again for each of them.
+func (r *racReadyItems) lookUp(i int) {
+	r.keys = r.keys[:0]
+
+	for _, candidate := range r.candidates[i:min(i+racItemChunk, len(r.candidates))] {
+		r.keys = append(r.keys, candidate.job.Key())
+	}
+
+	items, err := r.q.GetMany(r.keys, r.items[:0])
+	if err != nil {
+		items = slices.Grow(items[:0], len(r.keys))[:len(r.keys)]
+		clear(items)
+	}
+
+	r.items = items
+	r.from = i
 }
 
 // regroupJob gives job the scheduler group its current requirements call for

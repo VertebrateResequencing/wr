@@ -302,6 +302,20 @@ func TestQueue(t *testing.T) {
 			shouldBeQueueError(err, ErrNotFound)
 		})
 
+		Convey("You can get many items back out at once, nil for a non-existent one", func() {
+			prior := []*Item{items["key_9"]}
+
+			got, err := queue.GetMany([]string{"key_3", "key_fake", "key_0"}, prior)
+			So(err, ShouldBeNil)
+			So(got, ShouldResemble, []*Item{items["key_9"], items["key_3"], nil, items["key_0"]})
+
+			So(queue.Destroy(), ShouldBeNil)
+
+			got, err = queue.GetMany([]string{"key_3"}, prior)
+			So(got, ShouldResemble, prior)
+			shouldBeQueueError(err, ErrQueueClosed)
+		})
+
 		Convey("You can get all items back out", func() {
 			items := queue.AllItems()
 			So(len(items), ShouldEqual, 10)
@@ -2911,6 +2925,82 @@ func TestQueueReservesCountsReservations(t *testing.T) {
 				So(reserved.Key, ShouldEqual, key1)
 				So(reserved.Stats().Reserves, ShouldEqual, want)
 			}
+		})
+	})
+}
+
+// TestQueueGetManyAlongsideAdds covers GetMany called while other items are
+// added and removed: it reads the queue's items under the queue's lock, so it
+// never sees the map mid-change, and each key gets its own item or nil.
+func TestQueueGetManyAlongsideAdds(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a queue that items are being added to and removed from", t, func() {
+		queue := New(ctx, "get many alongside adds")
+		defer qdestroy(queue)
+
+		const changes = 500
+
+		done := make(chan error, 1)
+
+		go func() {
+			for i := range changes {
+				key := fmt.Sprintf("churn_%d", i)
+
+				if _, err := queue.Add(ctx, key, "", testData, 0, 0, time.Minute, SubQueueReady); err != nil {
+					done <- err
+
+					return
+				}
+
+				if err := queue.Remove(ctx, key); err != nil {
+					done <- err
+
+					return
+				}
+			}
+
+			done <- nil
+		}()
+
+		Convey("GetMany gives each key its own item, or nil", func() {
+			keys := make([]string, changes)
+			for i := range keys {
+				keys[i] = fmt.Sprintf("churn_%d", i)
+			}
+
+			var (
+				items   []*Item
+				addErr  error
+				getErr  error
+				wrong   int
+				running = true
+			)
+
+			for running {
+				select {
+				case addErr = <-done:
+					running = false
+				default:
+				}
+
+				var err error
+
+				items, err = queue.GetMany(keys, items[:0])
+				if err != nil && getErr == nil {
+					getErr = err
+				}
+
+				for i, item := range items {
+					if item != nil && item.Key != keys[i] {
+						wrong++
+					}
+				}
+			}
+
+			So(addErr, ShouldBeNil)
+			So(getErr, ShouldBeNil)
+			So(wrong, ShouldEqual, 0)
 		})
 	})
 }

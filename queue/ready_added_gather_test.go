@@ -27,6 +27,7 @@ package queue
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -134,6 +135,51 @@ func TestReadyAddedGatherLetsReservesThrough(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				So("the ready-added callback was not called", ShouldBeEmpty)
 			}
+		})
+	})
+}
+
+// TestReadyAddedGatherAllocatesOneSlice covers the memory a ready-added
+// gather allocates: the one slice of item data it hands the callback, 16 bytes
+// per ready item. A gather that also copied the item pointers into a slice of
+// their own allocated half as much again, about 160KiB more per gather of
+// 20,000 ready items, which the manager repeats on every scheduling pass.
+func TestReadyAddedGatherAllocatesOneSlice(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a queue with many ready items", t, func() {
+		q := New(ctx, "ready_added_gather_alloc")
+
+		Reset(func() { So(q.Destroy(), ShouldBeNil) })
+
+		const n = 20000
+
+		defs := make([]*ItemDef, n)
+		for i := range defs {
+			defs[i] = &ItemDef{Key: fmt.Sprintf("k%d", i), ReserveGroup: fmt.Sprintf("g%d", i%4),
+				Data: i, TTR: time.Hour}
+		}
+
+		added, _, err := q.AddMany(ctx, defs)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, n)
+
+		Convey("gathering their data allocates little more than the slice it returns", func() {
+			var before, after runtime.MemStats
+
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+
+			data := q.readyItemData()
+
+			runtime.ReadMemStats(&after)
+			q.readyQueue.stopRecordingLeavers()
+
+			So(data, ShouldHaveLength, n)
+			So(data, ShouldContain, n-1)
+
+			sliceBytes := uint64(n * 16)
+			So(after.TotalAlloc-before.TotalAlloc, ShouldBeLessThan, sliceBytes+sliceBytes/10)
 		})
 	})
 }

@@ -839,6 +839,27 @@ func regroupItemLocked(item *Item, regroup func(data any, reserveGroup string) s
 	return oldGroup, true
 }
 
+// GetMany appends to items the items with the given keys, in the same order,
+// with nil for a key that has no item, looking them all up in one hold of the
+// queue's read lock, and returns the extended slice. A caller that needs many
+// items should use it rather than Get for each: while reserves are waiting for
+// the lock, each Get keeps them waiting for its turn, so thousands of Gets in a
+// row keep every reserve waiting longer.
+func (queue *Queue) GetMany(keys []string, items []*Item) ([]*Item, error) {
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
+
+	if queue.closed {
+		return items, Error{queue.Name, "GetMany", "", ErrQueueClosed}
+	}
+
+	for _, key := range keys {
+		items = append(items, queue.items[key])
+	}
+
+	return items, nil
+}
+
 // Error records an error and the operation, item and queue that caused it.
 type Error struct {
 	Queue string // the queue's Name
@@ -1042,20 +1063,23 @@ func (queue *Queue) runReadyAddedCb(ctx context.Context, source string) {
 // after the copy is read as changed, as a gather a moment later would read it,
 // and an item that leaves ready after the copy is recorded as a leaver.
 func (queue *Queue) readyItemData() []any {
-	items := make([]*Item, 0, queue.readyQueue.len())
+	data := make([]any, 0, queue.readyQueue.len())
 
 	queue.mutex.RLock()
 
 	for _, il := range queue.readyQueue.groupedItems {
-		items = append(items, il...)
+		for _, item := range il {
+			data = append(data, item)
+		}
 	}
 
 	queue.readyQueue.recordLeavers()
 	queue.mutex.RUnlock()
 
-	data := make([]any, len(items))
-	for i, item := range items {
-		data[i] = item.Data()
+	// data holds the items until each is replaced by its data, so the gather
+	// allocates one slice, not a second of item pointers.
+	for i, d := range data {
+		data[i] = d.(*Item).Data() //nolint:forcetypeassert,errcheck // filled with *Item above
 	}
 
 	return data
