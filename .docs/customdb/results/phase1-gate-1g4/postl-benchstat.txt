@@ -1,0 +1,724 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+                                           │     base     │                 head                 │
+                                           │    sec/op    │    sec/op     vs base                │
+JobCleanup-8                                  334.8µ ± 7%   333.0µ ±  4%        ~ (p=0.671 n=12)
+JobCleanupDepth1-8                            3.302m ± 3%   3.306m ±  2%        ~ (p=0.755 n=12)
+JobCleanupDepth8-8                            3.581m ± 1%   3.551m ±  2%        ~ (p=0.977 n=12)
+AddJobs-8                                     132.7m ± 2%   132.9m ±  2%        ~ (p=0.347 n=12)
+UpdateJobState-8                              56.14m ± 1%   57.02m ±  3%   +1.58% (p=0.012 n=12)
+ArchiveJobs-8                                 263.4m ± 3%   267.5m ±  4%        ~ (p=0.319 n=12)
+ArchiveSpacedArrivals-8                        2.474 ± 0%    2.474 ±  0%        ~ (p=0.755 n=12)
+ModifyLiveJobsReverseLookup-8                 11.66m ± 1%   11.62m ±  1%        ~ (p=0.160 n=12)
+AddDepGroupMember-8                           372.1m ± 3%   299.3m ±  4%  -19.57% (p=0.000 n=12)
+JobKey-8                                      29.15n ± 2%   29.08n ±  4%        ~ (p=0.401 n=12)
+KickUnderReserveLoad-8                       114.54m ± 4%   61.38m ±  2%  -46.41% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                     105.05m ± 7%   44.76m ±  6%  -57.39% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                     95.09m ± 3%   40.61m ± 10%  -57.29% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                566.8m ± 3%   278.9m ±  6%  -50.80% (p=0.000 n=12)
+AddManyUnderReserveLoad/rc-8                  586.2m ± 2%   294.8m ±  8%  -49.72% (p=0.000 n=12)
+BuildSchedulerGroupsBacklog/priorities=1-8    110.1m ± 7%   101.5m ± 15%        ~ (p=0.198 n=12)
+BuildSchedulerGroupsBacklog/priorities=4-8    164.7m ± 8%   159.7m ± 10%        ~ (p=0.977 n=12)
+RACCycleCounted/leavers=0-8                   95.18m ± 4%   94.35m ±  7%        ~ (p=0.514 n=12)
+RACCycleCounted/leavers=100-8                 101.8m ± 1%   100.3m ±  5%        ~ (p=0.514 n=12)
+ReadyBacklogSnapshot-8                        1.449m ± 9%   1.517m ±  9%        ~ (p=0.551 n=12)
+RepGroupStatusDetails/1000-8                  3.187m ± 3%   3.262m ±  7%        ~ (p=0.128 n=12)
+RepGroupStatusDetails/10000-8                 40.15m ± 5%   40.29m ±  5%        ~ (p=0.713 n=12)
+geomean                                       26.97m        22.49m        -16.60%
+
+                                           │       base       │                  head                   │
+                                           │       B/op       │     B/op       vs base                  │
+JobCleanup-8                                   9.049Ki ± 0%     9.046Ki ±  0%        ~ (p=0.339 n=12)
+JobCleanupDepth1-8                             21.91Ki ± 0%     21.89Ki ±  0%        ~ (p=0.932 n=12)
+JobCleanupDepth8-8                             29.26Ki ± 1%     29.27Ki ±  0%        ~ (p=0.965 n=12)
+AddJobs-8                                      29.04Mi ± 2%     29.11Mi ±  2%        ~ (p=0.590 n=12)
+UpdateJobState-8                               14.01Mi ± 2%     13.73Mi ±  2%        ~ (p=0.089 n=12)
+ArchiveJobs-8                                  34.62Mi ± 1%     34.65Mi ±  1%        ~ (p=0.887 n=12)
+ArchiveSpacedArrivals-8                        2.318Mi ± 1%     2.319Mi ±  0%        ~ (p=0.799 n=12)
+ModifyLiveJobsReverseLookup-8                  97.29Ki ± 0%     97.38Ki ±  0%        ~ (p=0.755 n=12)
+AddDepGroupMember-8                            102.2Mi ± 0%     111.0Mi ±  0%   +8.58% (p=0.000 n=12)
+JobKey-8                                         0.000 ± 0%       0.000 ±  0%        ~ (p=1.000 n=12) ¹
+KickUnderReserveLoad-8                       191.033Mi ± 3%     6.800Mi ±  3%  -96.44% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                     186.394Mi ± 2%     4.675Mi ± 12%  -97.49% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                    178.532Mi ± 1%     4.050Mi ±  3%  -97.73% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                 159.2Mi ± 0%     151.5Mi ±  0%   -4.89% (p=0.000 n=12)
+AddManyUnderReserveLoad/rc-8                   161.7Mi ± 0%     153.5Mi ±  0%   -5.09% (p=0.000 n=12)
+BuildSchedulerGroupsBacklog/priorities=1-8     13.74Mi ± 0%     13.74Mi ±  0%        ~ (p=1.000 n=12)
+BuildSchedulerGroupsBacklog/priorities=4-8     13.74Mi ± 0%     13.74Mi ±  0%        ~ (p=1.000 n=12) ¹
+RACCycleCounted/leavers=0-8                    8.434Mi ± 0%     8.434Mi ±  0%        ~ (p=0.192 n=12)
+RACCycleCounted/leavers=100-8                  8.453Mi ± 0%     8.453Mi ±  0%        ~ (p=0.385 n=12)
+ReadyBacklogSnapshot-8                           0.000 ± 0%       0.000 ±  0%        ~ (p=1.000 n=12) ¹
+RepGroupStatusDetails/1000-8                   289.7Ki ± 0%     291.3Ki ±  0%   +0.55% (p=0.002 n=12)
+RepGroupStatusDetails/10000-8                  3.060Mi ± 0%     3.061Mi ±  0%   +0.03% (p=0.000 n=12)
+geomean                                                     ²                  -38.90%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                                           │      base      │                 head                  │
+                                           │   allocs/op    │  allocs/op   vs base                  │
+JobCleanup-8                                   175.0 ± 0%      175.0 ± 0%        ~ (p=1.000 n=12) ¹
+JobCleanupDepth1-8                             792.0 ± 0%      792.0 ± 0%        ~ (p=1.000 n=12) ¹
+JobCleanupDepth8-8                             960.0 ± 0%      960.0 ± 0%        ~ (p=1.000 n=12) ¹
+AddJobs-8                                     159.8k ± 1%     159.9k ± 1%        ~ (p=0.542 n=12)
+UpdateJobState-8                              120.5k ± 0%     120.5k ± 0%        ~ (p=0.541 n=12)
+ArchiveJobs-8                                 327.4k ± 0%     327.3k ± 1%        ~ (p=0.944 n=12)
+ArchiveSpacedArrivals-8                       19.75k ± 0%     19.77k ± 0%        ~ (p=0.900 n=12)
+ModifyLiveJobsReverseLookup-8                  607.5 ± 0%      608.5 ± 0%   +0.16% (p=0.034 n=12)
+AddDepGroupMember-8                          1175.7k ± 0%     602.5k ± 0%  -48.75% (p=0.000 n=12)
+JobKey-8                                       0.000 ± 0%      0.000 ± 0%        ~ (p=1.000 n=12) ¹
+KickUnderReserveLoad-8                        99.73k ± 2%     91.03k ± 1%   -8.73% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                      59.59k ± 7%     54.69k ± 3%   -8.23% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                     56.35k ± 4%     51.60k ± 1%   -8.43% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                802.8k ± 1%     367.0k ± 3%  -54.29% (p=0.000 n=12)
+AddManyUnderReserveLoad/rc-8                  908.6k ± 1%     459.5k ± 3%  -49.42% (p=0.000 n=12)
+BuildSchedulerGroupsBacklog/priorities=1-8     106.0 ± 0%      106.0 ± 0%        ~ (p=1.000 n=12) ¹
+BuildSchedulerGroupsBacklog/priorities=4-8     106.0 ± 0%      106.0 ± 0%        ~ (p=1.000 n=12) ¹
+RACCycleCounted/leavers=0-8                    58.00 ± 0%      58.00 ± 2%        ~ (p=0.317 n=12)
+RACCycleCounted/leavers=100-8                  77.00 ± 0%      77.00 ± 0%        ~ (p=1.000 n=12)
+ReadyBacklogSnapshot-8                         0.000 ± 0%      0.000 ± 0%        ~ (p=1.000 n=12) ¹
+RepGroupStatusDetails/1000-8                  16.83k ± 1%     17.04k ± 0%   +1.21% (p=0.002 n=12)
+RepGroupStatusDetails/10000-8                 200.8k ± 0%     201.0k ± 0%   +0.07% (p=0.000 n=12)
+geomean                                                   ²                -10.26%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                        │      base      │                 head                  │
+                        │ bolt_pages/job │ bolt_pages/job  vs base               │
+AddJobs-8                     1.474 ± 3%       1.474 ± 3%       ~ (p=1.000 n=12)
+UpdateJobState-8             820.0m ± 1%      823.6m ± 1%       ~ (p=0.165 n=12)
+ArchiveJobs-8                 3.135 ± 1%       3.140 ± 1%       ~ (p=1.000 n=12)
+ArchiveSpacedArrivals-8       3.127 ± 0%       3.118 ± 0%  -0.32% (p=0.040 n=12)
+geomean                       1.855            1.857       +0.07%
+
+                        │      base       │                  head                  │
+                        │ bolt_writes/job │ bolt_writes/job  vs base               │
+AddJobs-8                      1.476 ± 3%        1.476 ± 3%       ~ (p=1.000 n=12)
+UpdateJobState-8              821.5m ± 1%       825.0m ± 1%       ~ (p=0.165 n=12)
+ArchiveJobs-8                  3.167 ± 1%        3.171 ± 1%       ~ (p=0.989 n=12)
+ArchiveSpacedArrivals-8        3.328 ± 0%        3.317 ± 0%  -0.30% (p=0.040 n=12)
+geomean                        1.891             1.892       +0.07%
+
+                        │     base      │                  head                  │
+                        │ bolt_txns/job │ bolt_txns/job  vs base                 │
+ArchiveJobs-8               31.42m ± 0%     31.42m ± 0%       ~ (p=0.400 n=12)
+ArchiveSpacedArrivals-8     200.0m ± 0%     200.0m ± 0%       ~ (p=1.000 n=12) ¹
+geomean                     79.27m          79.27m       +0.00%
+¹ all samples are equal
+
+                        │         base         │                  head                  │
+                        │ archives/biggest_txn │ archives/biggest_txn  vs base          │
+ArchiveSpacedArrivals-8             6.000 ± 0%             6.000 ± 0%  ~ (p=1.000 n=12)
+
+                               │     base     │                 head                 │
+                               │ max-qlock-us │ max-qlock-us  vs base                │
+KickUnderReserveLoad-8           1162.0 ± 29%    369.1 ± 29%  -68.23% (p=0.000 n=12)
+ResumeUnderReserveLoad-8          881.4 ± 31%    365.2 ± 60%  -58.56% (p=0.000 n=12)
+SuspendUnderReserveLoad-8         978.2 ± 26%    204.7 ± 38%  -79.07% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8   16.36k ± 14%   15.13k ±  9%        ~ (p=0.291 n=12)
+AddManyUnderReserveLoad/rc-8     17.83k ± 12%   16.05k ± 15%        ~ (p=0.052 n=12)
+geomean                          3.113k         1.463k        -53.00%
+
+                               │      base      │                  head                  │
+                               │ reserve-max-us │ reserve-max-us  vs base                │
+KickUnderReserveLoad-8             6.662k ± 14%     2.657k ± 30%  -60.11% (p=0.000 n=12)
+ResumeUnderReserveLoad-8           7.688k ± 15%     2.296k ± 56%  -70.14% (p=0.000 n=12)
+SuspendUnderReserveLoad-8          6.369k ± 13%     1.742k ± 38%  -72.64% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8     17.20k ± 15%     17.50k ±  8%        ~ (p=0.920 n=12)
+AddManyUnderReserveLoad/rc-8       19.64k ± 11%     17.65k ± 18%  -10.12% (p=0.024 n=12)
+geomean                            10.20k           5.050k        -50.47%
+
+                               │      base      │                  head                  │
+                               │ reserve-p50-us │ reserve-p50-us  vs base                │
+KickUnderReserveLoad-8             10.935 ± 11%      9.245 ± 15%  -15.46% (p=0.001 n=12)
+ResumeUnderReserveLoad-8           14.320 ± 17%      9.562 ± 23%  -33.23% (p=0.000 n=12)
+SuspendUnderReserveLoad-8          10.895 ± 11%      8.580 ± 18%  -21.25% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8      6.668 ± 10%      6.434 ±  7%        ~ (p=0.410 n=12)
+AddManyUnderReserveLoad/rc-8        6.562 ± 11%      6.700 ± 13%        ~ (p=0.660 n=12)
+geomean                             9.432            7.997        -15.22%
+
+                               │      base      │                  head                  │
+                               │ reserve-p99-us │ reserve-p99-us  vs base                │
+KickUnderReserveLoad-8              675.2 ± 15%      193.2 ± 18%  -71.39% (p=0.000 n=12)
+ResumeUnderReserveLoad-8            712.0 ± 11%      229.4 ± 38%  -67.78% (p=0.000 n=12)
+SuspendUnderReserveLoad-8           640.8 ± 21%      138.8 ±  4%  -78.35% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8      129.5 ±  5%      143.3 ±  8%  +10.66% (p=0.020 n=12)
+AddManyUnderReserveLoad/rc-8        131.3 ±  7%      129.7 ±  9%        ~ (p=0.787 n=12)
+geomean                             349.8            162.8        -53.47%
+
+                               │            base             │                        head                         │
+                               │ reserves-over-1.25ms-tol/op │ reserves-over-1.25ms-tol/op  vs base                │
+KickUnderReserveLoad-8                         9650.0m ± 30%                 821.1m ± 130%  -91.49% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                       7283.5m ± 20%                 981.5m ±    ?  -86.52% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                      6235.5m ± 32%                 181.0m ±    ?  -97.10% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                  12.000 ± 71%                  9.000 ±  11%  -25.00% (p=0.008 n=12)
+AddManyUnderReserveLoad/rc-8                    12.000 ± 17%                  8.750 ±  14%  -27.08% (p=0.001 n=12)
+geomean                                          9.121                        1.629         -82.13%
+
+                               │          base           │                      head                       │
+                               │ reserves-over-1.25ms/op │ reserves-over-1.25ms/op  vs base                │
+KickUnderReserveLoad-8                      12.180 ± 31%               1.123 ± 78%  -90.78% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                    10.600 ± 18%               1.074 ±   ?  -89.87% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                  7800.0m ± 36%              294.1m ±   ?  -96.23% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8              13.500 ± 59%               9.625 ± 17%  -28.70% (p=0.015 n=12)
+AddManyUnderReserveLoad/rc-8                12.750 ± 25%               9.625 ±  9%  -24.51% (p=0.000 n=12)
+geomean                                      11.16                     2.010        -81.99%
+
+                               │            base            │                        head                        │
+                               │ reserves-over-1.5ms-tol/op │ reserves-over-1.5ms-tol/op  vs base                │
+KickUnderReserveLoad-8                        7500.0m ± 20%                 740.9m ± 72%  -90.12% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                      5443.0m ± 19%                 944.5m ±   ?  -82.65% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                    4850.00m ± 34%                 54.23m ±   ?  -98.88% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                 11.250 ± 82%                  8.625 ± 16%  -23.33% (p=0.043 n=12)
+AddManyUnderReserveLoad/rc-8                   11.750 ± 19%                  8.584 ± 17%  -26.95% (p=0.006 n=12)
+geomean                                         7.648                        1.229        -83.92%
+
+                               │          base          │                      head                      │
+                               │ reserves-over-1.5ms/op │ reserves-over-1.5ms/op  vs base                │
+KickUnderReserveLoad-8                    8450.0m ± 24%            761.9m ± 111%  -90.98% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                  5775.0m ± 30%            981.5m ±    ?  -83.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                 5614.5m ± 32%            121.7m ±    ?  -97.83% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8             11.500 ± 78%             8.875 ±  13%  -22.83% (p=0.011 n=12)
+AddManyUnderReserveLoad/rc-8               12.000 ± 17%             8.709 ±  15%  -27.43% (p=0.002 n=12)
+geomean                                     8.232                   1.477         -82.06%
+
+                               │           base            │                        head                        │
+                               │ reserves-over-10ms-tol/op │ reserves-over-10ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                        0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                      0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                     0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8                8.000 ± 0%                    8.000 ± 0%       ~ (p=0.478 n=12)
+AddManyUnderReserveLoad/rc-8                  8.000 ± 0%                    8.000 ± 0%       ~ (p=0.478 n=12)
+geomean                                                  ²                              +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base          │                      head                      │
+                               │ reserves-over-10ms/op │ reserves-over-10ms/op  vs base                 │
+KickUnderReserveLoad-8                    0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                  0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12)
+SuspendUnderReserveLoad-8                 0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8            8.000 ± 0%                8.000 ± 0%       ~ (p=0.478 n=12)
+AddManyUnderReserveLoad/rc-8              8.000 ± 6%                8.000 ± 0%       ~ (p=0.187 n=12)
+geomean                                              ²                          +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │           base            │                        head                        │
+                               │ reserves-over-12ms-tol/op │ reserves-over-12ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                        0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                      0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                     0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8                8.000 ± 0%                    8.000 ± 0%       ~ (p=0.547 n=12)
+AddManyUnderReserveLoad/rc-8                  8.000 ± 0%                    8.000 ± 0%       ~ (p=0.478 n=12)
+geomean                                                  ²                              +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base          │                      head                      │
+                               │ reserves-over-12ms/op │ reserves-over-12ms/op  vs base                 │
+KickUnderReserveLoad-8                    0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                  0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                 0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8            8.000 ± 0%                8.000 ± 0%       ~ (p=1.000 n=12)
+AddManyUnderReserveLoad/rc-8              8.000 ± 0%                8.000 ± 0%       ~ (p=0.478 n=12)
+geomean                                              ²                          +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │           base            │                         head                          │
+                               │ reserves-over-16ms-tol/op │ reserves-over-16ms-tol/op  vs base                    │
+KickUnderReserveLoad-8                      0.000 ±   0%                    0.000 ± 0%        ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                    0.000 ±   0%                    0.000 ± 0%        ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                   0.000 ±   0%                    0.000 ± 0%        ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8              2.000 ±    ?                    0.000 ±  ?        ~ (p=0.189 n=12)
+AddManyUnderReserveLoad/rc-8                4.000 ± 100%                    1.000 ±  ?  -75.00% (p=0.004 n=12)
+geomean                                                  ²                              ?                      ² ³
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+³ ratios must be >0 to compute geomean
+
+                               │         base          │                      head                       │
+                               │ reserves-over-16ms/op │ reserves-over-16ms/op  vs base                  │
+KickUnderReserveLoad-8                   0.000 ±  0%              0.000 ±   0%        ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                 0.000 ±  0%              0.000 ±   0%        ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                0.000 ±  0%              0.000 ±   0%        ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8           4.750 ±   ?              2.000 ± 200%        ~ (p=0.577 n=12)
+AddManyUnderReserveLoad/rc-8             8.000 ± 50%              4.667 ±  57%  -41.67% (p=0.023 n=12)
+geomean                                              ²                          -24.48%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │            base            │                          head                           │
+                               │ reserves-over-2.5ms-tol/op │ reserves-over-2.5ms-tol/op  vs base                     │
+KickUnderReserveLoad-8                          3.472 ± 25%                  0.000 ±   ?  -100.00% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                        2.658 ± 40%                  0.000 ±   ?  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                       1.978 ± 48%                  0.000 ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                  8.250 ± 70%                  8.250 ± 21%         ~ (p=0.550 n=12)
+AddManyUnderReserveLoad/rc-8                   10.250 ± 17%                  8.000 ±  9%   -21.95% (p=0.005 n=12)
+geomean                                         4.342                                     ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │          base          │                        head                         │
+                               │ reserves-over-2.5ms/op │ reserves-over-2.5ms/op  vs base                     │
+KickUnderReserveLoad-8                   4408.50m ± 27%             80.43m ±   ?   -98.18% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                    3.658 ± 43%              0.000 ±   ?  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                   2.425 ± 40%              0.000 ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8              8.250 ± 94%              8.250 ± 21%         ~ (p=0.550 n=12)
+AddManyUnderReserveLoad/rc-8               11.250 ± 16%              8.000 ±  9%   -28.89% (p=0.001 n=12)
+geomean                                     5.152                                 ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │           base            │                        head                        │
+                               │ reserves-over-20ms-tol/op │ reserves-over-20ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                        0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                      0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                     0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8                0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12)
+AddManyUnderReserveLoad/rc-8                  0.000 ± 0%                    0.000 ± 0%       ~ (p=0.727 n=12)
+geomean                                                  ²                              +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base          │                      head                      │
+                               │ reserves-over-20ms/op │ reserves-over-20ms/op  vs base                 │
+KickUnderReserveLoad-8                    0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                  0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                 0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8            0.000 ± 0%                0.000 ± 0%       ~ (p=0.478 n=12)
+AddManyUnderReserveLoad/rc-8              0.000 ±  ?                0.000 ±  ?       ~ (p=0.389 n=12)
+geomean                                              ²                          +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │           base            │                        head                        │
+                               │ reserves-over-24ms-tol/op │ reserves-over-24ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                        0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                      0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                     0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8                0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8                  0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12)
+geomean                                                  ²                              +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base          │                      head                      │
+                               │ reserves-over-24ms/op │ reserves-over-24ms/op  vs base                 │
+KickUnderReserveLoad-8                    0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                  0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                 0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8            0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12)
+AddManyUnderReserveLoad/rc-8              0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12)
+geomean                                              ²                          +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │           base           │                         head                          │
+                               │ reserves-over-2ms-tol/op │ reserves-over-2ms-tol/op  vs base                     │
+KickUnderReserveLoad-8                     5403.0m ±  33%               444.4m ± 89%   -91.77% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                   4342.5m ±  27%               216.7m ±   ?   -95.01% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                    3.378 ±  34%                0.000 ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8               8.250 ± 100%                8.375 ± 19%         ~ (p=0.638 n=12)
+AddManyUnderReserveLoad/rc-8                11.750 ±  19%                8.291 ± 21%   -29.43% (p=0.001 n=12)
+geomean                                      5.986                                    ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │         base         │                       head                        │
+                               │ reserves-over-2ms/op │ reserves-over-2ms/op  vs base                     │
+KickUnderReserveLoad-8                 6266.5m ±  23%           541.0m ± 91%   -91.37% (p=0.000 n=12)
+ResumeUnderReserveLoad-8               4646.0m ±  21%           653.5m ±   ?   -85.94% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                3.857 ±  34%            0.000 ±   ?  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8           8.500 ± 112%            8.625 ± 16%         ~ (p=0.518 n=12)
+AddManyUnderReserveLoad/rc-8            11.750 ±  19%            8.416 ± 19%   -28.37% (p=0.001 n=12)
+geomean                                  6.456                                ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │           base            │                        head                        │
+                               │ reserves-over-32ms-tol/op │ reserves-over-32ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                        0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                      0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                     0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8                0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8                  0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                                  ²                              +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base          │                      head                      │
+                               │ reserves-over-32ms/op │ reserves-over-32ms/op  vs base                 │
+KickUnderReserveLoad-8                    0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                  0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                 0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8            0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8              0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                              ²                          +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │           base           │                         head                          │
+                               │ reserves-over-3ms-tol/op │ reserves-over-3ms-tol/op  vs base                     │
+KickUnderReserveLoad-8                        2.361 ± 24%                0.000 ±   ?  -100.00% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                      1.808 ± 44%                0.000 ±   ?  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                     1.571 ± 47%                0.000 ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                8.250 ± 64%                8.000 ± 16%         ~ (p=0.374 n=12)
+AddManyUnderReserveLoad/rc-8                 10.250 ± 22%                8.000 ±  9%   -21.95% (p=0.016 n=12)
+geomean                                       3.554                                   ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │         base         │                       head                        │
+                               │ reserves-over-3ms/op │ reserves-over-3ms/op  vs base                     │
+KickUnderReserveLoad-8                    3.205 ± 28%            0.000 ±   ?  -100.00% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                  1.950 ± 54%            0.000 ±   ?  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                 1.750 ± 49%            0.000 ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8            8.250 ± 64%            8.250 ± 12%         ~ (p=0.508 n=12)
+AddManyUnderReserveLoad/rc-8             10.250 ± 22%            8.000 ±  9%   -21.95% (p=0.016 n=12)
+geomean                                   3.919                               ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │           base            │                        head                        │
+                               │ reserves-over-40ms-tol/op │ reserves-over-40ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                        0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                      0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                     0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8                0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8                  0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                                  ²                              +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base          │                      head                      │
+                               │ reserves-over-40ms/op │ reserves-over-40ms/op  vs base                 │
+KickUnderReserveLoad-8                    0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                  0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                 0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8            0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8              0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                              ²                          +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │           base            │                        head                        │
+                               │ reserves-over-48ms-tol/op │ reserves-over-48ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                        0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                      0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                     0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8                0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8                  0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                                  ²                              +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base          │                      head                      │
+                               │ reserves-over-48ms/op │ reserves-over-48ms/op  vs base                 │
+KickUnderReserveLoad-8                    0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                  0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                 0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8            0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8              0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                              ²                          +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │           base           │                         head                          │
+                               │ reserves-over-4ms-tol/op │ reserves-over-4ms-tol/op  vs base                     │
+KickUnderReserveLoad-8                        1.050 ± 69%                0.000 ±  0%  -100.00% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                     866.6m ± 62%                 0.0m ±  0%  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                    833.4m ± 70%                 0.0m ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                8.000 ± 62%                8.000 ± 16%         ~ (p=0.617 n=12)
+AddManyUnderReserveLoad/rc-8                  9.000 ± 33%                8.000 ±  9%         ~ (p=0.056 n=12)
+geomean                                       2.226                                   ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │         base         │                       head                        │
+                               │ reserves-over-4ms/op │ reserves-over-4ms/op  vs base                     │
+KickUnderReserveLoad-8                    1.400 ± 51%            0.000 ±  0%  -100.00% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                  1.202 ± 33%            0.000 ±  0%  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                958.5m ± 74%             0.0m ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8            8.000 ± 62%            8.000 ± 16%         ~ (p=0.363 n=12)
+AddManyUnderReserveLoad/rc-8              9.000 ± 33%            8.000 ±  9%   -11.11% (p=0.023 n=12)
+geomean                                   2.588                               ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │           base           │                         head                          │
+                               │ reserves-over-5ms-tol/op │ reserves-over-5ms-tol/op  vs base                     │
+KickUnderReserveLoad-8                       633.3m ± 75%                 0.0m ±  0%  -100.00% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                     634.6m ± 73%                 0.0m ±  0%  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                    500.0m ± 86%                 0.0m ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8                8.000 ± 50%                8.000 ± 12%         ~ (p=0.389 n=12)
+AddManyUnderReserveLoad/rc-8                  8.250 ± 45%                8.000 ±  6%         ~ (p=0.197 n=12)
+geomean                                       1.677                                   ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │         base         │                       head                        │
+                               │ reserves-over-5ms/op │ reserves-over-5ms/op  vs base                     │
+KickUnderReserveLoad-8                    1.000 ± 50%            0.000 ±  0%  -100.00% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                 812.0m ± 69%             0.0m ±  0%  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                708.4m ± 65%             0.0m ±  0%  -100.00% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8            8.000 ± 50%            8.000 ± 16%         ~ (p=0.626 n=12)
+AddManyUnderReserveLoad/rc-8              8.750 ± 37%            8.000 ±  9%         ~ (p=0.119 n=12)
+geomean                                   2.094                               ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │           base            │                        head                        │
+                               │ reserves-over-64ms-tol/op │ reserves-over-64ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                        0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                      0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                     0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8                0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8                  0.000 ± 0%                    0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                                  ²                              +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base          │                      head                      │
+                               │ reserves-over-64ms/op │ reserves-over-64ms/op  vs base                 │
+KickUnderReserveLoad-8                    0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+ResumeUnderReserveLoad-8                  0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+SuspendUnderReserveLoad-8                 0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8            0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/rc-8              0.000 ± 0%                0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                              ²                          +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │           base           │                         head                          │
+                               │ reserves-over-6ms-tol/op │ reserves-over-6ms-tol/op  vs base                     │
+KickUnderReserveLoad-8                     55.55m ±   ?                   0.00m ± 0%  -100.00% (p=0.014 n=12)
+ResumeUnderReserveLoad-8                   225.0m ±   ?                    0.0m ± 0%  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                   0.000 ±   ?                   0.000 ± 0%         ~ (p=0.093 n=12)
+AddManyUnderReserveLoad/norc-8              8.000 ± 50%                   8.000 ± 3%         ~ (p=0.389 n=12)
+AddManyUnderReserveLoad/rc-8                8.000 ± 50%                   8.000 ± 3%         ~ (p=0.261 n=12)
+geomean                                                 ¹                             ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │         base         │                       head                        │
+                               │ reserves-over-6ms/op │ reserves-over-6ms/op  vs base                     │
+KickUnderReserveLoad-8                  333.3m ±    ?             0.0m ±  0%  -100.00% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                430.8m ± 109%             0.0m ±  0%  -100.00% (p=0.000 n=12)
+SuspendUnderReserveLoad-8               125.0m ±    ?             0.0m ±  0%  -100.00% (p=0.004 n=12)
+AddManyUnderReserveLoad/norc-8           8.000 ±  50%            8.000 ± 12%         ~ (p=0.389 n=12)
+AddManyUnderReserveLoad/rc-8             8.250 ±  45%            8.000 ±  3%         ~ (p=0.119 n=12)
+geomean                                  1.034                                ?                       ¹ ²
+¹ summaries must be >0 to compute geomean
+² ratios must be >0 to compute geomean
+
+                               │           base           │                       head                        │
+                               │ reserves-over-8ms-tol/op │ reserves-over-8ms-tol/op  vs base                 │
+KickUnderReserveLoad-8                       0.000 ± 0%                   0.000 ± 0%       ~ (p=0.478 n=12)
+ResumeUnderReserveLoad-8                     0.000 ± 0%                   0.000 ± 0%       ~ (p=0.478 n=12)
+SuspendUnderReserveLoad-8                    0.000 ± 0%                   0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8               8.000 ± 0%                   8.000 ± 0%       ~ (p=0.478 n=12)
+AddManyUnderReserveLoad/rc-8                 8.000 ± 6%                   8.000 ± 0%       ~ (p=0.252 n=12)
+geomean                                                 ²                             +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │         base         │                     head                      │
+                               │ reserves-over-8ms/op │ reserves-over-8ms/op  vs base                 │
+KickUnderReserveLoad-8                  0.000 ±  0%               0.000 ± 0%       ~ (p=0.478 n=12)
+ResumeUnderReserveLoad-8                0.000 ±   ?               0.000 ± 0%       ~ (p=0.217 n=12)
+SuspendUnderReserveLoad-8               0.000 ±  0%               0.000 ± 0%       ~ (p=1.000 n=12) ¹
+AddManyUnderReserveLoad/norc-8          8.000 ± 44%               8.000 ± 0%       ~ (p=0.217 n=12)
+AddManyUnderReserveLoad/rc-8            8.000 ±  6%               8.000 ± 0%       ~ (p=0.284 n=12)
+geomean                                             ²                         +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                               │     base     │                 head                 │
+                               │ reserves/op  │ reserves/op   vs base                │
+KickUnderReserveLoad-8            5.419k ± 4%   4.503k ±  5%  -16.90% (p=0.000 n=12)
+ResumeUnderReserveLoad-8          4.556k ± 9%   3.455k ±  7%  -24.15% (p=0.000 n=12)
+SuspendUnderReserveLoad-8         4.322k ± 9%   3.283k ±  9%  -24.04% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8   16.549k ± 9%   8.697k ± 21%  -47.45% (p=0.000 n=12)
+AddManyUnderReserveLoad/rc-8     18.076k ± 6%   9.330k ± 21%  -48.38% (p=0.000 n=12)
+geomean                           7.958k        5.290k        -33.52%
+
+                               │        base         │                     head                     │
+                               │ slow-reserve-p50-us │ slow-reserve-p50-us  vs base                 │
+KickUnderReserveLoad-8                 1.159k ±   3%          1.260k ± 45%    +8.67% (p=0.002 n=12)
+ResumeUnderReserveLoad-8               1.173k ±   2%          1.244k ± 17%         ~ (p=0.139 n=12)
+SuspendUnderReserveLoad-8              1.179k ±   3%          1.157k ± 20%         ~ (p=0.560 n=12)
+AddManyUnderReserveLoad/norc-8         4.952k ± 178%         14.167k ± 10%  +186.12% (p=0.028 n=12)
+AddManyUnderReserveLoad/rc-8           14.38k ±  78%          15.47k ±  6%         ~ (p=0.178 n=12)
+geomean                                2.579k                 3.310k         +28.38%
+
+                               │          base           │                      head                       │
+                               │ slow-reserve-wait-us/op │ slow-reserve-wait-us/op  vs base                │
+KickUnderReserveLoad-8                     51.804k ± 20%              3.604k ± 70%  -93.04% (p=0.000 n=12)
+ResumeUnderReserveLoad-8                   44.001k ± 15%              3.815k ± 88%  -91.33% (p=0.000 n=12)
+SuspendUnderReserveLoad-8                  33483.5 ± 38%               799.3 ± 98%  -97.61% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8              155.5k ± 21%              126.9k ±  9%  -18.37% (p=0.012 n=12)
+AddManyUnderReserveLoad/rc-8                162.9k ± 37%              140.3k ± 10%  -13.86% (p=0.006 n=12)
+geomean                                     71.99k                    11.44k        -84.11%
+
+                               │       base       │                   head                   │
+                               │ slow-reserves/op │ slow-reserves/op  vs base                │
+KickUnderReserveLoad-8               30.775 ± 11%        2.225 ± 48%  -92.77% (p=0.000 n=12)
+ResumeUnderReserveLoad-8             27.950 ± 13%        2.142 ± 85%  -92.34% (p=0.000 n=12)
+SuspendUnderReserveLoad-8          21760.0m ± 23%       516.7m ± 94%  -97.63% (p=0.000 n=12)
+AddManyUnderReserveLoad/norc-8        20.25 ± 38%        12.00 ± 15%  -40.74% (p=0.005 n=12)
+AddManyUnderReserveLoad/rc-8          14.50 ± 28%        11.62 ± 20%  -19.83% (p=0.003 n=12)
+geomean                               22.28              3.215        -85.57%
+
+                              │     base     │                head                 │
+                              │  decodes/op  │ decodes/op  vs base                 │
+RepGroupStatusDetails/1000-8    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=12) ¹
+RepGroupStatusDetails/10000-8   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                                    ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+pkg: github.com/VertebrateResequencing/wr/limiter
+                         │    base     │                head                │
+                         │   sec/op    │   sec/op     vs base               │
+LimiterIncDecUnlimited-8   2.022µ ± 4%   2.051µ ± 4%       ~ (p=0.370 n=12)
+LimiterIncDec-8            2.191µ ± 3%   2.212µ ± 4%       ~ (p=0.810 n=12)
+LimiterCapacity-8          1.903µ ± 5%   1.931µ ± 4%       ~ (p=0.989 n=12)
+geomean                    2.035µ        2.061µ       +1.31%
+
+                         │    base    │                head                 │
+                         │    B/op    │    B/op     vs base                 │
+LimiterIncDecUnlimited-8   640.0 ± 0%   640.0 ± 0%       ~ (p=1.000 n=12) ¹
+LimiterIncDec-8            552.0 ± 0%   552.0 ± 0%       ~ (p=1.000 n=12) ¹
+LimiterCapacity-8          640.0 ± 0%   640.0 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                    609.2        609.2       +0.00%
+¹ all samples are equal
+
+                         │    base    │                head                 │
+                         │ allocs/op  │ allocs/op   vs base                 │
+LimiterIncDecUnlimited-8   11.00 ± 0%   11.00 ± 0%       ~ (p=1.000 n=12) ¹
+LimiterIncDec-8            9.000 ± 0%   9.000 ± 0%       ~ (p=1.000 n=12) ¹
+LimiterCapacity-8          11.00 ± 0%   11.00 ± 0%       ~ (p=1.000 n=12) ¹
+geomean                    10.29        10.29       +0.00%
+¹ all samples are equal
+
+                    │     base     │              head               │
+                    │    jobs/s    │    jobs/s     vs base           │
+ScenarioReportStorm   3.215k ± ∞ ¹   3.195k ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                    │      base      │               head                │
+                    │ max-archive-ms │ max-archive-ms  vs base           │
+ScenarioReportStorm      168.0 ± ∞ ¹      110.0 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                    │    base     │              head              │
+                    │  wall-sec   │  wall-sec    vs base           │
+ScenarioReportStorm   6.220 ± ∞ ¹   6.260 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │     base      │               head               │
+                       │  peak-rss-B   │  peak-rss-B    vs base           │
+ScenarioDepGranularity   304.2Mi ± ∞ ¹   254.6Mi ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │     base     │              head               │
+                       │ recovery-sec │ recovery-sec  vs base           │
+ScenarioDepGranularity   192.0m ± ∞ ¹   192.0m ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+                       │     base     │              head               │
+                       │   add-sec    │   add-sec     vs base           │
+ScenarioDepGranularity   539.0m ± ∞ ¹   322.0m ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                 │    base     │              head              │
+                 │   adds/s    │   adds/s     vs base           │
+ScenarioAddStorm   351.7 ± ∞ ¹   353.0 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                 │    base     │              head              │
+                 │   p50-ms    │   p50-ms     vs base           │
+ScenarioAddStorm   2.000 ± ∞ ¹   3.000 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │     base     │                 head                 │
+                       │    p99-ms    │   p99-ms     vs base                 │
+ScenarioAddStorm         141.00 ± ∞ ¹   33.00 ± ∞ ¹        ~ (p=1.000 n=1) ²
+ScenarioArchiveRate       3.000 ± ∞ ¹   3.000 ± ∞ ¹        ~ (p=1.000 n=1) ³
+ScenarioArchiveCeiling   122.00 ± ∞ ¹   21.00 ± ∞ ¹        ~ (p=1.000 n=1) ²
+geomean                   37.23         12.76        -65.72%
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+³ all samples are equal
+
+                       │     base     │                 head                 │
+                       │    max-ms    │   max-ms     vs base                 │
+ScenarioAddStorm         203.00 ± ∞ ¹   95.00 ± ∞ ¹        ~ (p=1.000 n=1) ²
+ScenarioArchiveRate       65.00 ± ∞ ¹   94.00 ± ∞ ¹        ~ (p=1.000 n=1) ²
+ScenarioArchiveCeiling   217.00 ± ∞ ¹   34.00 ± ∞ ¹        ~ (p=1.000 n=1) ²
+geomean                   142.0         67.21        -52.67%
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                 │     base     │              head               │
+                 │   txns/add   │   txns/add    vs base           │
+ScenarioAddStorm   650.0m ± ∞ ¹   670.0m ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                       │    base     │                head                 │
+                       │ archives/s  │ archives/s   vs base                │
+ScenarioArchiveRate      173.8 ± ∞ ¹   173.8 ± ∞ ¹       ~ (p=1.000 n=1) ²
+ScenarioArchiveCeiling   494.5 ± ∞ ¹   496.0 ± ∞ ¹       ~ (p=1.000 n=1) ³
+geomean                  293.2         293.6        +0.15%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+³ need >= 4 samples to detect a difference at alpha level 0.05
+
+                    │    base     │              head              │
+                    │   mean-ms   │   mean-ms    vs base           │
+ScenarioArchiveRate   1.000 ± ∞ ¹   1.000 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+                       │       base        │                 head                 │
+                       │ throughput-factor │ throughput-factor  vs base           │
+ScenarioArchiveCeiling         56.65 ± ∞ ¹         56.65 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+pkg: github.com/VertebrateResequencing/wr/queue
+                                             │    base     │                head                │
+                                             │   sec/op    │   sec/op     vs base               │
+QueueLifecycle/groups=1-8                      2.762m ± 3%   2.772m ± 2%       ~ (p=0.887 n=12)
+QueueLifecycle/groups=100-8                    1.939m ± 4%   1.949m ± 3%       ~ (p=0.799 n=12)
+QueueLifecycle/groups=1,callback=running-8     2.833m ± 4%   2.887m ± 3%       ~ (p=0.443 n=12)
+QueueLifecycle/groups=100,callback=running-8   2.054m ± 3%   2.071m ± 4%       ~ (p=0.977 n=12)
+geomean                                        2.362m        2.384m       +0.91%
+
+                                             │     base     │                head                 │
+                                             │     B/op     │     B/op      vs base               │
+QueueLifecycle/groups=1-8                      413.7Ki ± 0%   413.7Ki ± 0%       ~ (p=0.854 n=12)
+QueueLifecycle/groups=100-8                    430.7Ki ± 0%   430.7Ki ± 0%       ~ (p=0.809 n=12)
+QueueLifecycle/groups=1,callback=running-8     449.8Ki ± 0%   449.8Ki ± 0%       ~ (p=0.219 n=12)
+QueueLifecycle/groups=100,callback=running-8   467.0Ki ± 0%   467.0Ki ± 0%       ~ (p=0.921 n=12)
+geomean                                        439.8Ki        439.8Ki       -0.00%
+
+                                             │    base     │                head                │
+                                             │  allocs/op  │  allocs/op   vs base               │
+QueueLifecycle/groups=1-8                      1.813k ± 0%   1.813k ± 0%       ~ (p=0.733 n=12)
+QueueLifecycle/groups=100-8                    2.309k ± 0%   2.309k ± 0%       ~ (p=1.000 n=12)
+QueueLifecycle/groups=1,callback=running-8     1.862k ± 0%   1.862k ± 0%       ~ (p=0.522 n=12)
+QueueLifecycle/groups=100,callback=running-8   2.358k ± 0%   2.358k ± 0%       ~ (p=0.478 n=12)
+geomean                                        2.071k        2.071k       -0.01%

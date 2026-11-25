@@ -1,0 +1,230 @@
+# Part 1 (run-1795612859): every fifth one-minute sample, and every sample from 16:30
+2026-11-25 13:20:59 load=2.13 2.84 3.53 tmpfree=56G
+  top:  166306 mercury  20.6 5384112 wrstat-ui
+  top:  300955 root      5.2 61868 metricbeat
+  top:  166331 mercury   4.0 55768 wrstat-ui
+2026-11-25 13:25:59 load=2.54 3.22 3.58 tmpfree=55G
+  top: 1499170 sb10     84.4 652388 base.jobqueue.L
+  top:  166306 mercury  20.6 5384112 wrstat-ui
+  top:  300955 root      5.2 59900 metricbeat
+2026-11-25 13:30:59 load=1.92 2.51 3.18 tmpfree=53G
+  top: 1499170 sb10     84.0 599832 base.jobqueue.L
+  top:  166306 mercury  20.5 5384112 wrstat-ui
+  top:  300955 root      5.2 62000 metricbeat
+2026-11-25 13:35:59 load=2.15 2.30 2.90 tmpfree=54G
+  top: 1548339 sb10      109 449712 head.jobqueue.L
+  top:  166306 mercury  20.4 5384112 wrstat-ui
+  top:  300955 root      5.2 62636 metricbeat
+2026-11-25 13:40:59 load=1.62 2.04 2.63 tmpfree=55G
+  top: 1586659 sb10     86.3 570312 base.jobqueue.L
+  top:  166306 mercury  20.4 5384112 wrstat-ui
+  top:  300955 root      5.2 62480 metricbeat
+2026-11-25 13:45:59 load=2.23 2.04 2.45 tmpfree=52G
+  top: 1586659 sb10     84.9 633508 base.jobqueue.L
+  top:  166306 mercury  20.3 5384112 wrstat-ui
+  top:  300955 root      5.2 60700 metricbeat
+2026-11-25 13:50:59 load=3.20 2.41 2.46 tmpfree=55G
+  top: 1626458 sb10      113 484092 head.jobqueue.L
+  top:  166306 mercury  20.3 5384112 wrstat-ui
+  top:  300955 root      5.2 60532 metricbeat
+2026-11-25 13:56:00 load=2.01 2.33 2.43 tmpfree=55G
+  top: 1659929 sb10     85.2 562668 base.jobqueue.L
+  top:  166306 mercury  20.2 5385308 wrstat-ui
+  top:  300955 root      5.2 61908 metricbeat
+2026-11-25 14:01:00 load=1.82 2.08 2.30 tmpfree=54G
+  top: 1659929 sb10     84.4 851008 base.jobqueue.L
+  top:  166306 mercury  20.2 5384796 wrstat-ui
+  top:  300955 root      5.2 61584 metricbeat
+2026-11-25 14:06:00 load=2.38 2.15 2.26 tmpfree=55G
+  top: 1720443 sb10      106 471088 head.jobqueue.L
+  top:  166306 mercury  20.1 5384796 wrstat-ui
+  top:  300955 root      5.2 62532 metricbeat
+2026-11-25 14:11:00 load=2.63 2.34 2.30 tmpfree=55G
+  top: 1752860 sb10     98.0 24880 base.jobqueue.L
+  top:  166306 mercury  20.1 5384796 wrstat-ui
+  top:  300955 root      5.2 61556 metricbeat
+2026-11-25 14:16:00 load=2.47 2.36 2.30 tmpfree=54G
+  top: 1752860 sb10     85.5 582880 base.jobqueue.L
+  top:  166306 mercury  20.0 5384796 wrstat-ui
+  top:  300955 root      5.2 61028 metricbeat
+2026-11-25 14:21:00 load=1.48 1.92 2.13 tmpfree=54G
+  top: 1791458 sb10      110 470372 head.jobqueue.L
+  top:  166306 mercury  20.0 5384796 wrstat-ui
+  top:  300955 root      5.2 61720 metricbeat
+2026-11-25 14:26:00 load=2.23 2.10 2.13 tmpfree=54G
+  top: 1826774 sb10     86.6 537216 base.jobqueue.L
+  top:  166306 mercury  19.9 5384796 wrstat-ui
+  top:  300955 root      5.2 60780 metricbeat
+2026-11-25 14:31:00 load=1.78 1.98 2.07 tmpfree=53G
+  top: 1826774 sb10     85.1 552660 base.jobqueue.L
+  top:  166306 mercury  19.8 5384796 wrstat-ui
+  top:  300955 root      5.2 62392 metricbeat
+2026-11-25 14:36:00 load=2.44 2.19 2.13 tmpfree=55G
+  top: 1869492 sb10      112 474824 head.jobqueue.L
+  top:  166306 mercury  19.8 5384796 wrstat-ui
+  top:  300955 root      5.2 64256 metricbeat
+2026-11-25 14:41:00 load=1.95 2.13 2.12 tmpfree=53G
+  top: 1901420 sb10     86.1 541144 base.jobqueue.L
+  top:  166306 mercury  19.7 5384796 wrstat-ui
+  top:  300955 root      5.2 62180 metricbeat
+2026-11-25 14:46:00 load=1.96 2.03 2.07 tmpfree=54G
+  top: 1901420 sb10     86.4 637292 base.jobqueue.L
+  top:  166306 mercury  19.7 5384796 wrstat-ui
+  top:  300955 root      5.2 61804 metricbeat
+2026-11-25 14:51:00 load=1.66 1.99 2.05 tmpfree=55G
+  top: 1952716 sb10      112 483564 head.jobqueue.L
+  top:  166306 mercury  19.6 5384796 wrstat-ui
+  top:  300955 root      5.2 61552 metricbeat
+2026-11-25 14:56:00 load=2.29 2.34 2.19 tmpfree=53G
+  top: 1983037 sb10     85.9 619332 base.jobqueue.L
+  top:  166306 mercury  19.6 9239988 wrstat-ui
+  top:  300955 root      5.2 62700 metricbeat
+2026-11-25 15:01:01 load=1.71 2.09 2.13 tmpfree=53G
+  top: 1983037 sb10     84.2 657368 base.jobqueue.L
+  top:  166306 mercury  19.5 5384432 wrstat-ui
+  top:  300955 root      5.2 62480 metricbeat
+2026-11-25 15:06:01 load=3.06 2.55 2.29 tmpfree=55G
+  top: 2037868 sb10      109 579680 head.jobqueue.L
+  top:  166306 mercury  19.5 5384432 wrstat-ui
+  top:  300955 root      5.2 61288 metricbeat
+2026-11-25 15:11:01 load=2.96 2.86 2.50 tmpfree=55G
+  top: 2037868 sb10      114 273956 head.jobqueue.L
+  top:  166306 mercury  19.4 5384432 wrstat-ui
+  top:  300955 root      5.2 60324 metricbeat
+2026-11-25 15:16:01 load=1.48 2.07 2.25 tmpfree=54G
+  top: 2074722 sb10     84.2 791748 base.jobqueue.L
+  top:  166306 mercury  19.4 5384432 wrstat-ui
+  top:  300955 root      5.2 59264 metricbeat
+2026-11-25 15:21:01 load=1.63 1.88 2.12 tmpfree=55G
+  top: 2123577 sb10     78.4 368724 head.jobqueue.L
+  top:  166306 mercury  19.3 5384432 wrstat-ui
+  top:  300955 root      5.2 63100 metricbeat
+2026-11-25 15:26:01 load=1.80 1.90 2.07 tmpfree=53G
+  top: 2123577 sb10      108 410260 head.jobqueue.L
+  top:  166306 mercury  19.3 5384432 wrstat-ui
+  top:  300955 root      5.2 61720 metricbeat
+2026-11-25 15:31:01 load=1.79 1.92 2.04 tmpfree=54G
+  top: 2159352 sb10     86.2 669924 base.jobqueue.L
+  top:  166306 mercury  19.2 5384432 wrstat-ui
+  top:  300955 root      5.2 61716 metricbeat
+2026-11-25 15:36:01 load=2.06 1.99 2.02 tmpfree=55G
+  top: 2201493 sb10      102 603988 head.jobqueue.L
+  top:  166306 mercury  19.2 5384432 wrstat-ui
+  top:  300955 root      5.2 60028 metricbeat
+2026-11-25 15:41:01 load=1.87 2.01 2.02 tmpfree=54G
+  top: 2201493 sb10      112 435652 head.jobqueue.L
+  top:  166306 mercury  19.1 5384432 wrstat-ui
+  top:  300955 root      5.2 62396 metricbeat
+2026-11-25 15:46:01 load=2.00 1.99 2.00 tmpfree=54G
+  top: 2242497 sb10     85.4 562916 base.jobqueue.L
+  top:  166306 mercury  19.1 5384432 wrstat-ui
+  top:  300955 root      5.2 62796 metricbeat
+2026-11-25 15:51:01 load=1.72 1.88 1.96 tmpfree=55G
+  top: 2242497 sb10     85.2 608400 base.jobqueue.L
+  top:  166306 mercury  19.0 5384432 wrstat-ui
+  top:  300955 root      5.2 59564 metricbeat
+2026-11-25 15:56:01 load=2.58 2.26 2.08 tmpfree=54G
+  top: 2298805 sb10      111 371964 head.jobqueue.L
+  top:  166306 mercury  19.0 9212416 wrstat-ui
+  top:  300955 root      5.2 61460 metricbeat
+2026-11-25 16:01:01 load=1.66 2.07 2.07 tmpfree=55G
+  top: 2336784 sb10     87.2 566064 base.jobqueue.L
+  top:  166306 mercury  18.9 5387240 wrstat-ui
+  top:  300955 root      5.2 61860 metricbeat
+2026-11-25 16:06:02 load=2.03 2.12 2.09 tmpfree=54G
+  top: 2336784 sb10     84.6 569316 base.jobqueue.L
+  top:  166306 mercury  18.9 5386792 wrstat-ui
+  top:  300955 root      5.2 62620 metricbeat
+2026-11-25 16:11:02 load=2.28 2.24 2.15 tmpfree=55G
+  top: 2379147 sb10      111 464440 head.jobqueue.L
+  top:  166306 mercury  18.8 5386792 wrstat-ui
+  top:  300955 root      5.2 59944 metricbeat
+2026-11-25 16:16:02 load=1.83 2.07 2.09 tmpfree=55G
+  top: 2419494 sb10     73.5 10032 head.limiter.L4
+  top:  166306 mercury  18.8 5386792 wrstat-ui
+  top:  300955 root      5.2 62864 metricbeat
+2026-11-25 16:21:02 load=2.05 2.14 2.13 tmpfree=55G
+  top: 2419809 sb10     85.7 387028 base.jobqueue.L
+  top:  166306 mercury  18.7 5386792 wrstat-ui
+  top:  300955 root      5.2 58896 metricbeat
+2026-11-25 16:26:02 load=2.09 1.97 2.04 tmpfree=55G
+  top: 2462101 sb10      108 642052 head.jobqueue.L
+  top:  166306 mercury  18.7 5386792 wrstat-ui
+  top:  300955 root      5.2 62200 metricbeat
+2026-11-25 16:30:02 load=2.28 2.13 2.09 tmpfree=54G
+2026-11-25 16:31:02 load=1.83 2.04 2.06 tmpfree=55G
+  top: 2462101 sb10      111 733068 head.jobqueue.L
+  top:  166306 mercury  18.6 5386792 wrstat-ui
+  top:  300955 root      5.2 62632 metricbeat
+2026-11-25 16:32:02 load=2.16 2.12 2.09 tmpfree=55G
+2026-11-25 16:33:02 load=1.88 2.03 2.06 tmpfree=55G
+2026-11-25 16:34:02 load=2.62 2.20 2.12 tmpfree=55G
+2026-11-25 16:35:02 load=2.34 2.25 2.14 tmpfree=50G
+2026-11-25 16:36:02 load=2.11 2.18 2.12 tmpfree=46G
+  top: 2517648 sb10     43.5 1386880 jobqueue.test
+  top:  166306 mercury  18.6 5386792 wrstat-ui
+  top:  300955 root      5.2 60424 metricbeat
+2026-11-25 16:37:02 load=1.75 2.06 2.08 tmpfree=46G
+2026-11-25 16:38:02 load=2.45 2.19 2.12 tmpfree=45G
+2026-11-25 16:39:02 load=2.99 2.41 2.20 tmpfree=45G
+2026-11-25 16:40:02 load=4.02 2.81 2.35 tmpfree=50G
+2026-11-25 16:41:02 load=2.27 2.53 2.29 tmpfree=41G
+  top: 2548157 sb10     53.6 1369500 jobqueue.test
+  top:  166306 mercury  18.5 5386792 wrstat-ui
+  top:  300955 root      5.2 62224 metricbeat
+TMPGUARD: /tmp free 41G < 45G, killing process group 1483133
+
+# Part 2 (run-1795625267): every one-minute sample
+2026-11-25 16:47:49 load=1.15 1.64 1.98 tmpfree=73G
+  top: 2591384 sb10     41.0 24292 go
+  top:  166306 mercury  18.5 5386792 wrstat-ui
+  top:  300955 root      5.2 61448 metricbeat
+2026-11-25 16:48:49 load=2.42 1.94 2.06 tmpfree=72G
+2026-11-25 16:49:49 load=2.61 2.10 2.11 tmpfree=63G
+2026-11-25 16:50:49 load=2.23 2.07 2.10 tmpfree=60G
+2026-11-25 16:51:49 load=2.32 2.11 2.11 tmpfree=63G
+2026-11-25 16:52:49 load=2.61 2.27 2.17 tmpfree=62G
+  top: 2600883 sb10     79.6 3803048 jobqueue.test
+  top:  166306 mercury  18.4 5386792 wrstat-ui
+  top:  300955 root      5.2 64104 metricbeat
+2026-11-25 16:53:49 load=3.65 2.65 2.30 tmpfree=61G
+2026-11-25 16:54:49 load=2.89 2.61 2.31 tmpfree=63G
+2026-11-25 16:55:49 load=2.17 2.42 2.26 tmpfree=63G
+2026-11-25 16:56:49 load=2.99 2.60 2.33 tmpfree=62G
+2026-11-25 16:57:49 load=2.34 2.50 2.32 tmpfree=62G
+  top: 2628872 sb10     77.1 3577864 jobqueue.test
+  top:  166306 mercury  18.4 9138228 wrstat-ui
+  top:  300955 root      5.2 60148 metricbeat
+2026-11-25 16:58:49 load=1.85 2.34 2.27 tmpfree=60G
+2026-11-25 16:59:49 load=2.34 2.39 2.29 tmpfree=68G
+2026-11-25 17:00:49 load=1.23 2.07 2.19 tmpfree=68G
+2026-11-25 17:01:49 load=0.98 1.83 2.09 tmpfree=68G
+2026-11-25 17:02:49 load=1.24 1.72 2.03 tmpfree=70G
+  top: 2674913 sb10      116 25472 jobqueue.test
+  top: 2674559 sb10     29.2 50724 go
+  top:  166306 mercury  18.4 5388232 wrstat-ui
+2026-11-25 17:03:49 load=0.79 1.52 1.95 tmpfree=68G
+2026-11-25 17:04:49 load=0.70 1.37 1.87 tmpfree=68G
+2026-11-25 17:05:49 load=1.05 1.35 1.83 tmpfree=68G
+2026-11-25 17:06:49 load=0.84 1.25 1.76 tmpfree=66G
+2026-11-25 17:07:49 load=0.72 1.15 1.70 tmpfree=66G
+  top: 2692682 sb10     19.4 99872 jobqueue.test
+  top:  166306 mercury  18.3 5386184 wrstat-ui
+  top:  300955 root      5.2 62348 metricbeat
+2026-11-25 17:08:49 load=0.70 1.09 1.64 tmpfree=66G
+2026-11-25 17:09:49 load=0.96 1.07 1.60 tmpfree=66G
+2026-11-25 17:10:49 load=1.60 1.19 1.60 tmpfree=66G
+2026-11-25 17:11:49 load=1.84 1.35 1.63 tmpfree=66G
+2026-11-25 17:12:49 load=1.55 1.36 1.62 tmpfree=69G
+  top: 2728123 sb10     49.2 25264 jobqueue.test
+  top:  166306 mercury  18.3 5386184 wrstat-ui
+  top: 2727767 sb10     17.3 50368 go
+2026-11-25 17:13:49 load=1.49 1.37 1.61 tmpfree=66G
+2026-11-25 17:14:49 load=0.87 1.20 1.53 tmpfree=66G
+2026-11-25 17:15:49 load=0.49 1.04 1.45 tmpfree=66G
+2026-11-25 17:16:49 load=1.01 1.10 1.45 tmpfree=66G
+2026-11-25 17:17:49 load=1.72 1.25 1.48 tmpfree=66G
+  top: 2728123 sb10     20.4 2339804 jobqueue.test
+  top:  166306 mercury  18.2 5386184 wrstat-ui
+  top:  300955 root      5.2 60440 metricbeat
+2026-11-25 17:18:49 load=2.14 1.42 1.52 tmpfree=66G

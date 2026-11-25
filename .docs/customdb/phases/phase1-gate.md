@@ -201,7 +201,7 @@ significant; a large move in it is checked with an interleaved A/B, as
 item M was.
 
 - [x] implemented
-- [ ] reviewed
+- [x] reviewed
 
 ### Item 1g.5: Daytime NFS targets
 

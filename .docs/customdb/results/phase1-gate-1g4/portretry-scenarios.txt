@@ -1,0 +1,36 @@
+== base
+BenchmarkScenarioReportStorm 1 3169.6 jobs/s 131.000 max-archive-ms 6.31 wall-sec
+BenchmarkScenarioDepGranularity 1 307 peak-rss-MB 0.195 recovery-sec 0.466 add-sec
+BenchmarkScenarioAddStorm 1 351.75 adds/s 3 p50-ms 149 p99-ms 299 max-ms 0.61 txns/add
+BenchmarkScenarioArchiveRate 1 173.8 archives/s 1 mean-ms 3 p99-ms 69 max-ms
+BenchmarkScenarioArchiveCeiling 1 494.76 archives/s 56.69 throughput-factor 109 p99-ms 224 max-ms
+REPORTSTORM VERDICT: completed=20000/20000 live=0[ready=0 run=0 delay=0 bury=0] reserves=20000 reconnects=0
+REPORTSTORM VERDICT: started[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+REPORTSTORM VERDICT: archive[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+REPORTSTORM VERDICT: touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+REPORTSTORM VERDICT: archive latency max=131ms p50=<=50ms p99=<=100ms; max in-flight report RPC=102ms
+PASS: peakRssMb=307, recovery in 195ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 466ms
+## VERDICT: low=20@10.21/s high=700@351.75/s throughputFactor=34.46x (min 10x) lowP50=2ms highP50=3ms (max 5000ms) highP99=149ms highMax=299ms overSlow=0 overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.61 (max 1.00) maxBatchParked=0 maxBeginRWTx=1 adds=43435 addErrors=0 backupMb=28269 goExit=0
+PASS: 700 clients reached 351.75/s against 20 clients' 10.21/s
+## VERDICT: archives=31280 rate=173.8/s meanLatency=1ms p99=3ms max=69ms queueDepth mean=0 max=3 overClientFloor=0 archiveErrors=0 goExit=0
+PASS: a sustained 660-archiver rate on a 4GB-class DB stays at 1ms mean / 3ms p99 with the queue never deeper than 3
+## VERDICT: low=20@8.73/s high=1143@494.76/s throughputFactor=56.69x (min 10x) lowMax=160ms highMax=224ms (max 30000ms) overClientFloor=0 archives=90627 archiveErrors=0 backupMb=28207 goExit=0
+PASS: 1143 archivers reached 494.76/s against 20 archivers' 8.73/s
+== head
+BenchmarkScenarioReportStorm 1 3395.6 jobs/s 121.000 max-archive-ms 5.89 wall-sec
+BenchmarkScenarioDepGranularity 1 274 peak-rss-MB 0.149 recovery-sec 0.311 add-sec
+BenchmarkScenarioAddStorm 1 352.98 adds/s 3 p50-ms 33 p99-ms 107 max-ms 0.68 txns/add
+BenchmarkScenarioArchiveRate 1 173.8 archives/s 1 mean-ms 3 p99-ms 98 max-ms
+BenchmarkScenarioArchiveCeiling 1 496.01 archives/s 56.65 throughput-factor 21 p99-ms 33 max-ms
+REPORTSTORM VERDICT: completed=20000/20000 live=0[ready=0 run=0 delay=0 bury=0] reserves=20000 reconnects=0
+REPORTSTORM VERDICT: started[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+REPORTSTORM VERDICT: archive[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+REPORTSTORM VERDICT: touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+REPORTSTORM VERDICT: archive latency max=121ms p50=<=20ms p99=<=100ms; max in-flight report RPC=46ms
+PASS: peakRssMb=274, recovery in 149ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 311ms
+## VERDICT: low=20@10.24/s high=700@352.98/s throughputFactor=34.46x (min 10x) lowP50=2ms highP50=3ms (max 5000ms) highP99=33ms highMax=107ms overSlow=0 overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.68 (max 1.00) maxBatchParked=0 maxBeginRWTx=1 adds=43586 addErrors=0 backupMb=28064 goExit=0
+PASS: 700 clients reached 352.98/s against 20 clients' 10.24/s
+## VERDICT: archives=31278 rate=173.8/s meanLatency=1ms p99=3ms max=98ms queueDepth mean=0 max=13 overClientFloor=0 archiveErrors=0 goExit=0
+PASS: a sustained 660-archiver rate on a 4GB-class DB stays at 1ms mean / 3ms p99 with the queue never deeper than 13
+## VERDICT: low=20@8.76/s high=1143@496.01/s throughputFactor=56.65x (min 10x) lowMax=47ms highMax=33ms (max 30000ms) overClientFloor=0 archives=90858 archiveErrors=0 backupMb=28506 goExit=0
+PASS: 1143 archivers reached 496.01/s against 20 archivers' 8.76/s

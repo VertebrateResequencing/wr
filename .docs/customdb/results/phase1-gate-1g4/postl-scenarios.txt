@@ -1,0 +1,53 @@
+# Part 1 (run-1795612859, 2026-11-25 13:20-16:41): report-storm, dep-granularity-check
+== base
+BenchmarkScenarioReportStorm 1 3215.4 jobs/s 168.000 max-archive-ms 6.22 wall-sec
+BenchmarkScenarioDepGranularity 1 319 peak-rss-MB 0.192 recovery-sec 0.539 add-sec
+reliable4_reportstorm_test.go:988: REPORTSTORM VERDICT: completed=20000/20000 live=0[ready=0 run=0 delay=0 bury=0] reserves=20000 reconnects=0
+reliable4_reportstorm_test.go:991: REPORTSTORM VERDICT: started[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+reliable4_reportstorm_test.go:992: REPORTSTORM VERDICT: archive[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+reliable4_reportstorm_test.go:993: REPORTSTORM VERDICT: touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+reliable4_reportstorm_test.go:994: REPORTSTORM VERDICT: archive latency max=168ms p50=<=50ms p99=<=100ms; max in-flight report RPC=151ms
+PASS
+PASS: peakRssMb=319, recovery in 192ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 539ms
+== head
+BenchmarkScenarioReportStorm 1 3194.9 jobs/s 110.000 max-archive-ms 6.26 wall-sec
+BenchmarkScenarioDepGranularity 1 267 peak-rss-MB 0.192 recovery-sec 0.322 add-sec
+reliable4_reportstorm_test.go:1007: REPORTSTORM VERDICT: completed=20000/20000 live=0[ready=0 run=0 delay=0 bury=0] reserves=20000 reconnects=0
+reliable4_reportstorm_test.go:1010: REPORTSTORM VERDICT: started[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+reliable4_reportstorm_test.go:1011: REPORTSTORM VERDICT: archive[accepted=20000 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+reliable4_reportstorm_test.go:1012: REPORTSTORM VERDICT: touch[accepted=0 badjob=0 mustReserve=0 timeout=0 otherErr=0]
+reliable4_reportstorm_test.go:1013: REPORTSTORM VERDICT: archive latency max=110ms p50=<=50ms p99=<=50ms; max in-flight report RPC=57ms
+PASS
+PASS: peakRssMb=267, recovery in 192ms, 'wr manager status' answered 'starting' inside the window, and one more member added in 322ms
+
+# Part 2 (run-1795625267, 2026-11-25 16:47-17:19, SPEED_COUNT=0): add-storm, archive-rate, archive-ceiling
+== base
+BenchmarkScenarioAddStorm 1 351.73 adds/s 2 p50-ms 141 p99-ms 203 max-ms 0.65 txns/add
+BenchmarkScenarioArchiveRate 1 173.8 archives/s 1 mean-ms 3 p99-ms 65 max-ms
+BenchmarkScenarioArchiveCeiling 1 494.47 archives/s 56.65 throughput-factor 122 p99-ms 217 max-ms
+## VERDICT: low=20@10.22/s high=700@351.73/s throughputFactor=34.43x (min 10x) lowP50=2ms highP50=2ms (max 5000ms) highP99=141ms highMax=203ms overSlow=0 overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.65 (max 1.00) maxBatchParked=0 maxBeginRWTx=0 adds=43433 addErrors=0 backupMb=28587 goExit=0
+PASS: 700 clients reached 351.73/s against 20 clients' 10.22/s
+## VERDICT: archives=31277 rate=173.8/s meanLatency=1ms p99=3ms max=65ms queueDepth mean=0 max=3 overClientFloor=0 archiveErrors=0 goExit=0
+PASS: a sustained 660-archiver rate on a 4GB-class DB stays at 1ms mean / 3ms p99 with the queue never deeper than 3
+## VERDICT: low=20@8.73/s high=1143@494.47/s throughputFactor=56.65x (min 10x) lowMax=156ms highMax=217ms (max 30000ms) overClientFloor=0 archives=90576 archiveErrors=0 backupMb=27620 goExit=0
+PASS: 1143 archivers reached 494.47/s against 20 archivers' 8.73/s
+== head
+BenchmarkScenarioAddStorm 1 353.02 adds/s 3 p50-ms 33 p99-ms 95 max-ms 0.67 txns/add
+BenchmarkScenarioArchiveRate 1 173.8 archives/s 1 mean-ms 3 p99-ms 94 max-ms
+BenchmarkScenarioArchiveCeiling 1 495.98 archives/s 56.65 throughput-factor 21 p99-ms 34 max-ms
+## VERDICT: low=20@10.25/s high=700@353.02/s throughputFactor=34.44x (min 10x) lowP50=2ms highP50=3ms (max 5000ms) highP99=33ms highMax=95ms overSlow=0 overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.67 (max 1.00) maxBatchParked=0 maxBeginRWTx=1 adds=43592 addErrors=0 backupMb=27895 goExit=0
+PASS: 700 clients reached 353.02/s against 20 clients' 10.25/s
+## VERDICT: archives=31280 rate=173.8/s meanLatency=1ms p99=3ms max=94ms queueDepth mean=0 max=3 overClientFloor=0 archiveErrors=0 goExit=0
+PASS: a sustained 660-archiver rate on a 4GB-class DB stays at 1ms mean / 3ms p99 with the queue never deeper than 3
+## VERDICT: low=20@8.76/s high=1143@495.98/s throughputFactor=56.65x (min 10x) lowMax=50ms highMax=34ms (max 30000ms) overClientFloor=0 archives=90853 archiveErrors=0 backupMb=28175 goExit=0
+PASS: 1143 archivers reached 495.98/s against 20 archivers' 8.76/s
+
+# Informational only, not judged: part 1's add-storm
+== base (part 1; replaced by part 2's base add-storm in the judged set)
+BenchmarkScenarioAddStorm 1 351.62 adds/s 2 p50-ms 146 p99-ms 287 max-ms 0.65 txns/add
+## VERDICT: low=20@10.22/s high=700@351.62/s throughputFactor=34.42x (min 10x) lowP50=2ms highP50=2ms (max 5000ms) highP99=146ms highMax=287ms overSlow=0 overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.65 (max 1.00) maxBatchParked=0 maxBeginRWTx=0 adds=43420 addErrors=0 backupMb=28574 goExit=0
+== head add-storm: its wrdev.sh and speed.sh were stopped by the /tmp guard at 16:41:02, before speed.sh recorded it;
+   its test process was in another process group, ran on, and finished at 16:44:48 (informational, not a gate record;
+   its DB copies were unlinked while it held them open, about 16:43):
+reliable4_addstorm_test.go:302: ADDSTORM-SUMMARY lowClients=20 lowRate=10.25 highClients=700 highRate=353.80 concurrencyFactor=35.0 throughputFactor=34.52 lowP50Ms=2 highP50Ms=3 highP99Ms=36 highMaxMs=121 overSlow=0 overFloor=0 timedOut=0 errors=0 adds=43686 txnsPerAdd=0.67 maxBatchParked=0 maxBeginRWTx=1 queueSize=161904 cmdBytes=256 backupCopies=6 backupMb=28739 backupMbPerSec=115.9
+--- PASS: TestReliable4AddStorm (297.68s)

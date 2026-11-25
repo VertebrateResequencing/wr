@@ -1270,3 +1270,437 @@ port race fixed: that is a bugfix item for the orchestrator to route.
 After it, rerun the command above on a quiet host (check that
 `wrstat-ui` is idle) and confirm or clear `AddManyUnderReserveLoad/norc`
 (e).
+
+## Gate rerun after the port retry (2026-11-24)
+
+This is the full rerun of `make speed-full` that the interrupted attempt
+above left to do, after bugfix 261119 item K (`65a6b83d`) made the
+benchmarks' servers retry on fresh ports when their manager port is
+taken.
+
+**Verdict: PASS.** `speed.sh` printed `PASS: no benchmark or scenario
+worsened by more than 10% at p<0.05, and every scenario met its
+thresholds`, and `regressions.txt` is empty. All five WINDOW blocks pass.
+`AddManyUnderReserveLoad/norc`'s (e) median reserve wait, which failed
+the partial 6-round judgement at +15.67% (p=0.026), reads -1.70%
+(p=0.932) over 12 rounds.
+
+### Method
+
+HEAD was `946ab1b1` on `customdb-f397b547`, a clean tree. The base was a
+fresh `git archive d1a4b6d7` (`scratchpad/g4b/base`), prepared by the
+current DEVELOPERS.md recipe: this tree's
+`jobqueue/kick_resume_bench_test.go` and
+`jobqueue/dep_group_add_bench_test.go` copied in, plus the
+`settle_stub_test.go` stub. `go vet ./jobqueue/` passed on it. The old
+`scratchpad/i2/base` was left in place.
+
+`SPEED_BENCH` was the same union as the 2026-11-18 run, and the
+fixtures were those of that run, read from
+`/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures` (`prod.db` there is the
+fixture copy). Everything else was written under the session
+scratchpad on local `/tmp`, with the default Go build and module
+caches; nothing was written to `/nfs/hgi`. The defaults applied: 12
+rounds over 6 code layouts, one scenario round per tree.
+
+```bash
+F=/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures
+(unset $(compgen -v | grep '^OS_'); setsid env HOME=<scratch>/g4b/home/<tmp> \
+ GOCACHE=/software/hgi/envs/sb10/go/build_cache \
+ GOMODCACHE=/software/hgi/envs/sb10/go/pkg/mod \
+ GOPATH=/software/hgi/envs/sb10/go \
+ SPEED_BASE=<scratch>/g4b/base SPEED_DIR=<scratch>/g4b/speed \
+ SPEED_BENCH='^Benchmark(AddJobs|UpdateJobState|ArchiveJobs|ArchiveSpacedArrivals|ReadyBacklogSnapshot|BuildSchedulerGroupsBacklog|RACCycleCounted|RepGroupStatusDetails|JobKey|ModifyLiveJobsReverseLookup|JobCleanup|JobCleanupDepth1|JobCleanupDepth8|AddDepGroupMember|KickUnderReserveLoad|ResumeUnderReserveLoad|SuspendUnderReserveLoad|AddManyUnderReserveLoad|QueueLifecycle|Limiter.*)$' \
+ SPEED_BIG_DB=$F/pristine6 WR_AS_DB=$F/prod.db \
+ WR_ARCHRATE_DB=$F/pristine10 WR_AC_DB=$F/pristine6 \
+ DEV_PORT=51994 DEV_WEB=51995 PROD_PORT=51996 PROD_WEB=51997 \
+ make speed-full)
+```
+
+It ran from 11:12:41 to 15:05:15 GMT (3h52m): the 12 benchmark rounds
+until 14:33, then the scenarios. Run directory:
+`scratchpad/g4b/speed/run-1795518761/`. The port retry fired once, in
+base's under-load benchmarks at 13:37: port 35943 was taken, and the
+server started on fresh ports (`attempt=1`) instead of stopping the run.
+
+### Host conditions
+
+farm22-wrstat01 (8 cores, 91GB). Before the start the 1-minute load was
+1.0 to 2.0, and `top` showed mercury's `wrstat-ui` idle. Over the run
+the 1-minute load was 0.85 to 5.2 (hourly means 2.4, 2.2, 2.4, 2.2 and
+1.3), the benchmarks' own 8 reservers included. `wrstat-ui` stayed the
+top process by `ps`'s lifetime %CPU, which fell from 253% to 93% as
+about 1/t, so it did no new work. `/tmp` had 62GB free at the start and
+47GB at its lowest (14:38, during add-storm's copy of `prod.db` and its
+backup), never below the 45GB floor. One-minute samples, every fifth
+kept: [portretry-host.txt](phase1-gate-1g4/portretry-host.txt).
+
+### Results
+
+benchstat:
+[portretry-benchstat.txt](phase1-gate-1g4/portretry-benchstat.txt);
+judgement:
+[portretry-judgement.txt](phase1-gate-1g4/portretry-judgement.txt). The
+raw rounds are
+[portretry-base.bench.gz](phase1-gate-1g4/portretry-base.bench.gz)
+(12KB) and
+[portretry-head.bench.gz](phase1-gate-1g4/portretry-head.bench.gz)
+(11KB).
+
+The WINDOW blocks (`~` is not significant at p < 0.05; every (d) count
+not listed was `~`, 0 on both trees, or lower on head):
+
+| Criterion | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| Verdict | PASS | PASS | PASS | PASS | PASS |
+| (a) sec/op | -38.80% | -49.35% | -57.78% | -49.80% | -48.95% |
+| (b) slow-reserves/op | -94.01% | -95.94% | -98.73% | -34.72% | ~ (-27.87%) |
+| (c) max-qlock-us | -73.68% | -78.87% | -84.28% | -11.48% (p=0.014) | ~ (-6.97%) |
+| (d) slow-reserve-wait-us/op | -94.78% | -96.71% | -98.72% | -19.47% | ~ (-4.34%) |
+| (d) counts over 1.25 to 6ms | -97.09 to -100% | -97.96 to -100% | -99.23 to -100% | -32.41%, -31.25% at 1.25, 1.5ms; ~ above | ~ (+2.56 to +18.18%) |
+| (d) count over 16ms | ~ (0) | ~ (0) | ~ (0) | -100.00% | -62.50% (p=0.007) |
+| (d) count over 20ms | ~ (0) | ~ (0) | ~ (0) | ~ | -100.00% (p=0.033) |
+| (e) reserve-p50-us | ~ (+32.17%, p=0.068) | ~ (-14.62%) | -15.05% | ~ (-1.70%) | ~ (-2.96%) |
+| reserve-p99-us (info) | -68.35% | -76.12% | -77.01% | ~ (+6.15%) | ~ (+5.97%) |
+| reserve-max-us (info) | -64.67% (p=0.014) | -64.29% | -79.43% | ~ (-8.97%) | ~ (+1.00%) |
+| reserves/op (info) | -14.32% | -15.73% | -24.48% | -48.41% | -44.61% |
+| slow-reserve-p50-us (info) | -4.35% (p=0.004) | ~ | ~ | +537.09% (p=0.012) | ~ (+49.12%) |
+
+Significant changes are at p at most 0.002 except where shown, or
+Kick's 5 and 6ms counts (p=0.002, p=0.015) and AddMany norc's (b)
+(p=0.001) and (d) total (p=0.001). AddMany rc's (d) counts over 1.25 to
+6ms rose by up to 18.18%, none significant (p=0.197 to 0.966).
+
+The raw tail percentiles, base -> head (medians over 12 rounds, in
+microseconds):
+
+| Benchmark | reserve-p50-us | reserve-p99-us | reserve-max-us |
+| --- | --- | --- | --- |
+| Kick | 10.30 -> 13.62 | 617.0 -> 195.3 | 6,371 -> 2,251 |
+| Resume | 15.63 -> 13.34 | 768.7 -> 183.6 | 7,659 -> 2,735 |
+| Suspend | 11.43 -> 9.71 | 620.9 -> 142.8 | 6,623 -> 1,363 |
+| AddMany norc | 6.69 -> 6.58 | 135.0 -> 143.3 | 18,830 -> 17,140 |
+| AddMany rc | 6.60 -> 6.41 | 125.6 -> 133.1 | 19,850 -> 20,050 |
+
+`AddManyUnderReserveLoad/norc`'s reserve-p50-us per round, in
+microseconds:
+
+```text
+base: 5.394 5.531 7.692 6.624 7.199 5.760 5.297 6.284 6.763 7.288 7.694 7.651
+head: 6.326 8.143 6.547 5.890 6.266 6.136 7.010 7.818 5.533 6.925 6.612 6.710
+```
+
+So the partial judgement's +15.67% did not hold: rounds 7 to 12 of base
+read higher than its first six, and the pooled medians are 6.69 against
+6.58us. Kick's (e), which failed in the 2026-11-18 run at +82.12%, reads
++32.17% at p=0.068 here, not significant; head's rounds spread from 4.9
+to 25.6us against base's 8.4 to 14.9us. AddMany norc's informational
+slow-reserve median rose 537% because head removed most of base's
+1 to 2ms waits, leaving mostly the reserves held behind the add's
+15 to 17ms queue-lock hold, which base also has (its count over 16ms
+fell 100%); DEVELOPERS.md ("Benchmarks under reserve load") gives the
+reason this figure is informational.
+
+Every other significant row of the benchstat output:
+
+- sec/op: `AddDepGroupMember` -24.34%. No default-set benchmark is
+  significantly slower.
+- B/op: `RACCycleCounted/leavers=0` +9.08% and `leavers=100` +9.06%,
+  `AddDepGroupMember` +8.52%, `QueueLifecycle/groups=1` +1.78% and
+  `groups=100` +1.71%, `RepGroupStatusDetails/1000` +0.55% (p=0.043),
+  `UpdateJobState` -1.29% (p=0.005), `ArchiveSpacedArrivals` -0.32%
+  (p=0.039), and the under-load benchmarks -4.80% to -97.78%.
+- allocs/op: `RACCycleCounted/leavers=0` +1.72% and `leavers=100`
+  +1.30%, `RepGroupStatusDetails/1000` +1.21% (p=0.033),
+  `ModifyLiveJobsReverseLookup` +0.50% (p=0.008), `QueueLifecycle`
+  +0.05% and +0.04%, `AddDepGroupMember` -48.75%, and the under-load
+  benchmarks -4.00% to -54.37%.
+- No bolt page, write or transaction count and no limiter figure
+  changed significantly.
+
+None of these is over 10%. Bugfix 261119 item L traced the
+`RACCycleCounted` B/op rise to the second slice that item G
+(`b4759d3e`) allocated in each of the queue's ready-added gathers, and
+`14ffc717` gathers into one slice. In the rerun after it (below),
+`RACCycleCounted` B/op equals base's (8.434Mi and 8.453Mi, p=0.192 and
+p=0.385), as do its allocs/op.
+
+### Scenarios
+
+One round each; all met their thresholds on both trees. With one round
+benchstat calls none of them significant, so they gate on their own
+thresholds. Verdict lines:
+[portretry-scenarios.txt](phase1-gate-1g4/portretry-scenarios.txt).
+
+| Scenario | Figure | base | head |
+| --- | --- | --- | --- |
+| report-storm | jobs/s | 3,169.6 | 3,395.6 |
+| report-storm | max archive ms | 131 | 121 |
+| report-storm | wall s | 6.31 | 5.89 |
+| dep-granularity-check | peak RSS MB | 307 | 274 |
+| dep-granularity-check | recovery s | 0.195 | 0.149 |
+| dep-granularity-check | add s | 0.466 | 0.311 |
+| add-storm (`prod.db`) | adds/s at 700 clients | 351.75 | 352.98 |
+| add-storm | p50 / p99 / max ms | 3 / 149 / 299 | 3 / 33 / 107 |
+| add-storm | txns/add | 0.61 | 0.68 |
+| archive-rate (`pristine10`) | archives/s | 173.8 | 173.8 |
+| archive-rate | mean / p99 / max ms | 1 / 3 / 69 | 1 / 3 / 98 |
+| archive-ceiling (`pristine6`) | archives/s at 1143 | 494.76 | 496.01 |
+| archive-ceiling | throughput factor | 56.69 | 56.65 |
+| archive-ceiling | p99 / max ms | 109 / 224 | 21 / 33 |
+
+add-storm's txns/add is 11% higher on head in this one round (0.68
+against 0.61, under its 1.00 threshold), with no other add-storm figure
+worse. The 2026-11-18 run's single round also rose, +10.5% (0.19 to
+0.21; [window-benchstat.txt](phase1-gate-1g4/window-benchstat.txt)).
+Two single rounds cannot say whether the rise is real. Both trees had 0
+slow adds, 0 adds over the client floor and 0 errors; archive-rate and
+archive-ceiling had 0 archives over the floor and 0 errors on both.
+
+### What is left
+
+1g.4's gate passed and its `implemented` box was ticked. No rule,
+threshold or default was changed. 1g.4's review of this run then failed
+Kick's and Resume's (e) in a load-matched rerun of just those two
+benchmarks, which opened bugfix 261119 item L; the next section reruns
+the gate after it.
+
+## Gate rerun after item L (2026-11-25)
+
+This rerun of `make speed-full` is on `14ffc717`, after bugfix 261119
+item L. 1g.4's review of the rerun above failed Kick's and Resume's (e),
+which opened item L.
+
+**Verdict: PASS.** The gate ran in two parts on the same trees, base
+and fixtures, because the first run was stopped by a lack of space on
+`/tmp` after its benchmarks finished (below). Part 1 gave the 12
+benchmark rounds of both trees, report-storm and dep-granularity-check;
+part 2 gave add-storm, archive-rate and archive-ceiling on both trees.
+Their benchmark lines, joined, were judged with the same benchstat and
+`speedjudge` that `speed.sh` uses: no `REGRESSION` line, all five
+WINDOW blocks pass, and Kick's and Resume's (e) median reserve waits,
+which 1g.4's review of the rerun above failed, are significantly lower
+on head. Every scenario met its thresholds on both trees, and part 2's
+own `speed.sh` printed `PASS: no benchmark or scenario worsened by more
+than 10% at p<0.05, and every scenario met its thresholds`.
+
+### Method
+
+HEAD was `14ffc717` on `customdb-f397b547` for both parts; only
+documentation files were uncommitted. The base was the
+prepared `d1a4b6d7` tree of the rerun above (`scratchpad/g4b/base`).
+Its `kick_resume_bench_test.go` and `dep_group_add_bench_test.go` are
+byte-identical to `14ffc717`'s (item L changed neither), and it has the
+`settle_stub_test.go` stub, which the DEVELOPERS.md recipe gives a base
+with no log store. Fixtures, ports and caches were those of the command
+above; nothing was written to `/nfs/hgi`.
+
+- Part 1, 13:20:59 to 16:41:02 GMT: the command above with `HOME` and
+  `SPEED_DIR` under `scratchpad/g4c`, through a copy of the same
+  launcher (`scratchpad/g4c/run.sh`), which samples the host every 60s
+  and stops the run's process group if `/tmp` has under 45GB free. Run
+  directory `scratchpad/g4c/speed/run-1795612859/`. The 12 benchmark
+  rounds ran until 16:33, then report-storm, dep-granularity-check and
+  base's add-storm. No port retry fired.
+- Part 2, 16:47:47 to 17:19:07 GMT: the same with `SPEED_COUNT=0
+  SPEED_SCENARIOS='add-storm archive-rate archive-ceiling'` and a fresh
+  `HOME` and `SPEED_DIR`, through `scratchpad/g4c/run2.sh`, whose guard
+  kills every process in the run's session (below). Run directory
+  `scratchpad/g4c/speed2/run-1795625267/`.
+
+The judged set is part 1's `base.bench` and `head.bench` with part 1's
+report-storm and dep-granularity-check lines and part 2's three
+scenarios' lines, for each tree (combined in
+`scratchpad/g4c/combined/`). Part 1's base add-storm is left out, so
+each tree has one add-storm round, both from part 2.
+
+### What stopped part 1
+
+At 16:41:02 the guard read 41GB free on `/tmp` and sent SIGTERM to the
+run's process group (`make` exited 143), during head's add-storm, which
+had copied `prod.db` (5.1GB) and was writing its backup (5.1GB at the
+stop). `/tmp` had 56GB free at the start, against 62GB for the rerun
+above, and add-storm needs 10 to 15GB at its peak: base's took `/tmp`
+from 55GB to 45GB, head's had taken it to 41GB when stopped, and the
+rerun above's took it from 62GB to 47GB. Other files on `/tmp` grew
+meanwhile, so a full retry would have stopped the same way. Part 2
+started with 73GB free, after the orchestrator removed its own finished
+evidence directories, and `/tmp` fell to 60GB at its lowest. This was a
+disk limit of the host, not a speed result.
+
+The SIGTERM to the process group stopped `make`, `speed.sh` and
+`wrdev.sh`, but not head's add-storm test process, which `wrdev.sh`
+runs in another process group. About 16:43 the run's database copies
+were removed as leftovers while the test still held them open, and it
+ran on and finished at 16:44:48 with `--- PASS`. Its summary is in
+[postl-scenarios.txt](phase1-gate-1g4/postl-scenarios.txt) as
+informational only: `speed.sh` never recorded it, `wrdev.sh` never
+judged it, and its files were unlinked under it. Part 2's launcher
+reads the run's session id once (`setsid` makes the run its session
+leader, and the launcher checks the id equals the run's PID), and its
+guard sends SIGTERM, then SIGKILL after 10s, to every PID in that
+session. A test of that logic killed both children of a `setsid` shell
+that had put each in its own process group. The guard did not fire in
+part 2.
+
+### Host conditions
+
+farm22-wrstat01 (8 cores, 91GB). Part 1: at the start the 1-minute
+load was 2.1 to 2.3; over the run it was 1.39 to 5.11 (hourly means
+2.4, 2.2, 2.1 and 2.2), the benchmarks' own 8 reservers included. Part
+2: 1.15 at the start, 0.49 to 3.65 over the run. `wrstat-ui` stayed the
+top process by `ps`'s lifetime %CPU, which fell from 20.6% to 18.5%, so
+it did no new work. One-minute samples (part 1: every fifth, and every
+one from 16:30; part 2: every one):
+[postl-host.txt](phase1-gate-1g4/postl-host.txt).
+
+### Benchmarks
+
+benchstat over the judged set:
+[postl-benchstat.txt](phase1-gate-1g4/postl-benchstat.txt);
+`speedjudge` (exit 0, no `REGRESSION` line):
+[postl-judgement.txt](phase1-gate-1g4/postl-judgement.txt). The raw
+rounds are [postl-base.bench.gz](phase1-gate-1g4/postl-base.bench.gz)
+(12KB) and [postl-head.bench.gz](phase1-gate-1g4/postl-head.bench.gz)
+(11KB).
+
+The WINDOW blocks (`~` is not significant at p < 0.05; every (d) count
+not listed was `~`, 0 on both trees, or lower on head):
+
+| Criterion | Kick | Resume | Suspend | AddMany norc | AddMany rc |
+| --- | --- | --- | --- | --- | --- |
+| Verdict | PASS | PASS | PASS | PASS | PASS |
+| (a) sec/op | -46.41% | -57.39% | -57.29% | -50.80% | -49.72% |
+| (b) slow-reserves/op | -92.77% | -92.34% | -97.63% | -40.74% (p=0.005) | -19.83% (p=0.003) |
+| (c) max-qlock-us | -68.23% | -58.56% | -79.07% | ~ (-7.55%) | ~ (-9.97%) |
+| (d) slow-reserve-wait-us/op | -93.04% | -91.33% | -97.61% | -18.37% (p=0.012) | -13.86% (p=0.006) |
+| (d) counts over 1.25 to 6ms | -91.23 to -100% | -83.65 to -100% | -97.68 to -100% | -33.33%, -25.00% at 1.25, 1.5ms; ~ above | -3.03 to -31.37%, significant to 4ms |
+| (d) count over 16ms | ~ (0) | ~ (0) | ~ (0) | -100.00% (p=0.045) | -87.50% |
+| (e) reserve-p50-us | -15.46% (p=0.001) | -33.23% | -21.25% | ~ (-3.50%) | ~ (+2.11%) |
+| reserve-p99-us (info) | -71.39% | -67.78% | -78.35% | +10.66% (p=0.020) | ~ (-1.26%) |
+| reserve-max-us (info) | -60.11% | -70.14% | -72.64% | ~ (+1.76%) | -10.12% (p=0.024) |
+| reserves/op (info) | -16.90% | -24.15% | -24.04% | -47.45% | -48.38% |
+| slow-reserve-p50-us (info) | +8.67% (p=0.002) | ~ (+6.14%) | ~ (-1.82%) | +186.12% (p=0.028) | ~ (+7.64%) |
+
+Significant changes are at p at most 0.001 except where shown, or
+AddMany norc's counts over 1.25 and 1.5ms (p=0.004, p=0.007) and
+AddMany rc's counts (p=0.000 to 0.023, `~` from 5ms).
+
+Kick's and Resume's (e), the criterion 1g.4's review of the rerun
+above failed, now fall: -15.46% and -33.23%, where the rerun above read
++32.17% (p=0.068) and -14.62%, and the review's rerun +17.72%
+(p=0.011) and +37.30% (p=0.003). AddMany norc's informational p99 rose
+10.66% while its operation took half as long and (b), (d) and (e) fell
+or held; this is the window effect DEVELOPERS.md ("Benchmarks under
+reserve load") describes, and its slow-reserve median rose for the
+same reason as in the rerun above.
+
+The raw tail percentiles, base -> head (medians over 12 rounds, in
+microseconds):
+
+| Benchmark | reserve-p50-us | reserve-p99-us | reserve-max-us |
+| --- | --- | --- | --- |
+| Kick | 10.94 -> 9.25 | 675.2 -> 193.2 | 6,662 -> 2,657 |
+| Resume | 14.32 -> 9.56 | 712.0 -> 229.4 | 7,688 -> 2,296 |
+| Suspend | 10.90 -> 8.58 | 640.8 -> 138.8 | 6,369 -> 1,742 |
+| AddMany norc | 6.67 -> 6.43 | 129.5 -> 143.3 | 17,200 -> 17,500 |
+| AddMany rc | 6.56 -> 6.70 | 131.3 -> 129.7 | 19,640 -> 17,650 |
+
+Every other significant row of the benchstat output:
+
+- sec/op: `AddDepGroupMember` -19.57% and `UpdateJobState` +1.58%
+  (p=0.012).
+- B/op: `AddDepGroupMember` +8.58%, `RepGroupStatusDetails/1000`
+  +0.55% (p=0.002) and `/10000` +0.03%, and the under-load benchmarks
+  -4.89% to -97.73%. `RACCycleCounted` is unchanged (p=0.192 and
+  p=0.385), where the rerun above read +9.08% and +9.06%.
+- allocs/op: `RepGroupStatusDetails/1000` +1.21% (p=0.002) and
+  `/10000` +0.07%, `ModifyLiveJobsReverseLookup` +0.16% (p=0.034),
+  `AddDepGroupMember` -48.75%, and the under-load benchmarks -8.23% to
+  -54.29%.
+- `ArchiveSpacedArrivals` bolt pages and writes per job -0.32% and
+  -0.30% (p=0.040). No other bolt figure and no limiter or
+  `QueueLifecycle` figure changed significantly.
+
+None of these is over 10%.
+
+### Scenarios
+
+One round each, so benchstat calls none of them significant and they
+gate on their own thresholds; every one passed on both trees. Verdict
+lines: [postl-scenarios.txt](phase1-gate-1g4/postl-scenarios.txt).
+
+| Scenario | Figure | base | head |
+| --- | --- | --- | --- |
+| report-storm (part 1) | jobs/s | 3,215.4 | 3,194.9 |
+| report-storm | max archive ms | 168 | 110 |
+| report-storm | wall s | 6.22 | 6.26 |
+| dep-granularity-check (part 1) | peak RSS MB | 319 | 267 |
+| dep-granularity-check | recovery s | 0.192 | 0.192 |
+| dep-granularity-check | add s | 0.539 | 0.322 |
+| add-storm (`prod.db`, part 2) | adds/s at 700 clients | 351.73 | 353.02 |
+| add-storm | p50 / p99 / max ms | 2 / 141 / 203 | 3 / 33 / 95 |
+| add-storm | txns/add | 0.65 | 0.67 |
+| archive-rate (`pristine10`, part 2) | archives/s | 173.8 | 173.8 |
+| archive-rate | mean / p99 / max ms | 1 / 3 / 65 | 1 / 3 / 94 |
+| archive-ceiling (`pristine6`, part 2) | archives/s at 1143 | 494.47 | 495.98 |
+| archive-ceiling | throughput factor | 56.65 | 56.65 |
+| archive-ceiling | p99 / max ms | 122 / 217 | 21 / 34 |
+
+All add-storm runs had 0 slow adds, 0 adds over the client floor and 0
+errors; archive-rate and archive-ceiling had 0 archives over the floor
+and 0 errors. add-storm's txns/add is 3% higher on head (0.67 against
+0.65), where the two earlier single rounds read +11% and +10.5%.
+archive-rate's maximum rose from 65 to 94ms in this one round, as in
+the rerun above (69 to 98ms), with its mean, p99 and rate unchanged
+and far under its client floor. Bugfix 261119 item M found that this
+rise measures host writeback, not the archive path (below).
+
+Informational only, not judged: part 1's base add-storm read 351.62
+adds/s, 2 / 146 / 287ms and 0.65 txns/add, and head's add-storm test
+process that outlived part 1's stop read 353.80 adds/s, 3 / 36 / 121ms
+and 0.67 txns/add.
+
+### Review findings since this run
+
+1g.4's review of this run failed it on archive-rate's max-ms: 65 to
+94ms here, 69 to 98ms in the rerun above, and in an interleaved,
+load-matched A/B of 4 rounds a tree, base 74, 67, 76 and 70ms against
+head 84, 99, 111 and 95ms (p=0.029). Bugfix 261119 item M (`3aaf1157`)
+traced it to the harness, not product code: the worst archive is one
+bolt commit stalled behind writeback of the scenario's unsynced 4GB DB
+copy and of the test binary `go test` had just linked, which is larger
+on head. The big-DB scenarios now fsync their DB copy and sync its
+filesystem before the measured window, on both trees. With that on
+both, head's max-ms was not significantly higher than base's
+(p=0.886), and windows without writeback from other processes on the
+host read 9 to 35ms on either tree. Item M has the evidence; the phase
+plan's orchestrator change of 2026-11-25 records the rule.
+
+The reviewer's load-matched 12-round rerun of just Kick and Resume
+(session scratchpad `g4rev2/speed/run-1795627282`) passed (e): Kick
+-4.76% (`~`, p=0.178), Resume -34.72% (p=0.001).
+
+Watch items, none failing the gate:
+
+- `AddDepGroupMember` B/op is +8.49% to +8.58% (p at most 0.002) in
+  each run since 2026-11-18
+  ([window-benchstat.txt](phase1-gate-1g4/window-benchstat.txt),
+  [layout-benchstat.txt](phase1-gate-1g4/layout-benchstat.txt), the
+  rerun above and this one), so real, but under 10%, with sec/op
+  -17% to -24% and allocs/op about -48.75%. It is not attributed.
+- `AddManyUnderReserveLoad/norc`'s raw reserve-p99-us, +10.66% here, is
+  informational: it is the window effect above, and (b), (d) and (e)
+  held or fell.
+- add-storm's txns/add has been higher on head in every single round
+  so far (+10.5%, +11% and +3%), each far under its 1.00 threshold.
+  One round a tree cannot make it significant. It is a batching ratio
+  that falls as writers queue (`wrdev.sh`'s add-storm notes), and head's
+  rise comes with add p99 141 to 33ms at equal adds/s, so it is not a
+  slowdown.
+
+### What is left
+
+1g.4's gate passes on `14ffc717`. Its `reviewed` box is left for the
+reviewer. No gate rule, threshold or default was changed for this run;
+item M later changed only the big-DB scenarios' setup (above).
