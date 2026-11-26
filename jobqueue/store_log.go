@@ -2193,9 +2193,7 @@ func (s *logStore) checkIfComplete(key string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	_, complete := s.state.history[k]
-
-	return complete, nil
+	return s.hasHistory(k), nil
 }
 
 // depGroupEverSeen says whether a job with depGroup has ever been added.
@@ -2870,7 +2868,7 @@ func (s *logStore) completeUnderRepGroup(job *Job, key string) (bool, *completed
 	job.RUnlock()
 
 	s.mu.RLock()
-	_, complete := s.state.history[k]
+	complete := s.hasHistory(k)
 	_, lookedUp := s.state.repGroupKeys[repGroup][k]
 	s.mu.RUnlock()
 

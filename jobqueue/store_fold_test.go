@@ -290,6 +290,12 @@ type historyArchiver interface {
 // end, in s, asserting the archive removed it from the live plane or kept it
 // live as marked.
 func archiveTestJob(s historyArchiver, job *Job, start, end time.Time) {
+	archiveTestJobWith(s, job, start, end, func(*Job) {})
+}
+
+// archiveTestJobWith is archiveTestJob, with set changing job's fields before
+// it is archived.
+func archiveTestJobWith(s historyArchiver, job *Job, start, end time.Time, set func(job *Job)) {
 	job.Lock()
 	job.State = JobStateComplete
 	job.Exited = true
@@ -297,6 +303,7 @@ func archiveTestJob(s historyArchiver, job *Job, start, end time.Time) {
 	job.StartTime = start
 	job.EndTime = end
 	job.PeakRAM = 42
+	set(job)
 	kept := job.RerunAfterRun
 	job.Unlock()
 

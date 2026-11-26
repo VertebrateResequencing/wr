@@ -49,8 +49,8 @@ folder to seal segments. The folder keeps committing to `history.bolt`
 until 2b.2 switches it, so the log store answers from `history.bolt`
 until then and existing tests keep passing. Depends on 2a.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2b.2: Folder writes segments; learned samples from footers
 

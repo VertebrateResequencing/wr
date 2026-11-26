@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -196,7 +197,7 @@ func TestHistSegmentWriter(t *testing.T) {
 				return out
 			}
 
-			So(names(footer.repGroups), ShouldResemble, []string{"lookedup:2", "segrg:1000"})
+			So(names(footer.repGroups), ShouldResemble, []string{"lookedup:2"})
 			So(names(footer.depGroups), ShouldResemble, []string{"segdg0:500", "segdg1:500"})
 			So(names(footer.revDeps), ShouldResemble, []string{"segdep0:334", "segdep1:333", "segdep2:333"})
 			So(footer.depGroupsSeen, ShouldResemble, []string{"segdg0", "segdg1"})
@@ -269,6 +270,21 @@ func TestHistSegmentWriter(t *testing.T) {
 				_, _, _, err = x.job(seg.keys[0].key, new(codec.BincHandle))
 				So(err, ShouldWrap, errStoreCorrupt)
 			})
+
+			Convey("its entry names a record past the end of its block, read with others of the block", func() {
+				past := seg.keys[0]
+				past.idx = math.MaxUint32
+				calls := 0
+
+				err = x.eachRecord([]histRef{{seg: seg, entry: seg.keys[0]}, {seg: seg, entry: past}},
+					func(histJobRecord) error {
+						calls++
+
+						return nil
+					})
+				So(err, ShouldWrap, errStoreCorrupt)
+				So(calls, ShouldEqual, 1)
+			})
 		})
 	})
 }
@@ -300,9 +316,7 @@ func TestHistIndex(t *testing.T) {
 
 		Convey("each group maps to the segments holding it, and each segment to its end-time range", func() {
 			So(x.segs, ShouldHaveLength, 2)
-			So(x.repGroups, ShouldResemble, map[string][]uint32{
-				segTestRepGroup: {1, 3}, "segother": {1}, "third": {3}, segTestLookupGroup: {3},
-			})
+			So(x.repGroups, ShouldResemble, map[string][]uint32{segTestLookupGroup: {3}})
 			So(x.depGroups, ShouldResemble, map[string][]uint32{"segdg0": {1, 3}, "segdg1": {1}})
 			So(x.segs[0].endMin, ShouldEqual, segTestEnd.UnixNano())
 			So(x.segs[0].endMax, ShouldEqual, segTestEnd.Add(time.Second).UnixNano())
@@ -430,7 +444,7 @@ func segRegroupedEnds(first, second historyFolded) []histGroupEnd {
 }
 
 func TestHistFooterCache(t *testing.T) {
-	Convey("Given 3 sealed segments and a footer cache that holds 2 of their footers", t, func() {
+	Convey("Given 3 sealed segments and a footer cache that holds 2 of their end time sections", t, func() {
 		dir := t.TempDir()
 
 		var largest int64
@@ -439,10 +453,7 @@ func TestHistFooterCache(t *testing.T) {
 			writeSegment(dir, n+1, []historyFolded{segCompletion(int(n), segTestRepGroup, uint64(n+1))}, nil,
 				nil, historyPos{})
 
-			footer, _, length, err := readHistFooter(dir, n+1)
-			So(err, ShouldBeNil)
-
-			largest = max(largest, footer.memSize(length))
+			largest = max(largest, segSectionSize(dir, n+1, histSectionEndTimes))
 		}
 
 		old := histFooterCacheBytes
@@ -457,84 +468,112 @@ func TestHistFooterCache(t *testing.T) {
 			before := x.footers.reads.Load()
 
 			for _, n := range ns {
-				footer, errf := x.footer(n)
+				footer, errf := x.section(n, histSectionEndTimes)
 				So(errf, ShouldBeNil)
-				So(footer.keys, ShouldHaveLength, 1)
+				So(footer.endTimes, ShouldHaveLength, 1)
 			}
 
 			return x.footers.reads.Load() - before
 		}
 
-		Convey("loading the index caches no footer", func() {
+		Convey("loading the index caches no section", func() {
 			So(reads(1), ShouldEqual, 1)
 		})
 
-		Convey("a footer read twice is read from disk once", func() {
+		Convey("a section read twice is read from disk once", func() {
 			So(reads(1, 1), ShouldEqual, 1)
 		})
 
-		Convey("a third footer drops the least recently used one", func() {
+		Convey("another section of a cached footer's segment is read from disk, and cached apart", func() {
+			So(reads(1), ShouldEqual, 1)
+
+			before := x.footers.reads.Load()
+			footer, errf := x.section(1, histSectionRepGroups)
+			So(errf, ShouldBeNil)
+			So(footer.repGroups, ShouldBeEmpty)
+			So(footer.endTimes, ShouldBeEmpty)
+			So(x.footers.reads.Load()-before, ShouldEqual, 1)
+			So(reads(1), ShouldEqual, 0)
+		})
+
+		Convey("a cached section holds only its own section, aliasing nothing of the footer's bytes", func() {
+			footer, _, _, errr := readHistFooter(dir, 1)
+			So(errr, ShouldBeNil)
+
+			only, size := footer.only(histSectionEndTimes)
+			So(only.endTimes, ShouldResemble, footer.endTimes)
+			So(only.keys, ShouldBeEmpty)
+			So(only.repGroups, ShouldBeEmpty)
+			So(size, ShouldEqual, only.memSize(0))
+
+			raw := testFooter().encode()
+			parsed, errp := parseHistFooter(raw)
+			So(errp, ShouldBeNil)
+
+			postings, _ := parsed.only(histSectionRepGroups)
+
+			clear(raw)
+			So(postings.repGroups, ShouldResemble, testFooter().repGroups)
+		})
+
+		Convey("a third section drops the least recently used one", func() {
 			So(reads(1, 2, 1, 3), ShouldEqual, 3)
 			So(reads(1), ShouldEqual, 0)
 			So(reads(2), ShouldEqual, 1)
 		})
 
-		Convey("a footer bigger than the cache is never cached", func() {
+		Convey("a section bigger than the cache is never cached", func() {
 			histFooterCacheBytes = largest - 1
 			x, err = loadHistIndex(dir)
 			So(err, ShouldBeNil)
 			So(reads(1, 1), ShouldEqual, 2)
 		})
 
-		Convey("a footer exactly the cache's size is cached", func() {
-			footer, _, length, errr := readHistFooter(dir, 1)
-			So(errr, ShouldBeNil)
-
-			histFooterCacheBytes = footer.memSize(length)
+		Convey("a section exactly the cache's size is cached", func() {
+			histFooterCacheBytes = segSectionSize(dir, 1, histSectionEndTimes)
 			x, err = loadHistIndex(dir)
 			So(err, ShouldBeNil)
 			So(reads(1, 1), ShouldEqual, 1)
 		})
 
-		Convey("a footer bigger than the cache drops no cached footer", func() {
+		Convey("a section bigger than the cache drops no cached section", func() {
 			big := make([]historyFolded, segTestBigFooterKeys)
 			for i := range big {
 				big[i] = segCompletion(i+3, segTestRepGroup, uint64(i+4))
 			}
 
 			writeSegment(dir, 4, big, nil, nil, historyPos{})
-
-			footer, _, length, errr := readHistFooter(dir, 4)
-			So(errr, ShouldBeNil)
-			So(footer.memSize(length), ShouldBeGreaterThan, histFooterCacheBytes)
+			So(segSectionSize(dir, 4, histSectionEndTimes), ShouldBeGreaterThan, histFooterCacheBytes)
 
 			x, err = loadHistIndex(dir)
 			So(err, ShouldBeNil)
 			So(reads(1), ShouldEqual, 1)
 
-			_, err = x.footer(4)
+			_, err = x.section(4, histSectionEndTimes)
 			So(err, ShouldBeNil)
 			So(reads(1), ShouldEqual, 0)
 		})
 
-		Convey("a footer read by two callers at once is cached once", func() {
-			footer, _, length, errr := readHistFooter(dir, 1)
+		Convey("a section read by two callers at once is cached once", func() {
+			footer, _, _, errr := readHistFooter(dir, 1)
 			So(errr, ShouldBeNil)
 
+			only, size := footer.only(histSectionEndTimes)
 			both := segReadBarrier(2)
 			read := func() (*histFooter, int64, error) {
 				if !both() {
 					return nil, 0, errSegTestBarrier
 				}
 
-				return footer, footer.memSize(length), nil
+				return only, size, nil
 			}
 
 			errs := make(chan error, 2)
+			key := histSectionKey{n: 1, section: histSectionEndTimes}
 
 			for range 2 {
 				go func() {
-					_, errg := x.footers.get(1, read)
+					_, errg := x.footers.get(key, read)
 					errs <- errg
 				}()
 			}
@@ -543,13 +582,13 @@ func TestHistFooterCache(t *testing.T) {
 			So(<-errs, ShouldBeNil)
 			So(x.footers.reads.Load(), ShouldEqual, 2)
 			So(x.footers.order.Len(), ShouldEqual, 1)
-			So(x.footers.size, ShouldEqual, footer.memSize(length))
+			So(x.footers.size, ShouldEqual, size)
 		})
 
-		Convey("a footer of a segment since damaged is an error, and is not cached", func() {
+		Convey("a section of a segment since damaged is an error, and is not cached", func() {
 			damageSegment(dir, 2, func(data []byte) []byte { return data[:len(data)-1] })
 
-			_, err = x.footer(2)
+			_, err = x.section(2, histSectionEndTimes)
 			So(err, ShouldWrap, errStoreCorrupt)
 			So(x.footers.byN, ShouldBeEmpty)
 		})
@@ -713,6 +752,17 @@ func segCompletion(i int, rg string, seq uint64) historyFolded {
 	So(err, ShouldBeNil)
 
 	return historyFolded{key: k, seq: seq, job: job}
+}
+
+// segSectionSize returns the memory size the footer cache gives section of
+// segment n in dir.
+func segSectionSize(dir string, n uint32, section histSection) int64 {
+	footer, _, _, err := readHistFooter(dir, n)
+	So(err, ShouldBeNil)
+
+	_, size := footer.only(section)
+
+	return size
 }
 
 // segReadBarrier returns a func that n callers call at once: each returns
@@ -1014,6 +1064,8 @@ func TestHistFooterParse(t *testing.T) {
 			"with rep group ends out of order":  func(f *histFooter) { f.repGroupEnds[1].name = "a" },
 			"with samples out of order":         func(f *histFooter) { f.samples[0].value = 2 },
 			"with a sample of no kind":          func(f *histFooter) { f.samples[2].kind = histSampleKinds },
+			"with drops out of order":           func(f *histFooter) { f.drops[0], f.drops[1] = f.drops[1], f.drops[0] },
+			"with a drop twice":                 func(f *histFooter) { f.drops[1] = f.drops[0] },
 		}
 
 		for name, change := range malformed {
@@ -1086,6 +1138,7 @@ func testFooter() *histFooter {
 			{kind: histSampleRAM, reqGroup: "q", value: 2},
 			{kind: histSampleSecs, reqGroup: "a", value: 0},
 		},
+		drops: []logKey{{1}, {3}},
 	}
 }
 

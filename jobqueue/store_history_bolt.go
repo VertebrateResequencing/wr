@@ -942,6 +942,12 @@ func (s *logStore) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) 
 		}
 
 		more, err := r.overlayRecent(cutoff)
+		if err != nil {
+			return err
+		}
+
+		recent = append(recent, more...)
+		more, err = r.segRecent(cutoff)
 		recent = append(recent, more...)
 
 		return err
@@ -960,9 +966,10 @@ func (s *logStore) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) 
 // historyRead is one history query's view: a copy of the overlay, of the
 // overlay's rglookups of repGroup, and of the keys whose rglookups in
 // history.bolt a modify dropped (unlooked), taken before tx, its history.bolt
-// read transaction.
+// read transaction; and segs, the store's sealed history segments.
 type historyRead struct {
 	s        *logStore
+	segs     *histIndex
 	overlay  map[logKey]logHistory
 	repGroup string
 	lookups  map[logKey]uint64
@@ -987,7 +994,7 @@ func (r *historyRead) view(fn func(r *historyRead) error) error {
 
 // repGroupKeys returns, in key order as bbolt's repgroupToKey walk gives
 // them, the keys looked up under r's rep group, skipping those history.bolt
-// holds of a key a modify not yet folded dropped.
+// and r's segments hold of a key a modify not yet folded dropped.
 func (r *historyRead) repGroupKeys() ([]logKey, error) {
 	keys := make(map[logKey]struct{}, len(r.lookups))
 	for k := range r.lookups {
@@ -1008,6 +1015,15 @@ func (r *historyRead) repGroupKeys() ([]logKey, error) {
 		}
 	}
 
+	err := r.segs.lookedUp(r.repGroup, func(k logKey) {
+		if _, dropped := r.unlooked[k]; !dropped {
+			keys[k] = struct{}{}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	return slices.SortedFunc(maps.Keys(keys), func(a, b logKey) int { return bytes.Compare(a[:], b[:]) }), nil
 }
 
@@ -1016,13 +1032,18 @@ func (r *historyRead) folded(k logKey) []byte {
 	return r.tx.Bucket(bucketJobsComplete).Get([]byte(k.String()))
 }
 
-// job returns k's history entry's job, from the overlay, else history.bolt,
-// or nil if it has none, counting each it decodes in s.archivedDecodes.
+// job returns k's history entry's job, from the overlay, else r's segments,
+// else history.bolt (see segRef), or nil if it has none, counting each it
+// decodes in s.archivedDecodes.
 func (r *historyRead) job(k logKey) (*Job, error) {
 	if h, ok := r.overlay[k]; ok {
 		r.s.archivedDecodes.Add(1)
 
 		return r.overlayJob(h)
+	}
+
+	if ref, ok := r.segRef(k); ok {
+		return r.segJob(ref)
 	}
 
 	encoded := r.folded(k)
@@ -1033,6 +1054,33 @@ func (r *historyRead) job(k logKey) (*Job, error) {
 	r.s.archivedDecodes.Add(1)
 
 	return decodeStoredJob(encoded, r.s.ch)
+}
+
+// archivedJobs returns archivedJob of each of keys that is not nil, in keys'
+// order, reading the entries in r's segments first, each block once.
+func (r *historyRead) archivedJobs(keys []logKey) ([]*Job, error) {
+	segJobs := make(map[logKey]*Job)
+	if err := r.segJobs(r.segRefs(keys, true), segJobs); err != nil {
+		return nil, err
+	}
+
+	var jobs []*Job
+
+	for _, k := range keys {
+		job, ok := segJobs[k]
+		if !ok {
+			var err error
+			if job, err = r.archivedJob(k); err != nil {
+				return nil, err
+			}
+		}
+
+		if job != nil {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs, nil
 }
 
 // archivedJob is job, but nil for a key that is live (being re-run), as the
@@ -1061,8 +1109,18 @@ func (r *historyRead) selectOldest(query completeJobsQuery, counted map[string]i
 		decoder:   codec.NewDecoderBytes(nil, r.s.ch),
 	}
 
-	for _, k := range keys {
-		if err = r.offerArchived(scan, k); err != nil {
+	offers, err := r.segOffers(keys, query)
+	if err != nil {
+		return nil, err
+	}
+
+	for i, k := range keys {
+		var seg *segOffer
+		if offers != nil {
+			seg = &offers[i]
+		}
+
+		if err = r.offerArchived(scan, k, seg); err != nil {
 			return nil, err
 		}
 	}
@@ -1073,7 +1131,7 @@ func (r *historyRead) selectOldest(query completeJobsQuery, counted map[string]i
 // decodeSelected decodes the selected candidates into page.jobs, counting how
 // many fell in each group. Each was selected in this read, so has an entry.
 func (r *historyRead) decodeSelected(selected []archivedJobCandidate, page *completeJobsPage) error {
-	page.jobs = make([]*Job, 0, len(selected))
+	keys := make([]logKey, len(selected))
 
 	for i := range selected {
 		k, err := parseLogKey(string(selected[i].key))
@@ -1081,12 +1139,18 @@ func (r *historyRead) decodeSelected(selected []archivedJobCandidate, page *comp
 			return err
 		}
 
-		job, err := r.job(k)
-		if err != nil {
-			return err
-		}
+		keys[i] = k
+	}
 
-		page.jobs = append(page.jobs, job)
+	jobs, err := r.jobs(keys)
+	if err != nil {
+		return err
+	}
+
+	page.jobs = make([]*Job, 0, len(selected))
+
+	for i, k := range keys {
+		page.jobs = append(page.jobs, jobs[k])
 		page.fetched[selected[i].group]++
 	}
 
@@ -1094,13 +1158,20 @@ func (r *historyRead) decodeSelected(selected []archivedJobCandidate, page *comp
 }
 
 // offerArchived offers k's history entry to scan, unless k is live or has no
-// entry.
-func (r *historyRead) offerArchived(scan *archivedScan, k logKey) error {
+// entry: as seg says, if r found k's entry in its segments; seg is nil if r
+// has no segments.
+func (r *historyRead) offerArchived(scan *archivedScan, k logKey, seg *segOffer) error {
 	if r.s.liveKey(k) {
 		return nil
 	}
 
 	key := []byte(k.String())
+
+	if seg != nil && seg.ok {
+		offerSegment(scan, key, seg)
+
+		return nil
+	}
 
 	if _, ok := r.overlay[k]; !ok {
 		if encoded := r.folded(k); len(encoded) > 0 {
@@ -1121,10 +1192,21 @@ func (r *historyRead) offerArchived(scan *archivedScan, k logKey) error {
 	return nil
 }
 
+// offerSegment offers scan the history entry of key that seg is of, unless the
+// query discarded it.
+func offerSegment(scan *archivedScan, key []byte, seg *segOffer) {
+	if seg.keep {
+		scan.facets = archivedJobFacets{StartTime: seg.start, EndTime: seg.end}
+		scan.offerIn(key, seg.group)
+	}
+}
+
 // addStatus adds k's history entry to summary, unless k is live or has no
-// entry.
+// entry. With includeDetails, seg is the usage of k's entry if r found it in
+// its segments, nil if r has no segments; without, such an entry is counted
+// unread.
 func (r *historyRead) addStatus(summary *RepGroupStatus, k logKey, includeDetails bool,
-	decoder *codec.Decoder,
+	decoder *codec.Decoder, seg *segUsage,
 ) error {
 	if r.s.liveKey(k) {
 		return nil
@@ -1132,6 +1214,10 @@ func (r *historyRead) addStatus(summary *RepGroupStatus, k logKey, includeDetail
 
 	if _, ok := r.overlay[k]; ok {
 		return r.addOverlayStatus(summary, k, includeDetails)
+	}
+
+	if r.addSegStatus(summary, k, includeDetails, seg) {
+		return nil
 	}
 
 	encoded := r.folded(k)
@@ -1164,6 +1250,26 @@ func addFoldedUsage(summary *RepGroupStatus, encoded []byte, decoder *codec.Deco
 	return nil
 }
 
+// addSegStatus is addStatus for k's entry in r's segments, if r finds it there,
+// reporting whether it did.
+func (r *historyRead) addSegStatus(summary *RepGroupStatus, k logKey, includeDetails bool, seg *segUsage) bool {
+	if !includeDetails {
+		_, ok := r.segRef(k)
+		if ok {
+			summary.AddState(JobStateComplete, 1)
+		}
+
+		return ok
+	}
+
+	ok := seg != nil && seg.ok
+	if ok {
+		summary.addCompleteUsage(&seg.usage)
+	}
+
+	return ok
+}
+
 // addOverlayStatus is addStatus for k's overlay entry.
 func (r *historyRead) addOverlayStatus(summary *RepGroupStatus, k logKey, includeDetails bool) error {
 	if !includeDetails {
@@ -1183,8 +1289,8 @@ func (r *historyRead) addOverlayStatus(summary *RepGroupStatus, k logKey, includ
 }
 
 // foldedRecent returns the folded archived jobs that ended at or after cutoff,
-// skipping those live and those r's overlay copy has an entry of, which
-// overlayRecent gives instead.
+// skipping those live and those r's overlay copy or segments have an entry of,
+// which overlayRecent and segRecent give instead.
 func (r *historyRead) foldedRecent(cutoff time.Time) ([]historyRecent, error) {
 	var recent []historyRecent
 
@@ -1196,7 +1302,7 @@ func (r *historyRead) foldedRecent(cutoff time.Time) ([]historyRecent, error) {
 			return nil, err
 		}
 
-		if _, newer := r.overlay[k]; newer {
+		if r.newerThanFolded(k) {
 			continue
 		}
 
@@ -1211,6 +1317,18 @@ func (r *historyRead) foldedRecent(cutoff time.Time) ([]historyRecent, error) {
 	}
 
 	return recent, nil
+}
+
+// newerThanFolded reports whether r's overlay copy or segments have a newer
+// history entry of k than history.bolt's.
+func (r *historyRead) newerThanFolded(k logKey) bool {
+	if _, newer := r.overlay[k]; newer {
+		return true
+	}
+
+	_, newer := r.segRef(k)
+
+	return newer
 }
 
 // overlayRecent returns the overlay's archived jobs that ended at or after
@@ -1240,7 +1358,7 @@ func (r *historyRead) overlayRecent(cutoff time.Time) ([]historyRecent, error) {
 }
 
 // archivedBytes returns how many bytes spendArchivedBytesByRepGroup charges for
-// k.
+// k's entry in r's overlay copy (see archivedFlatPrice) or history.bolt.
 func (r *historyRead) archivedBytes(k logKey) (int, error) {
 	h, ok := r.overlay[k]
 	if !ok {
@@ -1253,8 +1371,9 @@ func (r *historyRead) archivedBytes(k logKey) (int, error) {
 	}
 
 	complete, err := r.overlayRecord(h.complete)
+	header := logRecordHeader + logKeyLen
 
-	return len(spec) + len(complete), err
+	return archivedFlatPrice(len(spec)-header, len(complete)-header), err
 }
 
 // overlayJob returns the job made of overlay entry h's spec and complete
@@ -1342,8 +1461,8 @@ func (r *historyRead) indexOverlay() {
 // that), or its entry's rep group is repGroup; else that rep group and the
 // entry's EndTime.
 func (r *historyRead) completedElsewhere(k logKey, repGroup string) (*completedElsewhere, error) {
-	if r.completedUnder(k, repGroup) {
-		return nil, nil //nolint:nilnil // completed under repGroup
+	if under, err := r.completedUnder(k, repGroup); under || err != nil {
+		return nil, err
 	}
 
 	job, err := r.job(k)
@@ -1354,39 +1473,82 @@ func (r *historyRead) completedElsewhere(k logKey, repGroup string) (*completedE
 	return &completedElsewhere{repGroup: job.RepGroup, endTime: job.EndTime}, nil
 }
 
-// completedUnder reports whether history.bolt's repgroupToKey links k to
-// repGroup, unless a modify not yet folded dropped that, or k's overlay entry
-// is of repGroup.
-func (r *historyRead) completedUnder(k logKey, repGroup string) bool {
+// completedUnder reports whether history.bolt's repgroupToKey or an
+// rglookup in r's segments links k to repGroup, unless a modify not yet folded
+// dropped that, or k's overlay entry is of repGroup.
+func (r *historyRead) completedUnder(k logKey, repGroup string) (bool, error) {
 	_, dropped := r.unlooked[k]
 	if !dropped && r.tx.Bucket(bucketRTK).Get([]byte(repGroup+dbDelimiter+k.String())) != nil {
-		return true
+		return true, nil
 	}
 
-	h, ok := r.overlay[k]
+	if h, ok := r.overlay[k]; ok && h.repGroup == repGroup {
+		return true, nil
+	}
 
-	return ok && h.repGroup == repGroup
+	if dropped {
+		return false, nil
+	}
+
+	return r.segs.lookedUpUnder(k, repGroup)
+}
+
+// addRepGroupStatus adds to summary each archived job of r's rep group that is
+// not live (see addStatus), in key order, reading the run states of those in
+// r's segments first if includeDetails.
+func (r *historyRead) addRepGroupStatus(summary *RepGroupStatus, includeDetails bool,
+	decoder *codec.Decoder,
+) error {
+	keys, err := r.repGroupKeys()
+	if err != nil {
+		return err
+	}
+
+	var usages []segUsage
+
+	if includeDetails {
+		if usages, err = r.segUsages(keys); err != nil {
+			return err
+		}
+	}
+
+	for i, k := range keys {
+		var seg *segUsage
+		if usages != nil {
+			seg = &usages[i]
+		}
+
+		if err = r.addStatus(summary, k, includeDetails, decoder, seg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// spend charges budget for k's entry in r's overlay copy or history.bolt (see
+// archivedBytes).
+func (r *historyRead) spend(k logKey, budget *archivedBytesBudget) error {
+	n, err := r.archivedBytes(k)
+	if err != nil {
+		return err
+	}
+
+	return budget.spendLen(n)
 }
 
 // historyJobs returns the history entry's job of each of keys that has one, by
-// key, in one read, so that the overlay entries' frames are each read once (see
-// overlayRecord).
+// key, in one read, so that the overlay entries' frames and segment blocks are
+// each read once (see historyRead.jobs).
 func (s *logStore) historyJobs(keys []logKey) (map[logKey]*Job, error) {
-	jobs := make(map[logKey]*Job, len(keys))
+	var jobs map[logKey]*Job
 
 	err := s.viewHistoryKeys(keys, func(r *historyRead) error {
-		for _, k := range keys {
-			job, err := r.job(k)
-			if err != nil {
-				return err
-			}
+		var err error
 
-			if job != nil {
-				jobs[k] = job
-			}
-		}
+		jobs, err = r.jobs(keys)
 
-		return nil
+		return err
 	})
 
 	return jobs, err
@@ -1443,7 +1605,7 @@ func (s *logStore) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
 // viewHistoryKeys calls fn with a historyRead of the overlay entries, and
 // unlooked keys, of keys alone.
 func (s *logStore) viewHistoryKeys(keys []logKey, fn func(r *historyRead) error) error {
-	r := &historyRead{s: s, overlay: make(map[logKey]logHistory), unlooked: make(map[logKey]uint64)}
+	r := &historyRead{s: s, segs: s.segments, overlay: make(map[logKey]logHistory), unlooked: make(map[logKey]uint64)}
 
 	s.mu.RLock()
 
@@ -1470,11 +1632,13 @@ func (s *logStore) viewHistoryKeys(keys []logKey, fn func(r *historyRead) error)
 func (s *logStore) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 	var jobs []*Job
 
-	err := s.viewRepGroup(repgroup, func(r *historyRead, k logKey) error {
-		job, err := r.archivedJob(k)
-		if job != nil {
-			jobs = append(jobs, job)
+	err := s.viewHistory(repgroup, func(r *historyRead) error {
+		keys, err := r.repGroupKeys()
+		if err != nil {
+			return err
 		}
+
+		jobs, err = r.archivedJobs(keys)
 
 		return err
 	})
@@ -1513,8 +1677,8 @@ func (s *logStore) retrieveCompleteJobStatusByRepGroup(repgroup string,
 
 	decoder := codec.NewDecoderBytes(nil, s.ch)
 
-	err := s.viewRepGroup(repgroup, func(r *historyRead, k logKey) error {
-		return r.addStatus(summary, k, includeDetails, decoder)
+	err := s.viewHistory(repgroup, func(r *historyRead) error {
+		return r.addRepGroupStatus(summary, includeDetails, decoder)
 	})
 
 	return summary, err
@@ -1522,43 +1686,37 @@ func (s *logStore) retrieveCompleteJobStatusByRepGroup(repgroup string,
 
 // spendArchivedBytesByRepGroup charges budget for every key looked up under
 // repgroup, live or not, as the bbolt store's does: a folded record's encoded
-// length, an overlay entry's spec and complete records' lengths, and nothing,
-// though it is still counted, for a key with no history entry. It decodes
-// nothing.
+// length, an overlay or segment entry's archivedFlatPrice, and nothing, though
+// it is still counted, for a key with no history entry. It decodes nothing.
+// It charges the others in key order, as the bbolt store does, then the
+// segment entries in the order they are in the segments, reading each block
+// once, so when the budget trips, how many it has priced can differ from the
+// bbolt store's, as the prices do.
 func (s *logStore) spendArchivedBytesByRepGroup(repgroup string, budget *archivedBytesBudget) error {
-	return s.viewRepGroup(repgroup, func(r *historyRead, k logKey) error {
-		n, err := r.archivedBytes(k)
-		if err != nil {
-			return err
-		}
-
-		return budget.spendLen(n)
-	})
-}
-
-// viewRepGroup calls fn, in a historyRead made for repgroup, with each key
-// looked up under repgroup, in key order, until fn returns an error.
-func (s *logStore) viewRepGroup(repgroup string, fn func(r *historyRead, k logKey) error) error {
 	return s.viewHistory(repgroup, func(r *historyRead) error {
 		keys, err := r.repGroupKeys()
 		if err != nil {
 			return err
 		}
 
+		var refs []histRef
+
 		for _, k := range keys {
-			if err = fn(r, k); err != nil {
+			if ref, ok := r.segRef(k); ok {
+				refs = append(refs, ref)
+			} else if err = r.spend(k, budget); err != nil {
 				return err
 			}
 		}
 
-		return nil
+		return r.spendSegments(refs, budget)
 	})
 }
 
 // viewHistory calls fn with a historyRead of the whole overlay, whose lookups
 // are repGroup's.
 func (s *logStore) viewHistory(repGroup string, fn func(r *historyRead) error) error {
-	r := &historyRead{s: s, repGroup: repGroup}
+	r := &historyRead{s: s, segs: s.segments, repGroup: repGroup}
 
 	s.mu.RLock()
 	r.overlay = make(map[logKey]logHistory, len(s.state.overlay))
@@ -1679,6 +1837,12 @@ func (s *logStore) sampleCount() (int, error) {
 func (s *logStore) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[string]time.Time, error) {
 	latest := s.overlayLastCompletions(repGroups)
 
+	for _, rg := range repGroups {
+		if end, ok := s.segments.groupEnds[rg]; ok {
+			noteLatest(latest, rg, end)
+		}
+	}
+
 	err := s.history.bolt.View(func(tx *bolt.Tx) error {
 		ends := tx.Bucket(bucketRGEndTime)
 
@@ -1722,7 +1886,7 @@ func (s *logStore) repGroupHasHistory(repGroup string) bool {
 	_, inOverlay := s.state.overlayEnds[repGroup]
 	s.mu.RUnlock()
 
-	if inOverlay {
+	if _, inSegments := s.segments.groupEnds[repGroup]; inOverlay || inSegments {
 		return true
 	}
 
@@ -1743,6 +1907,8 @@ func (s *logStore) retrieveRepGroups() ([]string, error) {
 	s.mu.RLock()
 	rgs := slices.Collect(maps.Keys(s.state.lookedUpRGs))
 	s.mu.RUnlock()
+
+	rgs = slices.AppendSeq(rgs, maps.Keys(s.segments.repGroups))
 
 	err := s.history.bolt.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketRGs).ForEach(func(k, _ []byte) error {

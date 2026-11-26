@@ -51,8 +51,14 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// historyNeverRepGroup is a rep group no job is ever added under.
-const historyNeverRepGroup = "never"
+const (
+	// historyNeverRepGroup is a rep group no job is ever added under.
+	historyNeverRepGroup = "never"
+
+	// histOutrankingSeq is the seq of a segment's completion that outranks
+	// one a fresh store folded into history.bolt.
+	histOutrankingSeq = 1000
+)
 
 // TestHistoryBoltBackupRemap checks that a fold commit growing history.bolt
 // past bbolt's default mapping, and a history read after it, do not wait for a
@@ -284,6 +290,142 @@ func TestLogStoreHistoryMatchesBolt(t *testing.T) {
 	})
 }
 
+func TestLogStoreHistoryFromSegmentsMatchesBolt(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given the same history made in the bbolt store and the log store, the log store's moved from "+
+		"history.bolt into segments, its rglookups in one and its completions in the next", t, func() {
+		pauseLogFolder()
+
+		h := historyScenario{t0: time.Now().Truncate(time.Second).Add(-time.Hour)}
+
+		bdb, _ := openTestStore(t, ctx, storeKindBolt)
+		bolt, ok := bdb.(historyTestStore)
+		So(ok, ShouldBeTrue)
+
+		h.stage1(ctx, bolt)
+		bolt1 := h.answers(bolt)
+		boltDups := h.stage2(ctx, bolt)
+		bolt2 := h.answers(bolt)
+
+		s, _ := openTestLogStore(t, ctx)
+		h.stage1(ctx, s)
+		foldOverlay(s)
+
+		s = moveHistoryToSegments(ctx, s)
+		So(historyBoltCompletes(s), ShouldEqual, 0)
+
+		Convey("the log store answers every history query as bbolt does, from the segments alone, and from "+
+			"them and the overlay after more completions", func() {
+			So(h.answers(s), ShouldResemble, bolt1)
+			So(h.stage2(ctx, s), ShouldResemble, boltDups)
+			So(h.answers(s), ShouldResemble, bolt2)
+			So(h.answers(reopenLogStore(ctx, s)), ShouldResemble, bolt2)
+		})
+	})
+}
+
+// moveHistoryToSegments closes s, moves the completions and rglookups its
+// history.bolt holds into two sealed segments, the rglookups in the first and
+// the completions in the second, leaving history.bolt holding none, and
+// returns the store opened again, closed when the Convey block ends.
+func moveHistoryToSegments(ctx context.Context, s *logStore) *logStore {
+	So(s.close(ctx), ShouldBeNil)
+
+	history, err := openHistoryBolt(s.dir, s.ch)
+	So(err, ShouldBeNil)
+
+	var (
+		complete []historyFolded
+		lookups  []historyLookup
+	)
+
+	So(history.bolt.View(func(tx *bolt.Tx) error {
+		complete, lookups, err = boltHistoryOf(tx, s.ch)
+
+		return err
+	}), ShouldBeNil)
+
+	So(history.bolt.Update(func(tx *bolt.Tx) error {
+		for _, name := range [][]byte{bucketJobsComplete, bucketRTK, bucketRGs, bucketEndTimeToKey,
+			bucketRGEndTime, bucketCompleteSeq, bucketKeyRGs, bucketKeyRGsPending} {
+			if errd := tx.DeleteBucket(name); errd != nil {
+				return errd
+			}
+
+			if _, errc := tx.CreateBucket(name); errc != nil {
+				return errc
+			}
+		}
+
+		return nil
+	}), ShouldBeNil)
+	So(history.close(), ShouldBeNil)
+
+	w, err := createHistSegment(s.dir, 1, s.ch)
+	So(err, ShouldBeNil)
+
+	for _, l := range lookups {
+		So(w.addLookup(l.repGroup, l.key, l.seq), ShouldBeNil)
+	}
+
+	So(w.seal(historyPos{}), ShouldBeNil)
+
+	w, err = createHistSegment(s.dir, 2, s.ch)
+	So(err, ShouldBeNil)
+
+	for i := range complete {
+		So(w.addCompletion(&complete[i]), ShouldBeNil)
+	}
+
+	So(w.seal(historyPos{}), ShouldBeNil)
+
+	reopened := openLogStoreIn(ctx, s.dir)
+
+	Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
+
+	return reopened
+}
+
+// boltHistoryOf returns the completions, each with its completeSeq, and the
+// rglookups history.bolt holds in tx.
+func boltHistoryOf(tx *bolt.Tx, ch codec.Handle) ([]historyFolded, []historyLookup, error) {
+	var complete []historyFolded
+
+	seqs := tx.Bucket(bucketCompleteSeq)
+
+	err := tx.Bucket(bucketJobsComplete).ForEach(func(key, encoded []byte) error {
+		k, err := parseLogKey(string(key))
+		if err != nil {
+			return err
+		}
+
+		job, err := decodeStoredJob(encoded, ch)
+		complete = append(complete, historyFolded{key: k, seq: binary.BigEndian.Uint64(seqs.Get(key)), job: job})
+
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var lookups []historyLookup
+
+	err = tx.Bucket(bucketRTK).ForEach(func(entry, _ []byte) error {
+		cut := len(entry) - logKeyHexLen
+		k, errp := parseLogKey(string(entry[cut:]))
+		lookups = append(lookups, historyLookup{repGroup: string(entry[:cut-len(dbDelimiter)]), key: k, seq: 1})
+
+		return errp
+	})
+
+	return complete, lookups, err
+}
+
 // historyAnswers is every history query's answer about the scenario, with
 // jobs and summaries as strings, so that the stores' answers compare.
 type historyAnswers struct {
@@ -312,7 +454,9 @@ type historyScenario struct {
 // stage1 adds jobs a, b, c and e in "rg" and d in "rg2", archives a and d,
 // looks c up under "rgx" (a queued job added again under another rep group)
 // and archives it, and archives b kept live (marked to run again). e stays
-// live and incomplete.
+// live and incomplete. Each archived job has its own PeakDisk and CPUtime, and
+// c a non-zero Exitcode, Lost and a FailReason, so that every answer depends
+// on them.
 func (h historyScenario) stage1(ctx context.Context, st historyTestStore) {
 	jobs := map[string]*Job{}
 	for _, name := range []string{"a", "b", "c", "e"} {
@@ -324,12 +468,19 @@ func (h historyScenario) stage1(ctx context.Context, st historyTestStore) {
 	_, err := st.storeNewJobsGuarded(ctx, []*Job{jobs["a"], jobs["b"], jobs["c"], jobs["d"], jobs["e"]}, false, nil)
 	So(err, ShouldBeNil)
 
-	archiveTestJob(st, jobs["a"], h.t0, h.t0.Add(10*time.Second))
-	archiveTestJob(st, jobs["d"], h.t0.Add(time.Second), h.t0.Add(20*time.Second))
+	archiveTestJobWith(st, jobs["a"], h.t0, h.t0.Add(10*time.Second), func(job *Job) {
+		job.PeakDisk, job.CPUtime = 5, 7*time.Second
+	})
+	archiveTestJobWith(st, jobs["d"], h.t0.Add(time.Second), h.t0.Add(20*time.Second), func(job *Job) {
+		job.PeakDisk, job.CPUtime = 9, 11*time.Second
+	})
 
 	lookup := newHistoryJob("c", "rgx")
 	So(st.storeRepGroupLookups(ctx, []*Job{lookup}), ShouldBeNil)
-	archiveTestJob(st, jobs["c"], h.t0.Add(2*time.Second), h.t0.Add(30*time.Second))
+	archiveTestJobWith(st, jobs["c"], h.t0.Add(2*time.Second), h.t0.Add(30*time.Second), func(job *Job) {
+		job.Exitcode, job.Lost, job.FailReason = 3, true, FailReasonExit
+		job.PeakDisk, job.CPUtime = 13, 17*time.Second
+	})
 
 	jobs["b"].RerunAfterRun = true
 	archiveTestJob(st, jobs["b"], h.t0.Add(3*time.Second), h.t0.Add(40*time.Second))
@@ -432,7 +583,9 @@ func (h historyScenario) repGroupAnswers(st historyTestStore, rg string, a *hist
 	a.ByRG[rg] = historyJobSummaries(byRG)
 
 	page, err := st.retrieveOldestCompleteJobsByRepGroup(rg, completeJobsQuery{
-		group: func(f *archivedJobFacets) (string, bool) { return fmt.Sprint(f.State), true },
+		group: func(f *archivedJobFacets) (string, bool) {
+			return fmt.Sprint(f.State, f.Exitcode, f.Lost, f.FailReason, f.StartTime.Unix(), f.EndTime.Unix()), true
+		},
 		limit: func(string) int { return 2 },
 	})
 	So(err, ShouldBeNil)
@@ -849,6 +1002,52 @@ func TestLogStoreHistoryFoldBeforeApply(t *testing.T) {
 			s.apply(ops)
 
 			So(overlaid(), ShouldBeFalse)
+		})
+	})
+}
+
+func TestHistorySegmentOutranksBoltRecent(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a job completed and folded into history.bolt, then completed again in a segment of a "+
+		"higher seq, both ending after a cutoff", t, func() {
+		pauseLogFolder()
+
+		cfg, _ := logStoreOpenConfig(t)
+		s, err := openLogStoreLocked(ctx, cfg)
+		So(err, ShouldBeNil)
+
+		job := testDBJob("echo outranked", "segO")
+		_, err = s.storeNewJobsGuarded(ctx, []*Job{job}, false, nil)
+		So(err, ShouldBeNil)
+
+		boltEnd := segTestEnd
+		archiveTestJob(s, job, boltEnd.Add(-time.Second), boltEnd)
+		foldOverlay(s)
+		So(s.close(ctx), ShouldBeNil)
+
+		k := logKeyOf(job)
+		segEnd := boltEnd.Add(time.Hour)
+		again := historyFolded{key: k, seq: histOutrankingSeq, job: testDBArchivedJob(job.Cmd, "segO", segEnd)}
+
+		writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) {
+			So(w.addCompletion(&again), ShouldBeNil)
+		})
+
+		result := openLogStoreBounded(ctx, cfg)
+		So(result.err, ShouldBeNil)
+
+		s = result.s
+
+		Convey("retrieveCompleteJobsRecent gives it once, as the segment's completion", func() {
+			recent, errt := s.retrieveCompleteJobsRecent(boltEnd.Add(-time.Minute))
+			So(errt, ShouldBeNil)
+			So(jobKeys(recent), ShouldResemble, []string{k.String()})
+			So(recent[0].EndTime.Equal(segEnd), ShouldBeTrue)
 		})
 	})
 }

@@ -152,12 +152,22 @@ func (s *logStore) readJobs(fn func(live bool, job *Job) error) error {
 	return nil
 }
 
-// historyKeys returns every key in s's history key index, in key order.
+// historyKeys returns every key in s's history key index or its segments,
+// once each, in key order.
 func (s *logStore) historyKeys() []logKey {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	keys := slices.Collect(maps.Keys(s.state.history))
+	s.mu.RUnlock()
 
-	return slices.SortedFunc(maps.Keys(s.state.history), func(a, b logKey) int { return bytes.Compare(a[:], b[:]) })
+	for _, seg := range s.segments.segs {
+		for _, e := range seg.keys {
+			keys = append(keys, e.key)
+		}
+	}
+
+	slices.SortFunc(keys, func(a, b logKey) int { return bytes.Compare(a[:], b[:]) })
+
+	return slices.Compact(keys)
 }
 
 // completeJobsOf returns the history entry's job of each of keys, in their
@@ -166,12 +176,13 @@ func (s *logStore) completeJobsOf(keys []logKey) ([]*Job, error) {
 	jobs := make([]*Job, 0, len(keys))
 
 	err := s.viewHistoryKeys(keys, func(r *historyRead) error {
-		for _, k := range keys {
-			job, err := r.job(k)
-			if err != nil {
-				return err
-			}
+		byKey, err := r.jobs(keys)
+		if err != nil {
+			return err
+		}
 
+		for _, k := range keys {
+			job := byKey[k]
 			if job == nil {
 				return fmt.Errorf("%w: complete job %s has no history entry", errStoreCorrupt, k)
 			}

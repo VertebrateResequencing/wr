@@ -2173,16 +2173,19 @@ completed-job records (key, `complete` seq, flat spec, flat final state)
 and rglookup entries; then a footer frame holding the block offsets, the
 folded position it covers, the highest `complete` seq in it, and sorted
 sections equivalent to today's history buckets for the jobs in it: key to
-Ref, rep group to keys, dep group to keys, reverse dep group to keys, dep
-groups seen, end time to Ref, rep group end time, and new
-learned-requirement samples; then a trailer (footer offset, CRC, magic
+Ref, rep group to keys (its rglookups, as `repgroupToKey`), dep group to
+keys, reverse dep group to keys, dep groups seen, end time to Ref, rep group
+end time, new learned-requirement samples, and the keys whose rglookups a
+modify dropped; then a trailer (footer offset, CRC, magic
 `WRHIST01`). In memory: the key index (key to Ref, about 50-100MB at 2.15M
 jobs), rep group to segment numbers, dep group to segment numbers, each
-segment's end-time range, the samples. Footer sections are read on demand
-through a 64MiB LRU. A posting is valid only while the key index maps its key
-to that segment's record, so a superseded record drops out without
-rewriting segments; live keys are filtered per query as listed under
-"Folder and history".
+segment's end-time range, each rep group's latest end time, each dropped
+key's last dropping segment, the samples. Footer sections are read on demand
+through a 64MiB LRU of sections, not whole footers. A posting is valid only
+while the key index maps its key to that segment's record, so a superseded
+record drops out without rewriting segments; but an rglookup posting is valid
+whichever segment holds its key's record, until a later segment drops its
+key. Live keys are filtered per query as listed under "Folder and history".
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_segment.go`, `jobqueue/store_history.go`
@@ -2691,7 +2694,12 @@ Phase 2. Holding the store lock (`dbFile + ".lock"`, taken as C7 says), recover,
 fold the log and seal the open segment, write a checkpoint (its rotation leaves
 one new empty wal file at the cut), delete covered wal files, merge `.hist`
 segments smaller than `histSegmentBytes` into new ones (write, fsync, rename,
-then delete inputs). `CompactStats` before/after are the directory's total
+then delete inputs). D2's key lookup (the newest segment wins) and its
+dropped-rglookup check take segment number order as fold order, so a merge
+takes only a contiguous run of segment numbers, the merged segment takes the
+run's last number, and the drops inside the run are applied to the postings
+it merges and kept in the merged footer, where they still drop earlier
+segments' postings. `CompactStats` before/after are the directory's total
 bytes; unreadable records are counted as today. Refusal while a manager runs is
 unchanged. On an unconverted bbolt file, compact first runs `convertBoltDB`
 (same steps, free-space check and crash safety as E1), then compacts the new

@@ -2085,7 +2085,7 @@ called ready, or explicitly deferred with the owner.
   retires bbolt history. If it must hold sooner, open `history.bolt`
   read-only first, or skip the `Update` when its buckets exist.
 
-- [ ] (from 2a.1 review) A segment footer's rep group posting section
+- [x] (from 2a.1 review) A segment footer's rep group posting section
   merges the segment's rglookups with its completions' own rep groups
   (`histFooterBuilder.footer`, `jobqueue/store_segment.go`), but bbolt
   answers by-rep-group queries from `repgroupToKey`, which holds the
@@ -2099,14 +2099,94 @@ called ready, or explicitly deferred with the owner.
   2b.1, which must answer by-rep-group queries as bbolt does, keeping an
   rglookup posting valid whichever segment holds its key's record;
   checked by D3 test 1.
+  Resolved by 2b.1: the rep group posting section holds the segment's
+  rglookups alone (`histFooterBuilder.footer`), and a by-rep-group query
+  takes every rglookup posting of the rep group in any segment
+  (`histIndex.lookedUp`), whichever segment holds the key's record, as
+  `repgroupToKey` does. A modify's drop of a key's rglookups, which
+  `history.bolt` makes in `dropAllLookups`, is a new footer section,
+  `drops` (`histSegmentWriter.addDrop`): it removes the segment's earlier
+  rglookups of the key, and the index skips the key's postings in earlier
+  segments (`histIndex.droppedSince`); spec D2 now says so. Checked by
+  `TestHistorySegmentLookups` (`jobqueue/store_history_test.go`) and by
+  `TestLogStoreHistoryFromSegmentsMatchesBolt`
+  (`jobqueue/store_history_bolt_test.go`), which moves a Phase 1 history
+  out of `history.bolt` into segments, rglookups in one and completions in
+  the next, and compares every history query with the bbolt store's; D3
+  test 1 (2b.2) checks it again.
 
 - [ ] (from 2a.1 review round 4) A completed-job record bigger than 64KiB
   gets a segment block of its own over 64KiB, as checkpoints do
   (`checkpointWriter`), but D2 says blocks are at most 64KiB with no
   exception. Owner: 2b.2, which adds D2 test 1; amend the spec to state
   the exception (or split such records) when it does.
-- [ ] (from 2a.1 review round 4) A 200,000-key footer is about 24MB raw
+- [x] (from 2a.1 review round 4) A 200,000-key footer is about 24MB raw
   and 46MB by `memSize`, so the 64MiB footer LRU holds about one footer of
   a production-sized 256MiB segment. Owner: 2b.1, whose history queries
   read footers; measure with D3's tests and resize or split the footer if
   queries thrash the cache.
+  Resolved by 2b.1: measured with 4 segments of 200,000 completions of D3
+  test 4's production-shaped job, a quarter of them in one rep group: each
+  footer is 29.9MB raw and 62MB by `memSize`, so whole footers would
+  thrash (one fits, and a query of that rep group reads all 4 every time).
+  The cache now holds the two sections queries read, apart, by segment and
+  section (`histFooter.only`), with names cloned so that nothing keeps the
+  raw footer alive: 3.2MB of rep group postings and 6.4MB of end times
+  each, so 64MiB holds about 20 segments' postings. The status of that rep
+  group (200,000 complete) read 4 footers in 618ms cold and none in 254ms
+  again; other rep groups' then read none. Size left at 64MiB.
+  `TestHistFooterCache` covers the section cache.
+- [ ] (from 2b.1) The reducer still reads history membership from the
+  in-memory `history` map alone, which holds `history.bolt`'s and the
+  overlay's keys but not the segments': `applyDelete` (unindexing a key it
+  thinks incomplete), `completeOutranked`, `dropFoldedLive`
+  (`jobqueue/store_records.go`) and `applyBacklogComplete`
+  (`jobqueue/store_backlog.go`). 2b.1 made the history queries
+  (`checkIfComplete`, add dedup, export) see segment keys through
+  `logStore.hasHistory`, but replay and the live plane do not. Owner:
+  2b.2, whose folder writes segments, so that keys leave the map: the
+  spec's Phase 2 key index takes each key's seq from the record its Ref
+  points to.
+- [ ] (from 2b.1) The segment index (`histIndex`) has no lock: 2b.1 loads
+  it at open and only reads it after, but 2b.2's folder adds each sealed
+  segment to it while queries read it. Owner: 2b.2. Also 2b.2: the
+  folder's fold of a modify calls `histSegmentWriter.addDrop`, and learned
+  samples (`sampleCount`, `loadReqGroupRecs`) still read `history.bolt`.
+- [ ] (from 2b.1 review) Pre-existing Phase 1 defect, also at d7799727:
+  an archived dependent of a dep group is not resurrected by a new member
+  added after a checkpoint and a restart. Reproduce on the log store: add
+  member M (`DepGroups` `["grow"]`) and dependent D (depending on dep group
+  `grow`), archive both, `foldOverlay`, `s.checkpoint()`,
+  `reopenLogStore`, then add M2 in `grow`: D is not in `jobsToQueue`.
+  Without the reopen, with the reopen alone, or with fold then reopen, D
+  is resurrected. Likely cause: checkpoints carry only live specs, so the
+  archived keys drop out of the in-memory `reverseDeps` on reopen, while
+  bbolt keeps them in `reverseDepgroupToKey`; the segment footers'
+  reverse dep group sections are never read. Owner: bugfix on
+  customdb-f397b547 after 2b.1.
+- [ ] (from 2b.1 review, optional) Each segment's end time section is
+  about 6.4MB in the footer cache, so a `retrieveCompleteJobsRecent`
+  cutoff spanning about 11 production-sized segments cycles the 64MiB
+  section LRU, reading every one of their footers on every call. Owner:
+  2b.3; measure, and resize the cache or bound the read if it matters.
+- [ ] (from 2b.1 review round 2) `historyRead.repGroupKeys` and
+  `historyRead.completedUnder` (`jobqueue/store_history_bolt.go`) hide a
+  key's `history.bolt` rglookups (`repgroupToKey`) only for a modify not
+  yet folded (`r.unlooked`), never for a drop a segment records
+  (`histIndex.dropped`). Until a folder writes segments the two cannot
+  disagree, as `history.bolt` drops the key's rglookups when it folds the
+  modify; but a folder that folds a modify into a segment's `drops`
+  section while `history.bolt` still holds the key's rglookups would show
+  the key under a rep group it was moved out of. Owner: 2b.2. If 2b.2
+  keeps `history.bolt` alongside segments, a segment drop must also hide
+  that key's `history.bolt` postings; pair with the `addDrop` note above.
+- [x] (from 2b.1 review round 2, informational) An unfolded overlay entry
+  is now priced at its spec and complete records' lengths times
+  `archivedFlatScale`, 1564 per mille (`historyRead.archivedBytes`,
+  `archivedFlatPrice`), not at their raw lengths as Phase 1 priced it. So
+  the overlay's share of `spendArchivedBytesByRepGroup` trips
+  `ErrArchivedHistoryTooBig` at about the count today's Binc records trip
+  it at, as a segment entry's does, rather than at about 1.56 times that
+  count; this is what D3 intends. `TestHistoryArchivedPricing`
+  (`jobqueue/store_history_test.go`) pins the price of a segment entry and
+  of an overlay entry exactly.

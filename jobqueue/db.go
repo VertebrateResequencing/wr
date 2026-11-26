@@ -695,10 +695,16 @@ func facetsOf(job *Job) archivedJobFacets {
 type completeJobsQuery struct {
 	// group returns the key of the group the caller will put an archived job with
 	// these facets in, and false if the caller's filters discard it outright.
+	// It may be called in any order, not the key order jobs are selected in:
+	// the log store groups the jobs in its history segments in the order
+	// their segments hold them. So it must not depend on the order of its
+	// calls, nor on limit's.
 	group func(*archivedJobFacets) (string, bool)
 
 	// limit returns how many more jobs of the given group the caller can still
-	// use. Any beyond that are only counted.
+	// use. Any beyond that are only counted. It is called once a group, on
+	// the group's first kept job in key order, whatever order group was
+	// called in.
 	limit func(string) int
 }
 
@@ -937,13 +943,9 @@ func putRunState(bjl, brs *bolt.Bucket, key, encodedRunState []byte) error {
 // offer counts the archived job of key, whose facets are a.facets, and offers
 // it to its group's selector, if the query keeps it.
 func (a *archivedScan) offer(key []byte) {
-	group, keep := a.query.group(&a.facets)
-	if !keep {
-		return
+	if group, keep := a.query.group(&a.facets); keep {
+		a.offerIn(key, group)
 	}
-
-	a.counted[group]++
-	a.selector(group).offer(key, group, &a.facets)
 }
 
 // queuedCommit is the durability of a write queued for the best-effort writer,
@@ -991,6 +993,13 @@ func (c *queuedCommit) WaitWithin(d time.Duration) (bool, error) {
 	case <-timer.C:
 		return false, nil
 	}
+}
+
+// offerIn counts the archived job of key, of a.facets, in group and offers it
+// to group's selector.
+func (a *archivedScan) offerIn(key []byte, group string) {
+	a.counted[group]++
+	a.selector(group).offer(key, group, &a.facets)
 }
 
 // pace bounds the backup copy's dirty-page backlog for the bytes written since the

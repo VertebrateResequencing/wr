@@ -62,13 +62,16 @@ spec.md section: E6
 
 Implement compact on the store directory in `jobqueue/store_compact.go`
 (recover, fold and seal, checkpoint, delete covered wal files, merge
-small segments) and convert-then-compact for an unconverted bbolt file via
-`convertBoltDB`; delete `errCompactNotSupported` and the Phase-1-only
-tests 5 and 6. Cover E6 tests 1 to 4. Depends on 2d.1. Also resolve the
-1f.4 review round 1 incidental on the live entries `dropFoldedLive`
-drops riding along in every checkpoint, and the 1f.6 review round 2
-incidental on compact's lock-failure wording and its untested rename
-failure ([incidentals.md](incidentals.md)).
+small segments, each merge a contiguous run of segment numbers that
+takes the run's last number, applying the run's drops and keeping them
+in the merged footer, as E6 says) and convert-then-compact for an
+unconverted bbolt file via `convertBoltDB`; delete
+`errCompactNotSupported` and the Phase-1-only tests 5 and 6. Cover E6
+tests 1 to 4. Depends on 2d.1. Also resolve the 1f.4 review round 1
+incidental on the live entries `dropFoldedLive` drops riding along in
+every checkpoint, and the 1f.6 review round 2 incidental on compact's
+lock-failure wording and its untested rename failure
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

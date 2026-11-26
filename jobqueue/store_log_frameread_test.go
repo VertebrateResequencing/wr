@@ -213,7 +213,7 @@ func TestLogStoreOverlayReadCost(t *testing.T) {
 			So("the folder never started a round", ShouldBeEmpty)
 		}
 
-		frames, recordBytes := overlayFrames(s)
+		frames, recordsPrice := overlayFrames(s)
 		So(frames, ShouldBeLessThan, 2*overlayReadJobs)
 
 		Convey("a query of their rep group reads each frame holding their records once", func() {
@@ -253,7 +253,7 @@ func TestLogStoreOverlayReadCost(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(reads, ShouldEqual, frames)
 			So(budget.priced, ShouldEqual, overlayReadJobs)
-			So(maxArchivedBytes-budget.remaining, ShouldEqual, recordBytes)
+			So(maxArchivedBytes-budget.remaining, ShouldEqual, recordsPrice)
 		})
 	})
 }
@@ -391,8 +391,8 @@ func holdFirstFold() <-chan struct{} {
 }
 
 // overlayFrames returns how many frames hold the spec and complete records of
-// s's overlay entries, and those records' total length, each read through its
-// Ref.
+// s's overlay entries, and the sum of each entry's archivedFlatPrice, of its
+// records each read through its Ref.
 func overlayFrames(s *logStore) (int, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -401,14 +401,18 @@ func overlayFrames(s *logStore) (int, int) {
 	n := 0
 
 	for _, h := range s.state.overlay {
-		for _, ref := range []wal.Ref{h.spec, h.complete} {
+		var bodies [2]int
+
+		for i, ref := range []wal.Ref{h.spec, h.complete} {
 			frames[wal.Ref{File: ref.File, Off: ref.Off}] = true
 
 			rec, err := s.readRecord(ref)
 			So(err, ShouldBeNil)
 
-			n += len(rec)
+			bodies[i] = len(rec) - logRecordHeader - logKeyLen
 		}
+
+		n += archivedFlatPrice(bodies[0], bodies[1])
 	}
 
 	return len(frames), n
