@@ -767,7 +767,8 @@ func shownMissing(missing []string) []string {
 // makes crashDamagedCopies copies of storeDir, a store as a killed child left
 // it, alternately truncating its last wal file at a random offset and flipping
 // one random byte of it, and requires each copy to recover without error, with
-// every job in a state the child wrote for it (intents).
+// every job in a state the child wrote for it (intents), and none both live and
+// complete.
 //
 // The copies must be of the store before it is reopened: the reopen starts a
 // new wal file holding only its header, which would then be the last file, so
@@ -892,7 +893,10 @@ func damageCrashFile(path string, truncate bool) error {
 }
 
 // recoverDamagedCrashCopy opens the store copy at copyDir and returns the keys
-// it recovered in a state the child never wrote for them.
+// it recovered in a state the child never wrote for them, and, marked as such,
+// those it recovered both live and complete. The child never runs a job again
+// once it has archived it, so after a cut no key may recover both (spec
+// "Recovery", step 4): the cut lost its archive's delete record.
 func recoverDamagedCrashCopy(ctx context.Context, kind storeKind, copyDir string, keys []string,
 	intents map[string][]int,
 ) []string {
@@ -904,20 +908,27 @@ func recoverDamagedCrashCopy(ctx context.Context, kind storeKind, copyDir string
 	jobs, _, err := s.recoverIncompleteJobs()
 	So(err, ShouldBeNil)
 
+	complete, err := s.retrieveCompleteJobsByKeys(keys)
+	So(err, ShouldBeNil)
+
+	completeKeys := make(map[string]bool, len(complete))
 	unwritten := make([]string, 0, len(jobs))
+
+	for _, job := range complete {
+		completeKeys[job.Key()] = true
+
+		if !slices.ContainsFunc(intents[job.Key()], isCrashArchive) {
+			unwritten = append(unwritten, job.Key())
+		}
+	}
 
 	for _, job := range jobs {
 		if !slices.Contains(intents[job.Key()], recoveredCrashProgress(job)) {
 			unwritten = append(unwritten, job.Key())
 		}
-	}
 
-	complete, err := s.retrieveCompleteJobsByKeys(keys)
-	So(err, ShouldBeNil)
-
-	for _, job := range complete {
-		if !slices.ContainsFunc(intents[job.Key()], isCrashArchive) {
-			unwritten = append(unwritten, job.Key())
+		if completeKeys[job.Key()] {
+			unwritten = append(unwritten, job.Key()+" (live and complete)")
 		}
 	}
 

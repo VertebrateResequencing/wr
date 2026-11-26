@@ -91,10 +91,11 @@ recording, which A5 does not compare; each of the other 1,197
 
 Spec A5 digests a handle result only by whether it is nil, and said the
 first log-store replay would revisit that choice. Any store may return nil
-from `prepareJobChange` (spec, The store interface), and
-`queueJobChangeAhead` given nil records the change afresh. The log store
-always returns nil, so every compared call where bbolt had returned a
-handle mismatched. The answer is not a different one to a server.
+from `prepareJobChange` (spec, The store interface), and the log store's
+`queueJobChangeAhead` given nil records the change afresh (bbolt's records
+nothing for nil, corrected in 2a.1). The log store always returns nil, so
+every compared call where bbolt had returned a handle mismatched. The
+answer is not a different one to a server.
 
 Fix: replay accepts a nil change-ahead handle from `prepareJobChange`, or
 from a `moveJobChangeAhead` that was given none, for a recorded handle

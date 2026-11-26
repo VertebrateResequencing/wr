@@ -95,8 +95,10 @@ type store interface {
 	expectJobExitUpdate() func()
 	archiveCompletion(key string, job *Job) (archiveOutcome, error)
 
-	// prepareJobChange may return nil; queueJobChangeAhead given nil records
-	// the change afresh.
+	// prepareJobChange may return nil: the log store always does, bbolt only
+	// once closed or when it cannot encode the job. The log store's
+	// queueJobChangeAhead given nil records the change afresh; bbolt's makes
+	// the change to the job and records nothing.
 	prepareJobChange(ctx context.Context, job *Job,
 		change func(*Job)) *jobChangeAhead
 	queueJobChangeAhead(ctx context.Context, job *Job, ahead *jobChangeAhead,

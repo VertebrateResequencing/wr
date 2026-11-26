@@ -467,6 +467,42 @@ func historyStatusSummary(status *RepGroupStatus) string {
 		status.CPUtime, status.StartTime.UnixNano(), status.EndTime.UnixNano())
 }
 
+func TestHistoryBoltRegroupedEnds(t *testing.T) {
+	Convey("Given a key completed under one rep group, then another, history.bolt keeps both end times", t, func() {
+		first, second := segRegroupedCompletions()
+		So(boltRGEndTimes(t, first, second), ShouldResemble, segRegroupedEnds(first, second))
+	})
+}
+
+// boltRGEndTimes returns history.bolt's rep group end times after its
+// putComplete of each of complete, in order.
+func boltRGEndTimes(t *testing.T, complete ...historyFolded) []histGroupEnd {
+	t.Helper()
+
+	h, err := openHistoryBolt(t.TempDir(), new(codec.BincHandle))
+	So(err, ShouldBeNil)
+
+	defer func() { So(h.close(), ShouldBeNil) }()
+
+	var ends []histGroupEnd
+
+	So(h.bolt.Update(func(tx *bolt.Tx) error {
+		for i := range complete {
+			if _, err := h.putComplete(tx, &complete[i]); err != nil {
+				return err
+			}
+		}
+
+		return tx.Bucket(bucketRGEndTime).ForEach(func(k, v []byte) error {
+			ends = append(ends, histGroupEnd{name: string(k), end: int64(binary.BigEndian.Uint64(v))}) //nolint:gosec
+
+			return nil
+		})
+	}), ShouldBeNil)
+
+	return ends
+}
+
 func TestLogStoreHistoryBolt(t *testing.T) {
 	if runnermode || servermode {
 		return

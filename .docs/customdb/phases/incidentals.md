@@ -1759,7 +1759,7 @@ called ready, or explicitly deferred with the owner.
   server. A/B with the kick test ahead of it, `-count 10`, run side by
   side: before 10/10 fail, after 0/10.
 
-- [ ] (from 1g.1 review) A4 test 2's oracle (`recoverDamagedCrashCopy`,
+- [x] (from 1g.1 review) A4 test 2's oracle (`recoverDamagedCrashCopy`,
   `jobqueue/store_crash_test.go`) checks only that a damaged copy recovers
   no state the child never wrote. It cannot see intact records lost before
   the damage point, or a key recovered both live and complete, which the
@@ -1770,6 +1770,11 @@ called ready, or explicitly deferred with the owner.
   `recoverDamagedCrashCopy` that no key is returned by both
   `recoverIncompleteJobs` and `retrieveCompleteJobsByKeys`, and show it
   kills the `dropFoldedLive` no-op mutant.
+  Done in 2a.1: `recoverDamagedCrashCopy` reports each key recovered both
+  live and complete (the child never runs an archived job again). In a
+  scratch copy, `dropFoldedLive` returning 0 at once fails `TestStoreCrash`
+  on its first round's damaged copies, every failure a key marked "live and
+  complete"; the unmutated test passes.
 
 - [x] (from 1g.2 review round 2) `gosec` G703 reported
   `jobqueue/store_convert.go:365` and `:1247` (`os.Stat` of the bbolt file
@@ -1788,7 +1793,7 @@ called ready, or explicitly deferred with the owner.
   a fresh HOME or with copies of the user's lint cache; `make lint` gives
   0 issues in both cache states.
 
-- [ ] (from 1g.2 review round 3) Three small gaps in the A5 replay
+- [x] (from 1g.2 review round 3) Three small gaps in the A5 replay
   harness (`jobqueue/store_record.go`), none able to accept a wrong
   answer. First, no test replays an add with dependents where the replay
   errors and the recording did not, so a mutant that also accepts the
@@ -1803,6 +1808,16 @@ called ready, or explicitly deferred with the owner.
   afresh, as it does today") are wrong for bbolt, which writes nothing for
   a nil handle (`db.go`, `queueJobChangeAhead`); only the log store makes
   the change afresh. Owner: 2a.1.
+  Done in 2a.1: `TestStoreRecordReplayLiveDependents` records an add
+  reading a started live dependent through the plain bbolt store and
+  replays it through `failingDependentsAddStore`, expecting exactly a
+  `storeNewJobsGuarded` mismatch; a scratch-copy mutant also accepting the
+  error-free digest fails it. The replay has a comment on why
+  `acceptDependentsAsStored` comes before `noteAdded`. The `acceptNoAhead`
+  doc comment, the store interface comment (`jobqueue/store.go`), spec.md's
+  bullet and the 1g.2 evidence now say only the log store records the
+  change afresh for a nil handle, and bbolt records nothing (bbolt prepares
+  none only once closed or when it cannot encode the job).
 
 - [x] (from 1g.3) `developers/wrdev.sh prodsim` with `WRDEV_PRODSIM_DBDIR`,
   which `developers/soak/run.sh` always sets, linked `$PROD_RUN/db` to a
@@ -2056,3 +2071,42 @@ called ready, or explicitly deferred with the owner.
   mutant R7, a changed start detail, survived the round 3 tests).
   Proposed owner was 2d.1; as one assertion, fix round 4 added it, and
   `TestStoreConvertSidecarShowsCounting` now checks that detail too.
+
+- [ ] (from 2a.1 review) With no backup, opening a log store whose
+  checkpoint or segment is corrupt rewrites `history.bolt`'s meta page,
+  against E2 step 8 (`dbFile` untouched). `openHistoryBolt`
+  (`jobqueue/store_history_bolt.go`) always runs a bbolt `Update` to
+  create its buckets, and `openBackedLogStore` (`jobqueue/store_log.go`)
+  opens it before `recover` finds the corruption. Pre-existing: the E2
+  no-backup tests corrupt the store by removing `VERSION`, which is caught
+  before `history.bolt` is opened. Seen in 2a.1: in a scratch copy,
+  `TestHistSegmentOpen`'s no-backup case leaves the damaged segment as it
+  was but `history.bolt`'s sha256 changed. Owner: 2e.1 (F5), which
+  retires bbolt history. If it must hold sooner, open `history.bolt`
+  read-only first, or skip the `Update` when its buckets exist.
+
+- [ ] (from 2a.1 review) A segment footer's rep group posting section
+  merges the segment's rglookups with its completions' own rep groups
+  (`histFooterBuilder.footer`, `jobqueue/store_segment.go`), but bbolt
+  answers by-rep-group queries from `repgroupToKey`, which holds the
+  rglookups alone (`historyRead.repGroupKeys`,
+  `jobqueue/store_history_bolt.go`). Under the spec's posting-validity
+  rule (D2: a posting is valid only while the key index maps its key to
+  that segment's record), a job re-added under rep group A (an rglookup
+  of A in segment 1) that then completes under rep group B (in segment
+  2) leaves an invalid A posting, as the key index maps its key to
+  segment 2. A query for A would then miss a job bbolt returns. Owner:
+  2b.1, which must answer by-rep-group queries as bbolt does, keeping an
+  rglookup posting valid whichever segment holds its key's record;
+  checked by D3 test 1.
+
+- [ ] (from 2a.1 review round 4) A completed-job record bigger than 64KiB
+  gets a segment block of its own over 64KiB, as checkpoints do
+  (`checkpointWriter`), but D2 says blocks are at most 64KiB with no
+  exception. Owner: 2b.2, which adds D2 test 1; amend the spec to state
+  the exception (or split such records) when it does.
+- [ ] (from 2a.1 review round 4) A 200,000-key footer is about 24MB raw
+  and 46MB by `memSize`, so the 64MiB footer LRU holds about one footer of
+  a production-sized 256MiB segment. Owner: 2b.1, whose history queries
+  read footers; measure with D3's tests and resize or split the footer if
+  queries thrash the cache.

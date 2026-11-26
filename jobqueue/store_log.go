@@ -320,6 +320,42 @@ func (d *logDependentsScan) notLive(keys []logKey, live []*Job) []logKey {
 	return others
 }
 
+// loadHistory loads history.bolt's key index and folded position, and the index
+// of the sealed history segments, returning history.bolt's folded position and
+// the highest complete seq history holds.
+func (s *logStore) loadHistory() (historyPos, uint64, error) {
+	folded, foldedSeq, err := s.history.load(s.state.history)
+	if err != nil {
+		return historyPos{}, 0, err
+	}
+
+	if s.segments, err = loadHistIndex(s.dir); err != nil {
+		return historyPos{}, 0, err
+	}
+
+	return folded, max(foldedSeq, s.segments.maxSeq), nil
+}
+
+// jobOfFlat returns the job of a flat spec, decoded with ch, and a flat run
+// state.
+func jobOfFlat(spec, state []byte, ch codec.Handle) (*Job, error) {
+	job := &Job{}
+
+	if err := decodeFlatSpec(spec, job, ch); err != nil {
+		return nil, err
+	}
+
+	var rs logRunState
+
+	if err := decodeFlatRunState(state, &rs); err != nil {
+		return nil, err
+	}
+
+	rs.applyTo(job)
+
+	return job, nil
+}
+
 // logChangeQueue holds the state records queueJobChangeAhead has taken the
 // seqs and run states of, until one goroutine at a time, started by the push
 // that finds none running, encodes and appends them. A record appended after
@@ -1401,9 +1437,10 @@ func (s *logStore) addTransitionLocked(job *Job, k logKey, build func() bool) fu
 
 // recover deletes files left being written, loads the wal file cuts an earlier
 // recovery noted for the backup (see readRecoveryCuts), history.bolt's key
-// index and folded position and the newest checkpoint, replays the log from the
-// checkpoint's walFrom, resumes the seq counter above every seq the
-// checkpoint, the log and history.bolt hold (spec "Recovery", steps 1 to 5),
+// index and folded position, the index of the sealed history segments and the
+// newest checkpoint, replays the log from the checkpoint's walFrom, resumes the
+// seq counter above every seq the checkpoint, the log, history.bolt and the
+// segments hold (spec "Recovery", steps 1 to 5),
 // and deletes the files the checkpoint made redundant that are left. It
 // returns the number the next wal file must have.
 func (s *logStore) recover(ctx context.Context) (uint32, error) {
@@ -1411,7 +1448,7 @@ func (s *logStore) recover(ctx context.Context) (uint32, error) {
 		return 0, err
 	}
 
-	folded, foldedSeq, err := s.history.load(s.state.history)
+	folded, historySeq, err := s.loadHistory()
 	if err != nil {
 		return 0, err
 	}
@@ -1427,7 +1464,7 @@ func (s *logStore) recover(ctx context.Context) (uint32, error) {
 		return 0, err
 	}
 
-	s.seq.Store(max(s.state.maxSeq, foldedSeq))
+	s.seq.Store(max(s.state.maxSeq, historySeq))
 
 	s.state.dropped = s.state.folded
 	s.delFrom = s.ckptFrom
@@ -1820,6 +1857,10 @@ type logStore struct {
 	// history is history.bolt.
 	history *historyBolt
 
+	// segments is the index of the sealed history segments (Phase 2), loaded
+	// when the store opens.
+	segments *histIndex
+
 	// foldMu makes folds one at a time (see foldNow), and guards foldClosed,
 	// set once close has stopped the folder goroutine, which foldStop stops
 	// and closes foldExited as it ends. foldStats are the folds' "db writer"
@@ -2127,21 +2168,7 @@ func (s *logStore) readRecordBody(ref wal.Ref, typ logRecordType) ([]byte, error
 
 // jobOf returns the job made of a flat spec and flat run state.
 func (s *logStore) jobOf(spec, state []byte) (*Job, error) {
-	job := &Job{}
-
-	if err := decodeFlatSpec(spec, job, s.ch); err != nil {
-		return nil, err
-	}
-
-	var rs logRunState
-
-	if err := decodeFlatRunState(state, &rs); err != nil {
-		return nil, err
-	}
-
-	rs.applyTo(job)
-
-	return job, nil
+	return jobOfFlat(spec, state, s.ch)
 }
 
 // checkIfLive tells you if the keyed job is live. A key no job can have is not

@@ -86,8 +86,10 @@ lists plus the replacements for its leaks, 52 in all, closed as follows:
 - `retrieveLimitGroup`, which the server already calls on `*db`, joins the
   interface.
 - Change-ahead stays as four methods taking an opaque `*jobChangeAhead`. A
-  store may return nil from `prepareJobChange`; `queueJobChangeAhead` with
-  nil records the change afresh, as it does today.
+  store may return nil from `prepareJobChange`. The log store's
+  `queueJobChangeAhead` with nil records the change afresh; bbolt's makes the
+  change to the job and records nothing, as it does today (bbolt returns nil
+  only once closed or when it cannot encode the job).
 - `s.db.reqStats.changes`/`.interval` and `db.recSecRound`/`recMBRound`
   become `reqStatChanges`, `setReqStatRefreshInterval` and `setRecRounding`.
 - `s.db.rerunGuards.register/release` become `registerRerunGuard` and
@@ -2201,9 +2203,9 @@ rewriting segments; live keys are filtered per query as listed under
 5. Given 1,000,000 completed keys, when indexed, then heap growth of the key
    index is under 47MB (100MB at 2.15M keys). The index is a packed
    structure, not a Go map of keys: a sorted slice of fixed-size entries
-   (a 16-byte MD5 of the job key, since a key may carry a prefix, and its
-   Ref; a lookup confirms the key against the record) per sealed segment,
-   plus a small map for keys folded since the last seal.
+   (the job key's 16 bytes, as every key the store holds is 32 hex digits,
+   and its Ref; a lookup confirms the key against the record) per sealed
+   segment, plus a small map for keys folded since the last seal.
 
 ### D3: History queries on segments (Phase 2)
 

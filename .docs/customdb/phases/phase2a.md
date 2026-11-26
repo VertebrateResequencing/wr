@@ -59,5 +59,5 @@ key recovered both live and complete, and the 1g.2 review round 3
 incidental on three small A5 replay harness gaps
 ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

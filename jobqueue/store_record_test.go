@@ -45,6 +45,9 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// recStoreNewJobsGuarded is the name a recording gives storeNewJobsGuarded calls.
+const recStoreNewJobsGuarded = "storeNewJobsGuarded"
+
 const (
 	// storeReplayEnv names the env var holding the recording TestStoreReplay
 	// replays.
@@ -76,7 +79,7 @@ var recordTestBase = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) //nolint:gochec
 // removedMethodsCalls are the methods of removedMethodsRecording's calls, in
 // order.
 var removedMethodsCalls = slices.Concat( //nolint:gochecknoglobals
-	slices.Repeat([]string{"storeNewJobsGuarded"}, 3),
+	slices.Repeat([]string{recStoreNewJobsGuarded}, 3),
 	slices.Repeat([]string{"updateJobRunStateDurableWithin"}, 3),
 	[]string{"logReserveNotDurable", "setBatchTuning"},
 )
@@ -276,6 +279,21 @@ func TestStoreRecordReplayLiveDependents(t *testing.T) {
 			stats, err := replayRecordingFolding(ctx, path, failingDependentsAddStore{store: replayTo}, replayTo)
 			So(err, ShouldBeNil)
 			So(mismatchedMethods(stats), ShouldBeEmpty)
+		})
+	})
+
+	Convey("Given a bbolt recording of an add reading a started live dependent, with no error", t, func() {
+		path := filepath.Join(t.TempDir(), "dependent.rec")
+		recordDependentRead(t, ctx, path, unwrapped, func(_ context.Context, _ store, dependent *Job) *Job {
+			return dependent
+		})
+
+		Convey("replayed against a log store whose add reading it also fails, that add mismatches", func() {
+			replayTo, _ := openTestStore(t, ctx, storeKindLog)
+
+			stats, err := replayRecordingFolding(ctx, path, failingDependentsAddStore{store: replayTo}, replayTo)
+			So(err, ShouldBeNil)
+			So(mismatchedMethods(stats), ShouldResemble, []string{recStoreNewJobsGuarded})
 		})
 	})
 }
@@ -792,7 +810,7 @@ func TestStoreRecordReplay(t *testing.T) {
 
 				stats, err := replayRecordingFolding(ctx, path, undependentStore{store: replayTo}, replayTo)
 				So(err, ShouldBeNil)
-				So(mismatchedMethods(stats), ShouldResemble, []string{"storeNewJobsGuarded"})
+				So(mismatchedMethods(stats), ShouldResemble, []string{recStoreNewJobsGuarded})
 			})
 
 			Convey("replayed against a store whose retrieveRepGroups also returns an error, "+
@@ -1531,7 +1549,7 @@ func TestStoreRecordServe(t *testing.T) {
 
 				Convey("its recording replays against a fresh store with no mismatch", func() {
 					methods := recordedMethods(t, path)
-					So(methods, ShouldContain, "storeNewJobsGuarded")
+					So(methods, ShouldContain, recStoreNewJobsGuarded)
 					So(methods, ShouldContain, "archiveCompletion")
 					So(methods, ShouldContain, "retrieveCompleteJobsByKeys")
 

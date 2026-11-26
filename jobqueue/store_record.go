@@ -150,6 +150,10 @@ var storeReplays = map[string]replayFunc{
 		jobs := rp.jobList(a.Jobs)
 		stored, err := rp.s.storeNewJobsGuarded(rp.ctx, jobs, a.IgnoreAdded, guard)
 		digest := storeDigest(stored, err)
+
+		// acceptDependentsAsStored reads the live records noted before this
+		// add, which noteAdded replaces for the add's own jobs, so it comes
+		// first. The other order could only make a false mismatch.
 		rp.acceptDependentsAsStored(stored, err, digest)
 		rp.noteAdded(a.Jobs, jobs, stored.jobsToQueue)
 
@@ -923,8 +927,11 @@ func (rp *replayer) acceptDependentsAsStored(stored storedNewJobs, err error, di
 // acceptNoAhead accepts, for a prepareJobChange, or a moveJobChangeAhead given
 // no handle, that returned ahead, a recorded answer with or without a
 // change-ahead handle if ahead is nil: any store may prepare none (spec, The
-// store interface), and queueJobChangeAhead given none makes the change
-// afresh. A move given a handle must answer one.
+// store interface), and the log store, which always does, makes the change
+// afresh when its queueJobChangeAhead is given none. bbolt, whose
+// queueJobChangeAhead records nothing given none, prepares none only once
+// closed or when it cannot encode the job. A move given a handle must answer
+// one.
 func (rp *replayer) acceptNoAhead(ahead *jobChangeAhead) {
 	if ahead != nil {
 		return
