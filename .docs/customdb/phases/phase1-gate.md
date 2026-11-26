@@ -100,6 +100,14 @@ of finished jobs on bbolt and the log store alike, and the owner ruled on
 2026-11-18 that item 2b.3 makes it independent of history size. Never
 replace the NFS wr binary while the soak's runners are live.
 
+Orchestrator note, 2026-11-26: the run planned for the night of
+2026-11-25 did not start (the session lost about 10 hours, and the farm
+then had 93 of 115 hosts full). It is scheduled for a weekend night, after
+a probe finds about 6,500 free cores. It runs from a `git archive` export
+of `5404c706` prepared under `/nfs/hgi/wr/sb10-bigdb/customdb/1g3run3/`, so
+the soak tests the Phase 1 code. Phase 2a starts meanwhile on this branch;
+a defect the soak finds is routed through the `bugfix` skill as usual.
+
 - [ ] implemented
 - [ ] reviewed
 
