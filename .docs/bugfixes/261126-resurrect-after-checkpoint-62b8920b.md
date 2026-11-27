@@ -361,3 +361,24 @@
   on the pipe's sendQ and pipe.sender can pick closeQ first.
   - Source: item 3 round 1 load-matched A/B (2026-11-27); captures in the
     implementor's scratch dir.
+  - Red: `TestZZReplyAcceptedBeforeStopReachesClient` with the
+    `replySentHook` seam, kept in .docs/bugfixes/261127-reply-drop-red/
+    (apply the patch, copy the test into jobqueue/, run `go test -tags
+    netgo -count=1 ./jobqueue/ -run
+    '^TestZZReplyAcceptedBeforeStopReachesClient$'`). Fails 7 of 7: a 64MB
+    GetByRepGroup reply accepted by SendMsg 60ms before Stop never arrives;
+    the client gets "receive time out". Passes with ShutdownSocketWait 5s
+    (control only; that masks the bug).
+  - Cause: closeServerCommsAndDB (jobqueue/server.go:9149-9178) waits for
+    the RPC readers but not the request handlers, sleeps
+    ShutdownSocketWait, then closes the socket; mangos xrep (v3.4.2 and
+    v3.6.0) closes each pipe's transport without draining its sendQ, and
+    OptionLinger is not implemented for xrep.
+  - Impact: a delay, not a new duplicate or lost result. The client waits
+    its request timeout (at least 60s) instead of getting ErrClosedStop,
+    or a reconnect resends the request, which existing idempotency covers.
+    A CLI user can see "receive time out" for a command that was done.
+  - Deferred (2026-11-27): pre-existing, not caused by this branch, and
+    the fix (wait for in-flight handlers before the close, plus a
+    wr-owned xrep with a bounded linger, as internal/mangosreq did for
+    req) is outside the customdb scope. Delivery queue row 26.

@@ -1,0 +1,20 @@
+--- a/jobqueue/serverCLI.go
++++ b/jobqueue/serverCLI.go
+@@ -3008,5 +3008,17 @@
+ 		m.Free()
+ 	}
+ 
++	if h := replySentHook.Load(); h != nil {
++		(*h)(err)
++	}
++
+ 	return len(encoded), err
+ }
++
++// replySentHook, if set, is called with SendMsg's result each time reply has
++// handed a reply to the command socket, so a test can stop the manager just
++// after a reply was accepted for sending. It is a test-only seam and is nil in
++// production.
++//
++//nolint:gochecknoglobals // deliberate test seam, mirroring backupStreamsCloseHook
++var replySentHook atomic.Pointer[func(error)]
