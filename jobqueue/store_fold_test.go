@@ -1115,6 +1115,61 @@ func overlaySize(s *logStore) (int, int) {
 	return len(s.state.overlay), lookups
 }
 
+func TestStoreFoldModifiedCompletionKeepsSamples(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a job of req group q completed, put back live and modified to a new key, all in one fold "+
+		"interval, the fold learns from the completion as bbolt does, though the modify drops its key's "+
+		"postings", t, func() {
+		// steps makes those steps in s, flushes it and returns what it learned.
+		steps := func(s learnedStepsStore) learnedAnswers {
+			s.setRecRounding(foldTestSecRound, foldTestMBRound)
+
+			job := testDBJob("echo fold modified completion", historyTestRepGroup)
+			job.ReqGroup = foldTestReqGroup
+			job.Dependencies = Dependencies{NewDepGroupDependency(archivedDepsGroup)}
+			_, err := s.storeNewJobsGuarded(ctx, []*Job{job}, false, nil)
+			So(err, ShouldBeNil)
+
+			end := time.Now().Truncate(time.Second)
+			job.State, job.Exited, job.PeakRAM, job.PeakDisk = JobStateComplete, true, foldTestMBRound, 50
+			job.StartTime, job.EndTime = end.Add(-time.Hour), end
+			_, err = s.archiveCompletion(job.Key(), job)
+			So(err, ShouldBeNil)
+
+			rerun, ok := s.(interface{ storeLiveForRerun(jobs []*Job) error })
+			So(ok, ShouldBeTrue)
+			So(rerun.storeLiveForRerun([]*Job{job}), ShouldBeNil)
+
+			moved := modifiedCopy(job, "echo fold modified completion moved")
+			moved.ReqGroup = foldTestReqGroup
+			So(s.modifyLiveJobs(ctx, []string{job.Key()}, []*Job{moved}), ShouldBeNil)
+			So(s.flush(), ShouldBeNil)
+
+			rec := s.refreshReqGroupRecs(foldTestReqGroup)
+			So(rec, ShouldNotBeNil)
+
+			samples, err := s.count(kindStat)
+			So(err, ShouldBeNil)
+
+			return learnedAnswers{rec: *rec, samples: samples}
+		}
+
+		bolt := steps(openBoltStepsStore(t, ctx))
+		So(bolt.samples, ShouldBeGreaterThan, 0)
+		So(bolt.rec.RAM, ShouldEqual, foldTestMBRound)
+
+		pauseLogFolder()
+
+		s, _ := openTestLogStore(t, ctx)
+		So(steps(s), ShouldResemble, bolt)
+	})
+}
+
 // replacedElsewhereStore is what TestStoreFoldReplacedElsewhere asks of a
 // store.
 type replacedElsewhereStore interface {

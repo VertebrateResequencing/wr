@@ -1123,9 +1123,10 @@ func (s *logStore) decodeCheckpointBlocks(f *os.File, offsets []uint64, refFile 
 }
 
 // decodeCheckpointBlock returns the ops of the records of the checkpoint block
-// i at off in f, each record of its backlog with its header, leaving out spec
-// copies, which apply to nothing. A backlog header and its record are always
-// in the same block.
+// i at off in f, each record of its backlog with its header, spec copies
+// among them, which apply to the reverse dep group index alone (see
+// applyBacklog). A backlog header and its record are always in the same
+// block.
 func (s *logStore) decodeCheckpointBlock(r *logReplayer, f *os.File, i int, off uint64,
 	refFile uint32) checkpointOps {
 	block := checkpointOps{i: i}
@@ -1143,9 +1144,6 @@ func (s *logStore) decodeCheckpointBlock(r *logReplayer, f *os.File, i int, off 
 		}
 
 		h, head = head, nil
-		if h != nil && h.flags&backlogSpecCopy != 0 {
-			return nil
-		}
 
 		op, err := r.op(rec, ref, s.ch)
 		op.backlog = h

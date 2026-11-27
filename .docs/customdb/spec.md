@@ -774,7 +774,8 @@ since the last), and never sooner after the previous one ended than it took:
    `logStore`), the header also holds the Ref of the spec it applied with
    and that spec's rep group. The checkpoint holds one copy of each such
    spec: the live job's if it is one, else a spec record in the backlog,
-   after a header marking it a copy, which applies to nothing. That is one
+   after a header marking it a copy, which applies to nothing but, at
+   recovery, the reverse dep group index (below). That is one
    spec per entry, not one per key, as a re-add or modify can change a
    key's spec between two of its `complete` records. A header and its
    record are always in the same block. Recovery and the next merge apply
@@ -783,9 +784,17 @@ since the last), and never sooner after the previous one ended than it took:
    live state): a `complete` record, unless outranked, becomes its key's
    overlay entry with its header's spec; an rglookup is looked up; an
    applied modify drops the overlay's rglookups of its old key and, if
-   not folded, marks it unlooked. Max seq is the highest of the previous
-   checkpoint's and the merged records', as the record of the highest may
-   be gone. A std stream a record cleared (an empty std record, or a
+   not folded, marks it unlooked. Recovery also puts a spec copy's key in
+   the reverse dep group index under the dep groups it depends on, and
+   takes an applied modify's old key out of it but for its live spec,
+   which is later: once a key is not live, no live record holds the dep
+   groups of a completion not yet folded, and `history.bolt` holds them
+   only once folded (Folder and history), so without the copy an add of a
+   member of one would not put the completed job back until the fold
+   (`.docs/bugfixes/261126-resurrect-after-checkpoint-62b8920b.md`). Max
+   seq is the highest of the previous checkpoint's and the merged
+   records', as the record of the highest may be gone. A std stream a
+   record cleared (an empty std record, or a
    keep-live archive's `complete` record) is held as an empty std record
    at the seq that cleared it, so that an older std record appended after
    the cut is still ignored. A Ref of a record in a checkpoint has bit 31
@@ -902,8 +911,20 @@ with `failures`; it never stops the manager.
   `endTimeToKey`, `repgroupEndTime` and the stats buckets hold completed jobs
   only. `repgroupToKey` and `repgroups` also hold every folded rglookup, and
   those name jobs that are still live: `storeRepGroupLookups` writes one for
-  each queued job re-added under another rep group. Existing bbolt query code is
-  reused with live-bucket checks replaced by the store's live set.
+  each queued job re-added under another rep group. A fold puts a
+  `reverseDepgroupToKey` posting of each completion it records under each
+  dep group its job depends on, unless a modify of its key later in the
+  fold dropped them, and a modify's fold deletes every posting of its old
+  key, as bbolt's add writes and modify deletes them; nothing indexes a
+  key's postings by key, so it reads the whole bucket, once per fold
+  holding a modify. A conversion copies bbolt's postings, of live keys too.
+  Before 2026-11-26 nothing wrote or read them: the reverse dep group index
+  held a completed key only while the log or a checkpoint held its spec,
+  so after a checkpoint and a restart an add of a member of a dep group no
+  longer put back its completed dependents
+  (`.docs/bugfixes/261126-resurrect-after-checkpoint-62b8920b.md`).
+  Existing bbolt query code is reused with live-bucket checks replaced by
+  the store's live set.
 - Phase 2: history is sealed `.hist` segments (layout in D2). The open
   segment is written as `NNNNNNNN.hist.tmp` and sealed (footer, fsync,
   rename) at `histSegmentBytes` (256MiB uncompressed) or `histSegmentAge`
@@ -928,7 +949,10 @@ with `failures`; it never stops the manager.
     `retrieveOldestCompleteJobsByRepGroup` (selection and count),
     `retrieveCompleteJobStatusByRepGroup`, `retrieveCompleteJobsRecent`;
   - the add's dependent scan (`dependentJobsScan.processKey`) reads a key's
-    history entry only when the key is not live and not in the add.
+    history entry only when the key is not live and not in the add. It
+    finds the keys depending on a dep group in the reverse dep group index
+    and in history's reverse dep group postings, skipping a key a modify
+    not yet folded dropped (as queries skip its rglookups).
 - `reqStatChanges` increments when the folder adds a distinct sample, which
   is where `reqStatCache` invalidation moves to.
 
@@ -2175,17 +2199,20 @@ folded position it covers, the highest `complete` seq in it, and sorted
 sections equivalent to today's history buckets for the jobs in it: key to
 Ref, rep group to keys (its rglookups, as `repgroupToKey`), dep group to
 keys, reverse dep group to keys, dep groups seen, end time to Ref, rep group
-end time, new learned-requirement samples, and the keys whose rglookups a
-modify dropped; then a trailer (footer offset, CRC, magic
-`WRHIST01`). In memory: the key index (key to Ref, about 50-100MB at 2.15M
-jobs), rep group to segment numbers, dep group to segment numbers, each
-segment's end-time range, each rep group's latest end time, each dropped
-key's last dropping segment, the samples. Footer sections are read on demand
-through a 64MiB LRU of sections, not whole footers. A posting is valid only
-while the key index maps its key to that segment's record, so a superseded
-record drops out without rewriting segments; but an rglookup posting is valid
-whichever segment holds its key's record, until a later segment drops its
-key. Live keys are filtered per query as listed under "Folder and history".
+end time, new learned-requirement samples, and the keys whose rglookups and
+reverse dep group postings a modify dropped; then a trailer (footer offset,
+CRC, magic `WRHIST01`). In memory: the key index (key to Ref, about 50-100MB at
+2.15M jobs), rep group to segment numbers, dep group to segment numbers, each
+segment's end-time range, each rep group's latest end time, each dropped key's
+last dropping segment, the samples. Footer sections are read on demand through a
+64MiB LRU of sections, not whole footers. A posting is valid only while the key
+index maps its key to that segment's record, so a superseded record drops out
+without rewriting segments; but an rglookup posting is valid whichever segment
+holds its key's record, until a later segment drops its key. A reverse dep group
+posting, which the add's dependent scan reads as Phase 1 reads
+`reverseDepgroupToKey`, is valid the same way, as bbolt keeps a key's postings
+across its completions and a modify drops them all. Live keys are filtered per
+query as listed under "Folder and history".
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_segment.go`, `jobqueue/store_history.go`
@@ -2698,14 +2725,15 @@ then delete inputs). D2's key lookup (the newest segment wins) and its
 dropped-rglookup check take segment number order as fold order, so a merge
 takes only a contiguous run of segment numbers, the merged segment takes the
 run's last number, and the drops inside the run are applied to the postings
-it merges and kept in the merged footer, where they still drop earlier
-segments' postings. `CompactStats` before/after are the directory's total
-bytes; unreadable records are counted as today. Refusal while a manager runs is
-unchanged. On an unconverted bbolt file, compact first runs `convertBoltDB`
-(same steps, free-space check and crash safety as E1), then compacts the new
-store, so no older wr is needed. Phase 1: compact on an unconverted bbolt file
-compacts it as bbolt exactly as today (`db_compact.go` survives until Phase 2),
-so `wrdev.sh compact-fixture` keeps passing; on a store directory it returns
+it merges, its rglookups and reverse dep group postings alike, and kept in
+the merged footer, where they still drop earlier segments' postings.
+`CompactStats` before/after are the directory's total bytes; unreadable records
+are counted as today. Refusal while a manager runs is unchanged. On an
+unconverted bbolt file, compact first runs `convertBoltDB` (same steps,
+free-space check and crash safety as E1), then compacts the new store, so no
+older wr is needed. Phase 1: compact on an unconverted bbolt file compacts it as
+bbolt exactly as today (`db_compact.go` survives until Phase 2), so
+`wrdev.sh compact-fixture` keeps passing; on a store directory it returns
 `errCompactNotSupported` (unreleased; Phase 2 deletes it).
 
 **Package:** `jobqueue/`, `cmd/`

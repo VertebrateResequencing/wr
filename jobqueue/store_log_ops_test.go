@@ -29,6 +29,7 @@ package jobqueue
 // 8), and of how they interleave with adds, archives and folds.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -40,6 +41,13 @@ import (
 
 	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
+)
+
+const (
+	// archivedDepsGroup is the dep group of TestStoreArchivedDependentsAfterRestart's
+	// members, and archivedDepsNewMember the command of the member it adds.
+	archivedDepsGroup     = "grow"
+	archivedDepsNewMember = "echo archived deps new member"
 )
 
 // heldWrite is a write whose records were made, taking their seqs, but not yet
@@ -1876,6 +1884,416 @@ func TestStoreModifyDropsRepGroupLookups(t *testing.T) {
 	}
 }
 
+// archivedDependentsRestart is a way TestStoreArchivedDependentsAfterRestart
+// restarts a log store: optionally folding its history first, optionally
+// checkpointing, then reopening it, with its folder paused throughout if
+// paused, and optionally folding once reopened.
+type archivedDependentsRestart struct {
+	name                                         string
+	paused, foldBefore, checkpoint, foldReopened bool
+}
+
+// restartLogStore restarts s as r says, returning the reopened store.
+func (r archivedDependentsRestart) restartLogStore(ctx context.Context, s *logStore) *logStore {
+	if r.foldBefore {
+		So(s.foldNow(), ShouldBeNil)
+	}
+
+	if r.checkpoint {
+		So(s.checkpoint(), ShouldBeNil)
+	}
+
+	s = reopenLogStore(ctx, s)
+
+	if r.foldReopened {
+		So(s.foldNow(), ShouldBeNil)
+	}
+
+	return s
+}
+
+func TestStoreArchivedDependentsAfterRestart(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	restarts := []archivedDependentsRestart{
+		{name: "reopened"},
+		{name: "folded and reopened", foldBefore: true},
+		{name: "folded, checkpointed and reopened", foldBefore: true, checkpoint: true},
+		{name: "checkpointed with its folder paused and reopened", paused: true, checkpoint: true},
+		{name: "checkpointed with its folder paused, reopened and folded", paused: true, checkpoint: true,
+			foldReopened: true},
+	}
+
+	// each runs steps on a bbolt store and, in a Convey each, on a log store
+	// restarted each way between steps' writes and the new member's add,
+	// asserting that every log store queues and updates what bbolt does, and
+	// returns bbolt's answer.
+	each := func(steps func(st store, restart func())) newMemberPlan {
+		bdb, _ := openTestStore(t, ctx, storeKindBolt)
+		steps(bdb, func() {})
+		fromBolt := planOfNewMember(ctx, bdb)
+
+		for _, r := range restarts {
+			Convey("on a log store "+r.name+" before the add, as on bbolt", func() {
+				if r.paused {
+					pauseLogFolder()
+				}
+
+				s, _ := openTestLogStore(t, ctx)
+				steps(s, func() { s = r.restartLogStore(ctx, s) })
+				So(planOfNewMember(ctx, s), ShouldResemble, fromBolt)
+			})
+		}
+
+		return fromBolt
+	}
+
+	Convey("Given a member of dep group grow, a dependent of grow, a dependent of that dependent's dep group and "+
+		"a dependent of the member's command, all archived, an add of a new member of grow puts back both dep "+
+		"group dependents but not the command's", t, func() {
+		j := newArchivedDependentsJobs()
+
+		fromBolt := each(func(st store, restart func()) {
+			addAndArchive(ctx, st, j.m, j.d, j.e, j.k)
+			restart()
+		})
+
+		So(fromBolt.queued, ShouldResemble, []string{j.d.Cmd, archivedDepsNewMember, j.e.Cmd})
+		So(fromBolt.updated, ShouldBeEmpty)
+	})
+
+	Convey("Given the dependent archived, put back live and modified to a new key, which is archived too, an add "+
+		"of a new member of grow puts back the new key but not the old", t, func() {
+		j := newArchivedDependentsJobs()
+		moved := modifiedCopy(j.d, "echo archived deps dependent moved")
+
+		for _, foldFirst := range []bool{false, true} {
+			Convey(fmt.Sprintf("with the archive folded before the modify: %t", foldFirst), func() {
+				fromBolt := each(func(st store, restart func()) {
+					addAndArchive(ctx, st, j.m, j.d)
+
+					if ls, ok := st.(*logStore); ok && foldFirst {
+						So(ls.foldNow(), ShouldBeNil)
+					}
+
+					So(st.storeLiveForRerun([]*Job{j.d}), ShouldBeNil)
+					So(st.modifyLiveJobs(ctx, []string{j.d.Key()}, []*Job{moved}), ShouldBeNil)
+					_, err := st.archiveCompletion(moved.Key(), moved)
+					So(err, ShouldBeNil)
+
+					restart()
+				})
+
+				So(fromBolt.queued, ShouldResemble, []string{moved.Cmd, archivedDepsNewMember})
+				So(fromBolt.updated, ShouldBeEmpty)
+			})
+		}
+	})
+
+	Convey("Given the dependent archived, put back live and modified keeping its key, an add of a new member of "+
+		"grow updates it", t, func() {
+		j := newArchivedDependentsJobs()
+		same := modifiedCopy(j.d, j.d.Cmd)
+		same.Priority = 7
+
+		fromBolt := each(func(st store, restart func()) {
+			addAndArchive(ctx, st, j.m, j.d)
+			So(st.storeLiveForRerun([]*Job{j.d}), ShouldBeNil)
+			So(st.modifyLiveJobs(ctx, []string{j.d.Key()}, []*Job{same}), ShouldBeNil)
+			restart()
+		})
+
+		So(fromBolt.queued, ShouldResemble, []string{archivedDepsNewMember})
+		So(fromBolt.updated, ShouldResemble, []string{j.d.Cmd})
+	})
+
+	Convey("Given the dependent archived, put back live, looked up under another rep group and removed from the "+
+		"live plane, an add of a new member of grow puts it back: the lookup keeps its postings", t, func() {
+		j := newArchivedDependentsJobs()
+		other := modifiedCopy(j.d, j.d.Cmd)
+		other.RepGroup = "zzother"
+
+		fromBolt := each(func(st store, restart func()) {
+			addAndArchive(ctx, st, j.m, j.d)
+			So(st.storeLiveForRerun([]*Job{j.d}), ShouldBeNil)
+			So(st.storeRepGroupLookups(ctx, []*Job{other}), ShouldBeNil)
+			So(st.deleteLiveJobs(ctx, []string{j.d.Key()}), ShouldBeNil)
+			restart()
+		})
+
+		So(fromBolt.queued, ShouldResemble, []string{j.d.Cmd, archivedDepsNewMember})
+		So(fromBolt.updated, ShouldBeEmpty)
+	})
+
+	Convey("Given an archived dependent of grox, a dep group whose postings sort straight after grow's, an add "+
+		"of a new member of grow does not put it back", t, func() {
+		j := newArchivedDependentsJobs()
+		after := modifiedCopy(j.d, "echo archived deps dependent of grox")
+		after.Dependencies = Dependencies{NewDepGroupDependency("grox")}
+
+		fromBolt := each(func(st store, restart func()) {
+			addAndArchive(ctx, st, j.m, after)
+			restart()
+		})
+
+		So(fromBolt.queued, ShouldResemble, []string{archivedDepsNewMember})
+		So(fromBolt.updated, ShouldBeEmpty)
+	})
+}
+
+// planOfNewMember adds a new member of dep group "grow" to st and returns what
+// the add queues and updates.
+func planOfNewMember(ctx context.Context, st store) newMemberPlan {
+	member := testDBJob(archivedDepsNewMember, "adm")
+	member.DepGroups = []string{archivedDepsGroup}
+
+	stored, err := st.storeNewJobsGuarded(ctx, []*Job{member}, true, nil)
+	So(err, ShouldBeNil)
+
+	return newMemberPlan{queued: sortedCmds(stored.jobsToQueue), updated: sortedCmds(stored.dependents.jobs)}
+}
+
+// sortedCmds returns the sorted commands of jobs.
+func sortedCmds(jobs []*Job) []string {
+	cmds := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		cmds = append(cmds, job.Cmd)
+	}
+
+	slices.Sort(cmds)
+
+	return cmds
+}
+
+func newArchivedDependentsJobs() archivedDependentsJobs {
+	j := archivedDependentsJobs{
+		m: testDBJob("echo archived deps member", "adm"),
+		d: testDBJob("echo archived deps dependent", "add"),
+		e: testDBJob("echo archived deps transitive", "ade"),
+		k: testDBJob("echo archived deps by key", "adk"),
+	}
+
+	j.m.DepGroups = []string{archivedDepsGroup}
+	j.d.DepGroups = []string{"dgrp"}
+	j.d.Dependencies = Dependencies{NewDepGroupDependency(archivedDepsGroup)}
+	j.e.Dependencies = Dependencies{NewDepGroupDependency("dgrp")}
+	j.k.Dependencies = Dependencies{NewEssenceDependency(j.m.Cmd, j.m.Cwd)}
+
+	return j
+}
+
+// addAndArchive adds jobs to st, then archives each.
+func addAndArchive(ctx context.Context, st store, jobs ...*Job) {
+	_, err := st.storeNewJobsGuarded(ctx, jobs, true, nil)
+	So(err, ShouldBeNil)
+
+	for _, job := range jobs {
+		_, err = st.archiveCompletion(job.Key(), job)
+		So(err, ShouldBeNil)
+	}
+}
+
+// archivedDependentsJobs are TestStoreArchivedDependentsAfterRestart's jobs:
+// member m of dep group "grow"; d, in dep group "dgrp", depending on "grow";
+// e depending on "dgrp"; and k depending on m by its command, not a dep group.
+type archivedDependentsJobs struct {
+	m, d, e, k *Job
+}
+
+func TestLogStoreFoldModifyAfterCompletion(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a log store with its folder paused and a completed dependent of grow", t, func() {
+		pauseLogFolder()
+
+		s, _ := openTestLogStore(t, ctx)
+
+		d := newArchivedDependentsJobs().d
+		d.State, d.Exited, d.EndTime = JobStateComplete, true, time.Now()
+		k := mustLogKey(d)
+		seq := s.takeSeqs(3)
+
+		// fold folds d's completion at completed and a modify of its key at
+		// each of modified.
+		fold := func(completed uint64, modified ...uint64) {
+			lookups := make([]historyLookup, len(modified))
+			for i, m := range modified {
+				lookups[i] = historyLookup{key: k, seq: m, dropped: true}
+			}
+
+			So(s.foldHistory(&historyFold{
+				complete: []historyFolded{{key: k, seq: completed, job: d}},
+				lookups:  lookups,
+			}), ShouldBeNil)
+		}
+
+		Convey("a fold of a modify of its key and then its completion keeps the completion's postings: an add "+
+			"of a new member of grow puts it back", func() {
+			fold(seq+1, seq)
+
+			So(planOfNewMember(ctx, s).queued, ShouldResemble, []string{d.Cmd, archivedDepsNewMember})
+		})
+
+		Convey("a fold of its completion and, at the very next seq, a modify of its key drops the completion's "+
+			"postings, as the bbolt store's modify does: an add of a new member of grow does not put it back",
+			func() {
+				fold(seq, seq+1)
+
+				So(planOfNewMember(ctx, s).queued, ShouldResemble, []string{archivedDepsNewMember})
+			})
+
+		Convey("a fold of a modify of its key, its completion, then another modify of its key drops the "+
+			"completion's postings, as the bbolt store's later modify does: an add of a new member of grow does "+
+			"not put it back", func() {
+			fold(seq+1, seq, seq+2)
+
+			So(planOfNewMember(ctx, s).queued, ShouldResemble, []string{archivedDepsNewMember})
+		})
+
+		Convey("a fold of its completion and two modifies of its key, read in the opposite order to their seqs, "+
+			"drops the completion's postings, since the later modify is after it: an add of a new member of grow "+
+			"does not put it back", func() {
+			fold(seq+1, seq+2, seq)
+
+			So(planOfNewMember(ctx, s).queued, ShouldResemble, []string{archivedDepsNewMember})
+		})
+	})
+}
+
+// mustLogKey returns job's key as a logKey, panicking if it is not one.
+func mustLogKey(job *Job) logKey {
+	k, err := parseLogKey(job.Key())
+	if err != nil {
+		panic(err)
+	}
+
+	return k
+}
+
+// newMemberPlan is the sorted commands of the jobs an add queues and of the
+// live dependents it updates.
+type newMemberPlan struct {
+	queued, updated []string
+}
+
+func TestStoreFoldRetryKeepsReverseDeps(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a dependent of grow modified keeping its key, then archived with 40 more jobs, whose fold "+
+		"records the dependent's completion in its first transaction and fails in its second", t, func() {
+		const fillers = 40
+
+		// steps adds a member of grow, the dependent and the fillers to st,
+		// modifies the dependent keeping its key, then archives it and the
+		// fillers. The dependent's key sorts before every filler's, so a fold
+		// records its completion first.
+		steps := func(st store) {
+			j := newFoldRetryJobs(fillers)
+
+			_, err := st.storeNewJobsGuarded(ctx, append([]*Job{j.m, j.d}, j.fillers...), true, nil)
+			So(err, ShouldBeNil)
+			So(st.modifyLiveJobs(ctx, []string{j.d.Key()}, []*Job{j.same}), ShouldBeNil)
+
+			for _, job := range append([]*Job{j.same}, j.fillers...) {
+				_, err = st.archiveCompletion(job.Key(), job)
+				So(err, ShouldBeNil)
+			}
+		}
+
+		bdb, _ := openTestStore(t, ctx, storeKindBolt)
+		steps(bdb)
+		fromBolt := planOfNewMember(ctx, bdb)
+		So(fromBolt.queued, ShouldContain, newFoldRetryJobs(fillers).d.Cmd)
+
+		pauseLogFolder()
+
+		Reset(func() { logFoldTxBytes.Store(0) })
+
+		logFoldTxBytes.Store(1)
+
+		s, _ := openTestLogStore(t, ctx)
+		steps(s)
+
+		calls := 0
+		failSecond := func() error {
+			calls++
+			if calls == 2 {
+				return errIncTestCrash
+			}
+
+			return nil
+		}
+
+		Reset(func() { logFoldTxHook.Store(nil) })
+
+		logFoldTxHook.Store(&failSecond)
+
+		So(s.foldNow(), ShouldWrap, errIncTestCrash)
+
+		logFoldTxHook.Store(nil)
+
+		Convey("the fold made again keeps the dependent's reverse dep group postings: after a checkpoint and "+
+			"restart an add of a new member of grow puts it back, as on bbolt", func() {
+			So(s.foldNow(), ShouldBeNil)
+			So(s.checkpoint(), ShouldBeNil)
+
+			s = reopenLogStore(ctx, s)
+
+			So(planOfNewMember(ctx, s), ShouldResemble, fromBolt)
+		})
+	})
+}
+
+// newFoldRetryJobs returns new foldRetryJobs with n fillers.
+func newFoldRetryJobs(n int) foldRetryJobs {
+	j := foldRetryJobs{
+		m:       testDBJob("echo fold retry member", "frm"),
+		fillers: testLogJobs("fold retry filler", "frf", n),
+	}
+	j.m.DepGroups = []string{archivedDepsGroup}
+
+	var first logKey
+
+	for i, filler := range j.fillers {
+		if k := mustLogKey(filler); i == 0 || bytes.Compare(k[:], first[:]) < 0 {
+			first = k
+		}
+	}
+
+	for i := 0; ; i++ {
+		j.d = testDBJob(fmt.Sprintf("echo fold retry dependent %d", i), "frd")
+		if k := mustLogKey(j.d); n == 0 || bytes.Compare(k[:], first[:]) < 0 {
+			break
+		}
+	}
+
+	j.d.Dependencies = Dependencies{NewDepGroupDependency(archivedDepsGroup)}
+	j.same = modifiedCopy(j.d, j.d.Cmd)
+	j.same.Priority = 7
+
+	return j
+}
+
+// foldRetryJobs are TestStoreFoldRetryKeepsReverseDeps' jobs: member m of dep
+// group "grow"; d depending on "grow", whose key sorts before every one of
+// fillers'; and same, d modified keeping its key.
+type foldRetryJobs struct {
+	m, d, same *Job
+	fillers    []*Job
+}
+
 func TestLogStoreReverseDepsAfterSpecChange(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1892,7 +2310,9 @@ func TestLogStoreReverseDepsAfterSpecChange(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		dependents := func(st *logStore, dg string) []string {
-			found := st.reverseDepKeys(dg)
+			found, errd := st.reverseDepKeys(dg)
+			So(errd, ShouldBeNil)
+
 			keys := make([]string, 0, len(found))
 
 			for _, k := range found {

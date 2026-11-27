@@ -1855,6 +1855,42 @@ func historyBoltRecords(dbFile string) []*Job {
 	return jobs
 }
 
+func TestStoreConvertKeepsArchivedDependents(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a bbolt DB holding an archived member of dep group grow, an archived dependent of grow, an "+
+		"archived dependent of that dependent's dep group and an archived dependent of the member's command", t,
+		func() {
+			dir := t.TempDir()
+			dbFile := filepath.Join(dir, convertDBName)
+			j := newArchivedDependentsJobs()
+
+			bdb := openStoreOf(ctx, dbFile, storeKindBolt)
+			addAndArchive(ctx, bdb, j.m, j.d, j.e, j.k)
+			So(bdb.close(ctx), ShouldBeNil)
+
+			copied := filepath.Join(t.TempDir(), convertDBName)
+			copyTestFile(dbFile, copied)
+
+			bdb = openStoreOf(ctx, copied, storeKindBolt)
+			fromBolt := planOfNewMember(ctx, bdb)
+			So(bdb.close(ctx), ShouldBeNil)
+			So(fromBolt.queued, ShouldResemble, []string{j.d.Cmd, archivedDepsNewMember, j.e.Cmd})
+
+			Convey("once converted, an add of a new member of grow puts back what it does on bbolt", func() {
+				s := openStoreOf(ctx, dbFile, storeKindLog)
+
+				Reset(func() { So(s.close(ctx), ShouldBeNil) })
+
+				So(planOfNewMember(ctx, s), ShouldResemble, fromBolt)
+			})
+		})
+}
+
 func TestStoreConvertRefusesSchema(t *testing.T) {
 	if runnermode || servermode {
 		return

@@ -54,7 +54,8 @@ const (
 	backlogApplied uint8 = 1 << 0
 
 	// backlogSpecCopy marks a spec record a backlog holds only as the spec
-	// of a complete record after it: it applies to nothing.
+	// of a complete record after it: it applies to the reverse dep group
+	// index alone (see applyBacklog), and only at recovery.
 	backlogSpecCopy uint8 = 1 << 1
 
 	// backlogHasSpec marks a complete record the reducer applied as an
@@ -461,27 +462,46 @@ func (r *logRecord) keepBody(body []byte) error {
 // and not outranked in the history index becomes its key's overlay entry with
 // the spec it applied with, if it applied as one; an rglookup is added to the
 // overlay's; and a modify the reducer applied drops the overlay's rglookups of
-// its old key, which queries skip in history.bolt too until it is folded.
+// its old key, which queries skip in history.bolt too until it is folded. The
+// reverse dep group index follows the specs, as the reducer's does: a spec
+// copy, the spec of a completion not yet folded, adds its key under the dep
+// groups it depends on, as its spec record did, since no record of the
+// checkpoint's live plane holds them once the key is not live (an add of a
+// member of one puts the completed job back); a modify the reducer applied
+// takes its old key out of the index but for its live spec, which is later.
 func (st *logState) applyBacklog(op *logOp) {
 	at := *op
 	at.ref = op.backlog.pos
 
 	switch op.typ {
+	case logRecSpec:
+		st.index(op.key, op.index)
 	case logRecComplete:
 		st.applyBacklogComplete(op, &at)
 	case logRecRGLookup:
 		st.applyRGLookup(&at)
 	case logRecModify:
-		if op.backlog.flags&backlogApplied == 0 {
-			return
-		}
-
-		st.dropLookups(op.key)
-
-		if !st.folded.covers(at.ref) {
-			st.unlooked[op.key] = max(st.unlooked[op.key], op.seq)
-		}
+		st.applyBacklogModify(op, &at)
 	default:
+	}
+}
+
+// applyBacklogModify is applyBacklog of a modify record, op, at at's Ref in
+// the wal.
+func (st *logState) applyBacklogModify(op, at *logOp) {
+	if op.backlog.flags&backlogApplied == 0 {
+		return
+	}
+
+	st.dropLookups(op.key)
+	st.unindexAll(op.key)
+
+	if e := st.live[op.key]; e != nil {
+		st.index(op.key, e.index)
+	}
+
+	if !st.folded.covers(at.ref) {
+		st.unlooked[op.key] = max(st.unlooked[op.key], op.seq)
 	}
 }
 

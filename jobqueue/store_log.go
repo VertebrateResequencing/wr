@@ -296,14 +296,19 @@ func (s *logStore) changePanicked(r any, finished func(), uncounted bool) {
 
 // undone returns, sorted, the keys of the jobs depending on depGroup not
 // already done, marking them done.
-func (d *logDependentsScan) undone(depGroup string) []logKey {
-	keys := slices.DeleteFunc(d.s.reverseDepKeys(depGroup), func(k logKey) bool { return d.done[k] })
+func (d *logDependentsScan) undone(depGroup string) ([]logKey, error) {
+	keys, err := d.s.reverseDepKeys(depGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	keys = slices.DeleteFunc(keys, func(k logKey) bool { return d.done[k] })
 
 	for _, k := range keys {
 		d.done[k] = true
 	}
 
-	return keys
+	return keys, nil
 }
 
 // notLive returns those of keys whose job in live is nil, but for those in
@@ -3044,15 +3049,29 @@ func (s *logStore) dependentJobs(depGroups, newKeys map[string]bool) (jobsToQueu
 	return scan.jobsToQueue, scan.jobsToUpdate, nil
 }
 
-// reverseDepKeys returns, sorted, the keys of the jobs depending on depGroup.
-func (s *logStore) reverseDepKeys(depGroup string) []logKey {
+// reverseDepKeys returns, sorted, the keys of the jobs depending on depGroup:
+// those in the reverse dep group index, and those history.bolt's postings
+// hold, but of a key a modify not yet folded dropped (unlooked). The index
+// holds a key from its spec record, but only while the log or a checkpoint
+// does, and a checkpoint holds the specs of live keys and of completions not
+// yet folded alone, so a folded completion's key is found by its postings.
+// unlooked is copied before the history.bolt read: the folder deletes a
+// modify's postings before it stops queries skipping them.
+func (s *logStore) reverseDepKeys(depGroup string) ([]logKey, error) {
 	s.mu.RLock()
 	keys := slices.Collect(maps.Keys(s.state.reverseDeps[depGroup]))
+	unlooked := maps.Clone(s.state.unlooked)
 	s.mu.RUnlock()
+
+	err := s.foldedReverseDeps(depGroup, func(k logKey) {
+		if _, dropped := unlooked[k]; !dropped {
+			keys = append(keys, k)
+		}
+	})
 
 	slices.SortFunc(keys, func(a, b logKey) int { return bytes.Compare(a[:], b[:]) })
 
-	return keys
+	return slices.Compact(keys), err
 }
 
 // appendAdd appends an add's records. If atRisk is not nil, it first adds
@@ -3201,7 +3220,10 @@ type logDependentsScan struct {
 // together (see liveJobsOf), then the history entries of the others whose keys
 // are not in newKeys (see historyJobs).
 func (d *logDependentsScan) group(depGroup string) ([]string, error) {
-	keys := d.undone(depGroup)
+	keys, err := d.undone(depGroup)
+	if err != nil {
+		return nil, err
+	}
 
 	live, err := d.s.liveJobsOf(keys)
 	if err != nil {

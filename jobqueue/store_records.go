@@ -504,6 +504,14 @@ func (st *logState) unfold(k logKey, seq uint64) {
 	delete(st.overlay, k)
 }
 
+// index adds key to the reverse dep group index entries of index.
+func (st *logState) index(key logKey, index logSpecIndex) {
+	for _, dg := range index.depDeps {
+		addToIndex(st.reverseDeps, dg, key)
+		addToKeyIndex(st.keyDeps, key, dg)
+	}
+}
+
 // parseLogRecord parses rec.
 func parseLogRecord(rec []byte) (logRecord, error) {
 	if len(rec) < logRecordHeader {
@@ -655,11 +663,7 @@ func (st *logState) applySpec(op *logOp) {
 
 	e.specSeq, e.spec, e.index = op.seq, op.ref, op.index
 	e.dropBefore(op.seq)
-
-	for _, dg := range op.index.depDeps {
-		addToIndex(st.reverseDeps, dg, op.key)
-		addToKeyIndex(st.keyDeps, op.key, dg)
-	}
+	st.index(op.key, op.index)
 }
 
 // applyState sets a live key's state, if op is later than its spec and state.

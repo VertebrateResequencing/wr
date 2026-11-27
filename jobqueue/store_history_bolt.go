@@ -176,11 +176,15 @@ type historyLookup struct {
 }
 
 // historyLookupChanges is the net effect on history.bolt of a fold's rglookup
-// and modify records (see netHistoryLookups): the keys whose rglookups to
-// drop, before the puts; the rglookups to put, in repgroupToKey's key order;
-// and the rep groups to note as ever added.
+// and modify records (see netHistoryLookups): the keys whose rglookups and
+// reverse dep group postings to drop, before the puts; the rglookups to put,
+// in repgroupToKey's key order; and the rep groups to note as ever added.
+// dropSeqs is the seq of each key's last modify record in the fold, so that
+// a completion it folds before that modify puts no reverse dep group
+// postings, which the modify dropped.
 type historyLookupChanges struct {
 	drops     []logKey
+	dropSeqs  map[logKey]uint64
 	puts      []historyLookupPut
 	repGroups [][]byte
 
@@ -199,8 +203,14 @@ type historyLookupPut struct {
 func newHistoryLookupChanges(lookups []historyLookup) historyLookupChanges {
 	puts, drops := netHistoryLookups(lookups)
 
-	c := historyLookupChanges{drops: drops, puts: make([]historyLookupPut, len(puts)),
-		repGroups: lookupRepGroups(lookups)}
+	c := historyLookupChanges{drops: drops, dropSeqs: make(map[logKey]uint64, len(drops)),
+		puts: make([]historyLookupPut, len(puts)), repGroups: lookupRepGroups(lookups)}
+
+	for _, l := range lookups {
+		if l.dropped {
+			c.dropSeqs[l.key] = max(c.dropSeqs[l.key], l.seq)
+		}
+	}
 
 	for i, l := range puts {
 		key := l.key.String()
@@ -494,7 +504,9 @@ func loadCompleteSeqs(tx *bolt.Tx, index map[logKey]uint64) error {
 // (.docs/bugfixes/261111-reserve-tail-nfs-4766eb70.md). A small
 // history.bolt's folds write far fewer pages, so are seldom split. Each
 // transaction before the last is idempotent (completeSeq makes a completion
-// recorded again a no-op) and only adds to or takes from history.bolt what
+// recorded again a no-op, but for its reverse dep group postings, which it
+// puts again after the first transaction's drops took them, see
+// recordCompletion) and only adds to or takes from history.bolt what
 // the overlay still holds of the same records, so a crash before the last
 // leaves every history query's answer as it was, but for learned-requirement
 // samples, which go with their completions, and the fold made again after it
@@ -586,7 +598,7 @@ func (h *historyBolt) putSome(tx *bolt.Tx, c historyLookupChanges, maxBytes int,
 		return put, 0, err
 	}
 
-	recorded, err := h.recordCompletions(tx, c.complete, size, stats)
+	recorded, err := h.recordCompletions(tx, c, size, stats)
 
 	return put, recorded, err
 }
@@ -776,23 +788,26 @@ func (h *historyBolt) rewind(to historyPos) error {
 	})
 }
 
-// recordCompletions records each of complete's jobs, in their order (key
+// recordCompletions records each of c's complete jobs, in their order (key
 // order, for the reason putHistoryLookups puts in key order; the completeSeq
 // rule makes the order of one key's records not matter), as putComplete, and
-// the learned-requirement samples of each it records (as putJobStats), until
-// size is full, once it has taken foldTxMinCompletions, and returns how many
-// it took. Recording one is idempotent, by
-// completeSeq, so a fold made again records only those its earlier attempt
-// did not commit.
-func (h *historyBolt) recordCompletions(tx *bolt.Tx, complete []historyFolded, size *foldTxSize,
+// the learned-requirement samples and reverse dep group postings of each it
+// records (as putJobStats and putReverseDeps), until size is full, once it has
+// taken foldTxMinCompletions, and returns how many it took. Recording one is
+// idempotent, by completeSeq, so a fold made again records only those its
+// earlier attempt did not commit, but for their postings (see
+// recordCompletion).
+func (h *historyBolt) recordCompletions(tx *bolt.Tx, c historyLookupChanges, size *foldTxSize,
 	stats *reqStatCache,
 ) (int, error) {
+	complete := c.complete
+
 	for i := range complete {
 		if i >= foldTxMinCompletions && size.full() {
 			return i, nil
 		}
 
-		written, err := h.recordCompletion(tx, &complete[i], stats)
+		written, err := h.recordCompletion(tx, &complete[i], c.dropSeqs[complete[i].key], stats)
 		if err != nil {
 			return i, err
 		}
@@ -816,16 +831,57 @@ func (h *historyBolt) freelistWrite(pageSize int) int {
 	return (stats.FreelistInuse/pageSize + 1) * pageSize
 }
 
-// recordCompletion records c's job as putComplete does, and, if it was not
-// already folded, its learned-requirement samples through stats, returning
-// about how many bytes of keys and values it put.
-func (h *historyBolt) recordCompletion(tx *bolt.Tx, c *historyFolded, stats *reqStatCache) (int, error) {
+// recordCompletion records c's job as putComplete does and, if it was not
+// already folded, its learned-requirement samples through stats, and, unless
+// a modify of its key in the fold after it, of seq droppedAt, dropped them,
+// its reverse dep group postings, returning about how many bytes of keys and
+// values it put. It puts the postings even if c was already folded: every
+// attempt at a fold drops the postings of each key a modify in it dropped, in
+// its first transaction, so a completion of such a key after the modify,
+// recorded by a transaction of an earlier attempt that committed, must put
+// them again (putting one is idempotent).
+func (h *historyBolt) recordCompletion(tx *bolt.Tx, c *historyFolded, droppedAt uint64,
+	stats *reqStatCache) (int, error) {
 	written, err := h.putComplete(tx, c)
-	if err == nil && written > 0 {
-		err = putJobStats(tx, stats, c.job)
+	if err != nil {
+		return written, err
 	}
 
-	return written, err
+	if written > 0 {
+		if err = putJobStats(tx, stats, c.job); err != nil {
+			return written, err
+		}
+	}
+
+	if droppedAt > c.seq {
+		return written, nil
+	}
+
+	deps, err := putReverseDeps(tx, c)
+
+	return written + deps, err
+}
+
+// putReverseDeps puts in reverseDepgroupToKey a posting of c's key under each
+// dep group its job depends on, as the bbolt store's add does, so that an add
+// of a member of one finds the key once the log records of its spec are gone
+// (see logStore.reverseDepKeys). It returns about how many bytes of keys it
+// put.
+func putReverseDeps(tx *bolt.Tx, c *historyFolded) (int, error) {
+	postings := tx.Bucket(bucketRDTK)
+	key := c.key.String()
+	written := 0
+
+	for _, dg := range c.job.Dependencies.DepGroups() {
+		posting := []byte(dg + dbDelimiter + key)
+		if err := postings.Put(posting, nil); err != nil {
+			return written, err
+		}
+
+		written += len(posting)
+	}
+
+	return written, nil
 }
 
 // putComplete records c's job as its key's history entry and returns about
@@ -1555,7 +1611,9 @@ func (s *logStore) historyJobs(keys []logKey) (map[logKey]*Job, error) {
 }
 
 // dropAllLookups deletes every rglookup of each of keys, those keyRepgroups
-// indexes and those keyRepgroupsPending does.
+// indexes and those keyRepgroupsPending does, and every reverse dep group
+// posting of them, as the bbolt store's modify does
+// (deleteLookupEntriesForJobKey).
 func dropAllLookups(tx *bolt.Tx, keys []logKey) error {
 	for _, k := range keys {
 		if err := dropHistoryLookups(tx, k); err != nil {
@@ -1563,7 +1621,78 @@ func dropAllLookups(tx *bolt.Tx, keys []logKey) error {
 		}
 	}
 
-	return dropPendingLookups(tx, keys)
+	if err := dropPendingLookups(tx, keys); err != nil {
+		return err
+	}
+
+	return dropReverseDeps(tx, keys)
+}
+
+// dropReverseDeps deletes every reverseDepgroupToKey posting of each of keys.
+// Nothing indexes a key's postings by key, so it reads them all: a cost per
+// fold holding a modify, which are far fewer than completions, where a reverse
+// index would cost a put per completion. The postings are those folded
+// completions put (putReverseDeps) and those a conversion copied, which may
+// be of any spec its key had in the bbolt store.
+func dropReverseDeps(tx *bolt.Tx, keys []logKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	postings := tx.Bucket(bucketRDTK)
+
+	found, err := reverseDepsOf(postings, keys)
+	if err != nil {
+		return err
+	}
+
+	for _, posting := range found {
+		if err = postings.Delete(posting); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// reverseDepsOf returns the postings in reverseDepgroupToKey bucket postings
+// of each of keys.
+func reverseDepsOf(postings *bolt.Bucket, keys []logKey) ([][]byte, error) {
+	of := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		of[k.String()] = true
+	}
+
+	var found [][]byte
+
+	err := postings.ForEach(func(posting, _ []byte) error {
+		if key := lookupEntryJobKey(posting); key != nil && of[string(key)] {
+			found = append(found, slices.Clone(posting))
+		}
+
+		return nil
+	})
+
+	return found, err
+}
+
+// foldedReverseDeps calls fn with the key of each of history.bolt's
+// reverseDepgroupToKey postings under depGroup. A posting whose key is not a
+// job's is skipped, as the bbolt store finds no job of it.
+func (s *logStore) foldedReverseDeps(depGroup string, fn func(k logKey)) error {
+	prefix := []byte(depGroup + dbDelimiter)
+
+	return s.history.bolt.View(func(tx *bolt.Tx) error {
+		cursor := tx.Bucket(bucketRDTK).Cursor()
+
+		for posting, _ := cursor.Seek(prefix); bytes.HasPrefix(posting, prefix); posting, _ = cursor.Next() {
+			if k, err := parseLogKey(string(posting[len(prefix):])); err == nil {
+				fn(k)
+			}
+		}
+
+		return nil
+	})
 }
 
 // historyJob returns the keyed job's history entry's job and true, or false if

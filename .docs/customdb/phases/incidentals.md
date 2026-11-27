@@ -2152,7 +2152,7 @@ called ready, or explicitly deferred with the owner.
   segment to it while queries read it. Owner: 2b.2. Also 2b.2: the
   folder's fold of a modify calls `histSegmentWriter.addDrop`, and learned
   samples (`sampleCount`, `loadReqGroupRecs`) still read `history.bolt`.
-- [ ] (from 2b.1 review) Pre-existing Phase 1 defect, also at d7799727:
+- [x] (from 2b.1 review) Pre-existing Phase 1 defect, also at d7799727:
   an archived dependent of a dep group is not resurrected by a new member
   added after a checkpoint and a restart. Reproduce on the log store: add
   member M (`DepGroups` `["grow"]`) and dependent D (depending on dep group
@@ -2163,7 +2163,37 @@ called ready, or explicitly deferred with the owner.
   archived keys drop out of the in-memory `reverseDeps` on reopen, while
   bbolt keeps them in `reverseDepgroupToKey`; the segment footers'
   reverse dep group sections are never read. Owner: bugfix on
-  customdb-f397b547 after 2b.1.
+  customdb-f397b547 after 2b.1. Resolved by
+  `.docs/bugfixes/261126-resurrect-after-checkpoint-62b8920b.md`: the
+  folder now writes and the add's dependent scan reads `history.bolt`'s
+  `reverseDepgroupToKey` (which a conversion already filled, so converted
+  stores lost them too), a modify's fold deletes its old key's postings,
+  and recovery indexes a checkpoint backlog's spec copies. 2b.2 carries
+  this onto segments (spec D2 now says how) and is listed below.
+- [ ] (from the 261126 resurrection bugfix) 2b.2: the add's dependent scan
+  (`logStore.reverseDepKeys`) reads `history.bolt`'s `reverseDepgroupToKey`;
+  once the folder writes segments it must also read the footers' reverse
+  dep group sections, which nothing reads yet (`histFooter.revDeps`; the
+  segment index has no reverse dep group to segments map), valid as an
+  rglookup posting is (spec D2), and a segment's drops must hide a key's
+  reverse dep group postings in earlier segments. Within one segment the
+  writer needs the equivalent of `historyLookupChanges.dropSeqs`: a
+  completion it holds that precedes a modify of its key it also holds puts
+  no reverse dep group postings, and one after the modify still does, so
+  a footer's drops must not hide the postings of a later completion of the
+  same key in that segment. Two narrow differences
+  from bbolt remain, both needing a dep group dependency changed on a job
+  of the same command: a converted store keeps bbolt's postings of a live
+  job a user then removes before it completes (bbolt deletes those), so
+  were the same command added again with other dependencies and completed,
+  it would also be found under the old ones; and a completed job re-added
+  with other dependencies and removed again is, after a checkpoint and a
+  restart, found only under its completion's dependencies (bbolt keeps
+  both). Owner: 2b.2, whose folder and conversion replace these paths.
+  Optional, also 2b.2: the in-memory reverse dep group index still holds
+  a completed key for as long as the manager runs, though the folded
+  postings now answer for it; dropping it once folded would bound that
+  memory by the fold lag.
 - [ ] (from 2b.1 review, optional) Each segment's end time section is
   about 6.4MB in the footer cache, so a `retrieveCompleteJobsRecent`
   cutoff spanning about 11 production-sized segments cycles the 64MiB
