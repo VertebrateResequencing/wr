@@ -46,6 +46,19 @@ import (
 // abandoned or the manager stops.
 const maxBackupStreams = 4
 
+var (
+	errBackupStreamsFull = errors.New("too many backups are being fetched from the manager; " +
+		"try again once one has finished")
+	errBackupStreamUnknown = errors.New("the manager is not making that backup: it was abandoned " +
+		"after not being fetched for too long, or has ended; start the backup again")
+	errBackupStreamOutOfStep = errors.New("a chunk of a backup was asked for out of order, so the " +
+		"backup was abandoned; start it again")
+	errBackupStreamAbandoned = errors.New("backup abandoned after not being fetched for too long")
+	errBackupStreamCancelled = errors.New("backup cancelled by the client fetching it")
+	errBackupStreamsClosed   = errors.New("the manager is stopping")
+	errBackupNotStarted      = errors.New("the manager did not start a backup")
+)
+
 //nolint:gochecknoglobals // tunables that tests shorten
 var (
 	// backupChunkSize is the most bytes of a backup one reply carries.
@@ -60,19 +73,11 @@ var (
 	// backupProduceHook, a test seam nil outside tests, is what a backup
 	// stream writes in place of the store's backup when it is set.
 	backupProduceHook atomic.Pointer[func(io.Writer) error]
-)
 
-var (
-	errBackupStreamsFull = errors.New("too many backups are being fetched from the manager; " +
-		"try again once one has finished")
-	errBackupStreamUnknown = errors.New("the manager is not making that backup: it was abandoned " +
-		"after not being fetched for too long, or has ended; start the backup again")
-	errBackupStreamOutOfStep = errors.New("a chunk of a backup was asked for out of order, so the " +
-		"backup was abandoned; start it again")
-	errBackupStreamAbandoned = errors.New("backup abandoned after not being fetched for too long")
-	errBackupStreamCancelled = errors.New("backup cancelled by the client fetching it")
-	errBackupStreamsClosed   = errors.New("the manager is stopping")
-	errBackupNotStarted      = errors.New("the manager did not start a backup")
+	// backupStreamsCloseHook, a test seam nil outside tests, is called by
+	// close with mu held, after it refuses new backups and before it ends the
+	// backups being fetched.
+	backupStreamsCloseHook atomic.Pointer[func(*backupStreams)]
 )
 
 // backupProduceError is the error a store's backup failed with, as a backup
@@ -222,9 +227,11 @@ func (b *backupStreams) chunk(id string, offset int64) ([]byte, bool, error) {
 
 	endedBy := b.checkin(id, st, n, done || err != nil)
 
-	if err != nil && !done {
+	if (err != nil || endedBy != nil) && !done {
 		// a read the stream was closed under fails with io.ErrClosedPipe,
-		// which does not say why
+		// which does not say why; and a whole chunk read just before the
+		// stream was ended is no use, as no later chunk can be had, so the
+		// reply says why it ended instead, as when the manager is stopping
 		return nil, false, cmp.Or(endedBy, err)
 	}
 
@@ -297,6 +304,10 @@ func (b *backupStreams) close() {
 	defer b.mu.Unlock()
 
 	b.closed = true
+
+	if hook := backupStreamsCloseHook.Load(); hook != nil {
+		(*hook)(b)
+	}
 
 	for id, st := range b.streams {
 		b.removeLocked(id, st, errBackupStreamsClosed)

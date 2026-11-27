@@ -270,8 +270,94 @@
   - Round 1 gates (every OS_ var unset, scratch HOME, 2026-11-27,
     uncommitted on 44358cd8): `make lint` 0 issues; `make test` PASSED
     (1389 passed); `make race` PASSED (1389 passed).
-- [ ] TestBackupStreamStopWithQueuedBackup failed once under `make race`
+- [x] TestBackupStreamStopWithQueuedBackup failed once under `make race`
   at jobqueue/backup_stream_test.go:757: when the manager stopped, the
   queued backup chunk request got a nil error instead of an error. A rerun
   of `make race` passed.
   - Source: round 4 gate run of the resurrection fix (2026-11-26).
+  - Red: `TestZZBackupStreamStopEndsQueuedBackupFirst` (parked outside the
+    repo, with a close-hook test seam), `go test -tags netgo -count=1
+    ./jobqueue/ -run '^TestZZBackupStreamStopEndsQueuedBackupFirst$'`.
+    Exit 1 on every run (20 of 20 under -race): `Line 143: Expected
+    '<nil>' to NOT be nil (but it was)!`
+  - Cause: backupStreams.close (jobqueue/backup_stream.go:295-304) ends
+    streams one by one in map order. When it ends the first stream first,
+    the first producer releases ckptMu and the queued second producer
+    starts a real backup; the waiting request's io.ReadFull (:220) fills
+    its chunk, and chunk (:223-231) checks endedBy only when the read
+    errored, so handleBackupChunk replies with a successful chunk while
+    the manager is stopping. Product defect, low impact: the client's
+    next fetch fails with a misleading error; no corrupt backup.
+  - Stress rate of the original test: 8 of 9920 runs (about 0.1%).
+  - Round 1 fix: `chunk` (jobqueue/backup_stream.go) now returns why the
+    stream ended, not the chunk, when `checkin` reports the stream was
+    ended during the read, even if the read filled the chunk:
+    `if (err != nil || endedBy != nil) && !done`. A clean final chunk is
+    still returned, as the client then has the whole backup. An ended
+    stream is out of the map, so its next chunk can never be had and a
+    chunk read just before its end is no use to the client. The same fix
+    covers the other way to end a busy stream, a resent request's
+    checkout, which the lifecycle test already says fails both requests.
+    `close` is unchanged. Stopping a queued producer from starting its
+    store backup would need the store's backup to watch for cancellation
+    while it waits for ckptMu. That producer's first write fails as soon
+    as `close` ends its stream, in the same `close` call, and the store's
+    close waits for it, so no backup is left running.
+  - Round 1 seam: `backupStreamsCloseHook` (jobqueue/backup_stream.go),
+    an `atomic.Pointer` like `backupProduceHook`, nil outside tests,
+    called by `close` with mu held after it refuses new backups.
+    cleanorder moved the error `var` block above the tunables block.
+  - Round 1 test: `TestBackupStreamStopEndsQueuedBackupAfterItsChunkIsRead`
+    (jobqueue/backup_stream_test.go), the red made permanent. The close
+    hook ends the first backup, then waits until the second's waiting
+    request has read a whole chunk of the real store backup
+    (`backupStreamSignalAfterWriter`). The test asserts that premise held,
+    that the request's reply contains ErrClosedStop
+    (`backupStreamAwaitErr`), and that there is no client handling timeout.
+    Red on the unfixed chunk (2 of 2), green after (3 plain plus 3 under
+    -race). Mutants: the original condition fails the new test;
+    `endedBy != nil && !done` fails `TestBackupStreams` (line 517: a
+    failed producer's error lost). Untested: `(err != nil && !done) ||
+    endedBy != nil` (a final chunk read just as the stream was ended is
+    dropped). Testing it needs a signal that ReadFull has returned before
+    `close` ends the stream, which the pipe does not give.
+  - Round 1 "no reply" question: not caused by the fix. The fix changes
+    only what `chunk` returns, after `checkin`, so the reply's content
+    and not its timing. Instrumented builds of the original test dumped
+    goroutines and the manager log when the reply never came. All 4
+    captures (2 fixed, 2 unfixed) look the same: the manager had fully
+    stopped, no handler was left, no "reply to client failed" warning
+    was logged (so `SendMsg` returned nil), and the client was still in
+    `recvAndDecode`. mangos v3.4.2 xrep `SendMsg` queues the reply on the
+    pipe's `sendQ` and returns nil, and `pipe.sender` selects between
+    `sendQ` and `closeQ`. So a reply queued just before `sock.Close`
+    (`ShutdownSocketWait` is 1ms in tests, 50ms by default) can be
+    dropped silently. This is a distinct, pre-existing shutdown issue for
+    any request answered in that window, reported for routing and not
+    fixed here.
+  - Round 1 A/B of the original test, alternating unfixed and fixed
+    binaries, each batch starting at a 1-minute load of 8 or less,
+    2026-11-27. Plain (16 instances x 500, 6 rounds each): unfixed 48000
+    runs had 7 wrong successes (line 757) and 0 no-reply; fixed 48000 runs
+    had 0 and 2. Stressed (16 x 300, GOMAXPROCS=2, 4 busy loops, 6 rounds
+    each, instrumented): unfixed 28800 runs had 5 and 2; fixed 28800 runs
+    had 0 and 2. A further 48000 fixed instrumented plain runs had 0 no
+    reply. Totals: wrong success 12 of 76800 unfixed, 0 of 124800 fixed;
+    no-reply 2 of 76800 unfixed, 4 of 124800 fixed, the same rate. Port
+    clash failures (line 724, "publication gave up") were excluded as
+    noise.
+  - Round 1 gates (every OS_ var unset, scratch HOME, 2026-11-27,
+    uncommitted on 96732a50): `make lint` 0 issues; `make test` PASSED
+    (1390 passed); `make race` PASSED (1390 passed).
+  - Review round 1: PASS. With the fix reverted, the permanent test
+    TestBackupStreamStopEndsQueuedBackupAfterItsChunkIsRead fails at
+    jobqueue/backup_stream_test.go:389 (nil error).
+- [ ] A reply sent just before the manager's socket closes can be dropped
+  silently: TestBackupStreamStopWithQueuedBackup fails at
+  jobqueue/backup_stream_test.go:760 "the waiting chunk request got no
+  reply" (about 2 in 76,800 stressed runs, with or without the item 3
+  fix). Captures show the manager fully stopped, SendMsg returned nil and
+  the client still in recvAndDecode; mangos v3.4.2 xrep queues the reply
+  on the pipe's sendQ and pipe.sender can pick closeQ first.
+  - Source: item 3 round 1 load-matched A/B (2026-11-27); captures in the
+    implementor's scratch dir.

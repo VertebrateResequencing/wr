@@ -42,6 +42,7 @@ import (
 	"runtime"
 	"runtime/metrics"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -477,6 +478,28 @@ func backupStreamHoldProducer() func() {
 	return release
 }
 
+// backupStreamSignalAfterWriter closes ch once n bytes have been written
+// through it to w. A write to a backup stream's pipe returns only once a chunk
+// request has read it, so ch closing means a request has read those bytes.
+type backupStreamSignalAfterWriter struct {
+	w       io.Writer
+	n       int
+	written int
+	once    sync.Once
+	ch      chan struct{}
+}
+
+func (s *backupStreamSignalAfterWriter) Write(p []byte) (int, error) {
+	n, err := s.w.Write(p)
+	s.written += n
+
+	if s.written >= s.n {
+		s.once.Do(func() { close(s.ch) })
+	}
+
+	return n, err
+}
+
 func TestBackupStreams(t *testing.T) {
 	Convey("Given no backups being fetched", t, func() {
 		var b backupStreams
@@ -561,6 +584,90 @@ func backupStreamsHeld(b *backupStreams) int {
 	defer b.mu.Unlock()
 
 	return len(b.streams)
+}
+
+func TestBackupStreamStopEndsQueuedBackupAfterItsChunkIsRead(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a log store manager with one backup part fetched and a second's chunk request waiting "+
+		"for the first to end", t, func() {
+		ctx, logs := cmdLogSyncCapture(context.Background())
+		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+		serverConfig.storeKind = storeKindLog
+
+		setBackupChunkSize(backupStreamTestSmallChunk)
+		setBackupStreamIdleTimeout(backupStreamTestLongIdle)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		// the store's real backups, the second closing secondRead once the
+		// request waiting for it has read a whole chunk of it
+		var produced atomic.Int32
+
+		secondRead := make(chan struct{})
+		produce := func(w io.Writer) error {
+			if produced.Add(1) == 2 {
+				w = &backupStreamSignalAfterWriter{w: w, n: backupStreamTestSmallChunk, ch: secondRead}
+			}
+
+			return server.BackupDB(w)
+		}
+
+		Reset(func() { backupProduceHook.Store(nil) })
+		backupProduceHook.Store(&produce)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		jq2, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq2)
+
+		backupTmpAddJob(jq, standardReqs)
+
+		first := backupStreamStart(jq)
+		backupStreamFetchChunk(jq, first, 0)
+
+		second := backupStreamStart(jq2)
+		secondErr := backupStreamRequestAsync(jq2, second, 0)
+
+		So(backupStreamWaitBusy(server, second), ShouldBeTrue)
+
+		Convey("stopping the manager, ending the first backup before the second, still replies to that "+
+			"request that the manager is stopping, though it read a whole chunk of the second", func() {
+			// close ends backups in map order; have it end the first, then
+			// wait, before it ends the second, for the second's request,
+			// which the first's end lets run, to read its chunk
+			var sawSecondRead atomic.Bool
+
+			closeHook := func(b *backupStreams) {
+				b.removeLocked(first, b.streams[first], errBackupStreamsClosed)
+
+				select {
+				case <-secondRead:
+					sawSecondRead.Store(true)
+				case <-time.After(backupStreamTestStopWait):
+				}
+			}
+
+			Reset(func() { backupStreamsCloseHook.Store(nil) })
+			backupStreamsCloseHook.Store(&closeHook)
+
+			server.Stop(ctx, true)
+
+			So(sawSecondRead.Load(), ShouldBeTrue)
+			So(backupStreamAwaitErr(secondErr), ShouldContainSubstring, ErrClosedStop)
+			So(logs.String(), ShouldNotContainSubstring, "timed out waiting for client handling")
+		})
+	})
 }
 
 func TestClientBackupDBStreams(t *testing.T) {
