@@ -2330,6 +2330,36 @@ func compactBoltDBFile(dbFile string) (CompactStats, error) {
 	return stats, err
 }
 
+// reqStatWindow is scanReqGroupStat's walk of a req group's samples, given in
+// the order their keys sort in (see reqStatKey): the last given, and the
+// recommendation, the first of those past the window over the rest.
+type reqStatWindow struct {
+	count                  int
+	window                 float32
+	prev                   []int
+	maxVal, recommendation int
+}
+
+// newReqStatWindow returns a walk given no samples yet.
+func newReqStatWindow() reqStatWindow {
+	return reqStatWindow{window: jobStatWindowPercent}
+}
+
+// add gives w the next sample, val.
+func (w *reqStatWindow) add(val int) {
+	w.maxVal = val
+
+	w.count++
+	if w.count > jobStatWindowScaleThreshold {
+		w.window = (float32(w.count) / jobStatWindowScaleThreshold) * jobStatWindowPercent
+	}
+
+	w.prev = append(w.prev, val)
+	if float32(len(w.prev)) > w.window {
+		w.recommendation, w.prev = w.prev[0], w.prev[1:]
+	}
+}
+
 // dropStaleEndTimeIndex recovers the key's prior end time from its existing
 // bucketJobsComplete record (so it must run before that record is overwritten)
 // and, if different from newNanos, deletes the prior forward index entry. It
@@ -6011,29 +6041,18 @@ func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
 // 95th-percentile recommendation. To avoid scanning twice it keeps a trailing
 // 5%-sized window of values, updating the recommendation as the window fills.
 func scanReqGroupStat(c *bolt.Cursor, prefix []byte) (maxVal, recommendation int, err error) {
-	count := 0
-	window := jobStatWindowPercent
-
-	var prev []int
+	w := newReqStatWindow()
 
 	for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
-		maxVal, err = strconv.Atoi(string(v))
-		if err != nil {
-			return maxVal, recommendation, err
+		val, errp := strconv.Atoi(string(v))
+		if errp != nil {
+			return val, w.recommendation, errp
 		}
 
-		count++
-		if count > jobStatWindowScaleThreshold {
-			window = (float32(count) / jobStatWindowScaleThreshold) * jobStatWindowPercent
-		}
-
-		prev = append(prev, maxVal)
-		if float32(len(prev)) > window {
-			recommendation, prev = prev[0], prev[1:]
-		}
+		w.add(val)
 	}
 
-	return maxVal, recommendation, nil
+	return w.maxVal, w.recommendation, nil
 }
 
 // roundRecommendation applies the recommend*() fallback and rounding rules: it

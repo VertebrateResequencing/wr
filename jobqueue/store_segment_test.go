@@ -89,6 +89,24 @@ var errSegTestBarrier = errors.New("the other read never started")
 // later one ends a second later.
 var segTestEnd = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC) //nolint:gochecknoglobals // a test constant
 
+const (
+	// segRevA, segRevB and segRevC are the dep groups
+	// TestHistSegmentReverseDeps's job depends on.
+	segRevA = "segRevA"
+	segRevB = "segRevB"
+	segRevC = "segRevC"
+
+	// segRevSeqOrder and segRevLaterFirst are the orders
+	// TestHistSegmentReverseDeps writes two completions of its job in.
+	segRevSeqOrder = "seq order"
+
+	// histSiblingSegments is the last segment TestHistIndex adds to copies of
+	// its index, one after another, so the copies' slices pass several
+	// capacities.
+	histSiblingSegments = 12
+	segRevLaterFirst    = "later completion first"
+)
+
 // segDamage is a way of damaging a sealed segment.
 type segDamage struct {
 	name   string
@@ -334,6 +352,32 @@ func TestHistIndex(t *testing.T) {
 		Convey("the highest seq is the segments', and the folded position the last one's", func() {
 			So(x.maxSeq, ShouldEqual, 21)
 			So(x.folded, ShouldResemble, historyPos{file: 4, off: 1})
+		})
+
+		Convey("copies each adding a different later segment to one index leave each other as they were", func() {
+			for n := uint32(4); n <= histSiblingSegments+1; n++ {
+				writeSegment(dir, n, nil, []logKey{{byte(n)}}, nil, historyPos{})
+			}
+
+			cur := x
+			mixed := 0
+
+			for n := uint32(4); n <= histSiblingSegments; n++ {
+				a, _, erra := cur.withSegment(n)
+				So(erra, ShouldBeNil)
+
+				_, _, errb := cur.withSegment(n + 1)
+				So(errb, ShouldBeNil)
+
+				lookedUp := a.repGroups[segTestLookupGroup][1:]
+				if a.segs[len(a.segs)-1].n != n || !slices.Equal(lookedUp, segNumbersFrom(4, n)) {
+					mixed++
+				}
+
+				cur = a
+			}
+
+			So(mixed, ShouldEqual, 0)
 		})
 
 		Convey("the key in both is found in the newer segment", func() {
@@ -612,7 +656,7 @@ func TestHistSegmentOpen(t *testing.T) {
 			result := openLogStoreBounded(ctx, cfg)
 			So(result.err, ShouldBeNil)
 
-			_, found := result.s.segments.lookup(complete.key)
+			_, found := result.s.segs().lookup(complete.key)
 			So(found, ShouldBeTrue)
 			So(result.s.nextSeq(), ShouldBeGreaterThan, 1000)
 		})
@@ -622,7 +666,7 @@ func TestHistSegmentOpen(t *testing.T) {
 
 			result := openLogStoreBounded(ctx, cfg)
 			So(result.err, ShouldBeNil)
-			So(result.s.segments.maxSeq, ShouldEqual, 1000)
+			So(result.s.segs().maxSeq, ShouldEqual, 1000)
 			So(result.s.nextSeq(), ShouldBeGreaterThan, 1000)
 		})
 
@@ -651,7 +695,7 @@ func TestHistSegmentOpen(t *testing.T) {
 				ls, ok := result.s.(*logStore)
 				So(ok, ShouldBeTrue)
 
-				_, found := ls.segments.lookup(complete.key)
+				_, found := ls.segs().lookup(complete.key)
 				So(found, ShouldBeTrue)
 			})
 		})
@@ -713,6 +757,165 @@ func TestHistSegmentRecordType(t *testing.T) {
 
 			_, _, _, err = x.job(c.key, new(codec.BincHandle))
 			So(err, ShouldWrap, errStoreCorrupt)
+		})
+	})
+}
+
+func TestHistSegmentReverseDeps(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a completed job depending on dep groups segRevA and segRevB", t, func() {
+		dir := t.TempDir()
+
+		completion := func(seq uint64, depGroups ...string) historyFolded {
+			c := segCompletion(1, "segRev", seq)
+			c.job.Dependencies = nil
+
+			for _, dg := range depGroups {
+				c.job.Dependencies = append(c.job.Dependencies, NewDepGroupDependency(dg))
+			}
+
+			return c
+		}
+
+		first := completion(5, segRevA, segRevB)
+		k := first.key
+
+		revDeps := func() map[string][]string {
+			x, err := loadHistIndex(dir)
+			So(err, ShouldBeNil)
+
+			found := make(map[string][]string)
+
+			for _, dg := range []string{segRevA, segRevB, segRevC} {
+				So(x.reverseDeps(dg, func(key logKey) { found[dg] = append(found[dg], key.String()) }), ShouldBeNil)
+			}
+
+			return found
+		}
+
+		Convey("a segment holding it has a posting of its key under each, found by the index", func() {
+			writeSegmentOps(dir, 1, func(w *histSegmentWriter) { So(w.addCompletion(&first), ShouldBeNil) })
+
+			So(revDeps(), ShouldResemble, map[string][]string{segRevA: {k.String()}, segRevB: {k.String()}})
+		})
+
+		Convey("a later completion of it of other dep groups adds their postings, keeping the first's, as "+
+			"history.bolt keeps a key's postings across its completions, wherever in the segment each is", func() {
+			for _, order := range []string{segRevSeqOrder, segRevLaterFirst} {
+				Convey(order, func() {
+					second := completion(7, segRevC)
+					completions := []*historyFolded{&first, &second}
+
+					if order == segRevLaterFirst {
+						slices.Reverse(completions)
+					}
+
+					writeSegmentOps(dir, 1, func(w *histSegmentWriter) {
+						for _, c := range completions {
+							So(w.addCompletion(c), ShouldBeNil)
+						}
+					})
+
+					So(revDeps(), ShouldResemble, map[string][]string{segRevA: {k.String()}, segRevB: {k.String()},
+						segRevC: {k.String()}})
+				})
+			}
+		})
+
+		Convey("a modify of it in the same segment, of a higher seq, drops its postings, but not those of a "+
+			"completion of a higher seq still, wherever in the segment each is", func() {
+			for _, order := range []string{"completions first", "modify first"} {
+				Convey(order, func() {
+					second := completion(7, segRevC)
+
+					writeSegmentOps(dir, 1, func(w *histSegmentWriter) {
+						if order == "modify first" {
+							w.addDrop(k, 6)
+						}
+
+						So(w.addCompletion(&first), ShouldBeNil)
+						So(w.addCompletion(&second), ShouldBeNil)
+
+						if order == "completions first" {
+							w.addDrop(k, 6)
+						}
+					})
+
+					So(revDeps(), ShouldResemble, map[string][]string{segRevC: {k.String()}})
+				})
+			}
+		})
+
+		Convey("a modify of it between two completions of the same dep group drops only the first's posting, "+
+			"so the dep group keeps the second's, as history.bolt puts the second's back, wherever in the "+
+			"segment each is", func() {
+			for _, order := range []string{segRevSeqOrder, segRevLaterFirst} {
+				Convey(order, func() {
+					second := completion(7, segRevA)
+
+					writeSegmentOps(dir, 1, func(w *histSegmentWriter) {
+						if order == segRevLaterFirst {
+							So(w.addCompletion(&second), ShouldBeNil)
+						}
+
+						So(w.addCompletion(&first), ShouldBeNil)
+						w.addDrop(k, 6)
+
+						if order == segRevSeqOrder {
+							So(w.addCompletion(&second), ShouldBeNil)
+						}
+					})
+
+					So(revDeps(), ShouldResemble, map[string][]string{segRevA: {k.String()}})
+				})
+			}
+		})
+
+		Convey("two modifies of it, the later written first, drop the postings of every completion below the "+
+			"later, as history.bolt drops them at each", func() {
+			second := completion(7, segRevC)
+
+			writeSegmentOps(dir, 1, func(w *histSegmentWriter) {
+				So(w.addCompletion(&first), ShouldBeNil)
+				So(w.addCompletion(&second), ShouldBeNil)
+				w.addDrop(k, 8)
+				w.addDrop(k, 6)
+			})
+
+			So(revDeps(), ShouldBeEmpty)
+		})
+
+		Convey("a modify of it before every completion of it in the segment drops none of their postings", func() {
+			second := completion(7, segRevC)
+
+			writeSegmentOps(dir, 1, func(w *histSegmentWriter) {
+				w.addDrop(k, 3)
+				So(w.addCompletion(&first), ShouldBeNil)
+				So(w.addCompletion(&second), ShouldBeNil)
+			})
+
+			So(revDeps(), ShouldResemble, map[string][]string{segRevA: {k.String()}, segRevB: {k.String()},
+				segRevC: {k.String()}})
+		})
+
+		Convey("a modify of it in a later segment drops the earlier segment's postings, but not those of a "+
+			"completion after it in its own segment", func() {
+			writeSegmentOps(dir, 1, func(w *histSegmentWriter) { So(w.addCompletion(&first), ShouldBeNil) })
+			writeSegmentOps(dir, 2, func(w *histSegmentWriter) { w.addDrop(k, 6) })
+
+			So(revDeps(), ShouldBeEmpty)
+
+			second := completion(7, segRevC)
+
+			writeSegmentOps(dir, 3, func(w *histSegmentWriter) {
+				w.addDrop(k, 6)
+				So(w.addCompletion(&second), ShouldBeNil)
+			})
+
+			So(revDeps(), ShouldResemble, map[string][]string{segRevC: {k.String()}})
 		})
 	})
 }
@@ -790,6 +993,16 @@ func segReadBarrier(n int) func() bool {
 			return false
 		}
 	}
+}
+
+// segNumbersFrom returns the segment numbers from to through, ascending.
+func segNumbersFrom(from, through uint32) []uint32 {
+	numbers := make([]uint32, 0, through-from+1)
+	for n := from; n <= through; n++ {
+		numbers = append(numbers, n)
+	}
+
+	return numbers
 }
 
 // segBlockSizes returns the decompressed size of each block of segment n in

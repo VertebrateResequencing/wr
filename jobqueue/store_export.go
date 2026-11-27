@@ -159,7 +159,7 @@ func (s *logStore) historyKeys() []logKey {
 	keys := slices.Collect(maps.Keys(s.state.history))
 	s.mu.RUnlock()
 
-	for _, seg := range s.segments.segs {
+	for _, seg := range s.segs().segs {
 		for _, e := range seg.keys {
 			keys = append(keys, e.key)
 		}

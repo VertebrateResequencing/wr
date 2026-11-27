@@ -2192,7 +2192,8 @@ reads them synchronously after an archive.
 As an operator, I want completed jobs in immutable compressed segments, so
 that history never rewrites pages and backup copies only new files.
 
-Segment layout: zstd blocks of at most 64KiB uncompressed, each holding
+Segment layout: zstd blocks of at most 64KiB uncompressed (a record bigger
+than that alone in a block of its own, as in a checkpoint), each holding
 completed-job records (key, `complete` seq, flat spec, flat final state)
 and rglookup entries; then a footer frame holding the block offsets, the
 folded position it covers, the highest `complete` seq in it, and sorted
@@ -2202,17 +2203,24 @@ keys, reverse dep group to keys, dep groups seen, end time to Ref, rep group
 end time, new learned-requirement samples, and the keys whose rglookups and
 reverse dep group postings a modify dropped; then a trailer (footer offset,
 CRC, magic `WRHIST01`). In memory: the key index (key to Ref, about 50-100MB at
-2.15M jobs), rep group to segment numbers, dep group to segment numbers, each
-segment's end-time range, each rep group's latest end time, each dropped key's
-last dropping segment, the samples. Footer sections are read on demand through a
-64MiB LRU of sections, not whole footers. A posting is valid only while the key
-index maps its key to that segment's record, so a superseded record drops out
-without rewriting segments; but an rglookup posting is valid whichever segment
-holds its key's record, until a later segment drops its key. A reverse dep group
-posting, which the add's dependent scan reads as Phase 1 reads
-`reverseDepgroupToKey`, is valid the same way, as bbolt keeps a key's postings
-across its completions and a modify drops them all. Live keys are filtered per
-query as listed under "Folder and history".
+2.15M jobs), rep group to segment numbers, dep group to segment numbers,
+reverse dep group to segment numbers, each segment's end-time range, each rep
+group's latest end time, each dropped key's last dropping segment, the samples.
+A sealed segment is added to a copy of the in-memory index, which replaces it,
+so a query reads the index it took throughout without a lock. Footer sections
+are read on demand through a 64MiB LRU of sections, not whole footers. A posting
+is valid only while the key index maps its key to that segment's record, so a
+superseded record drops out without rewriting segments; but an rglookup posting
+is valid whichever segment holds its key's record, until a later segment drops
+its key. A reverse dep group posting, which the add's dependent scan reads as
+Phase 1 reads `reverseDepgroupToKey`, is valid the same way, as bbolt keeps a
+key's postings across its completions and a modify drops them all: a segment
+holds the postings of every completion it holds but those of a lower seq than a
+modify of its key it also holds, as a fold of both into `history.bolt` puts them
+(`dropSeqs`). While a converted store's `history.bolt` holds history from before
+the first segment, a segment's drop of a key also hides that key's
+`repgroupToKey` and `reverseDepgroupToKey` entries there. Live keys are filtered
+per query as listed under "Folder and history".
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_segment.go`, `jobqueue/store_history.go`

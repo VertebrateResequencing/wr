@@ -27,12 +27,16 @@ package jobqueue
 
 // This file is what the log store holds in memory of its sealed history
 // segments (spec D2): the key index, a packed sorted slice of 32-byte entries
-// per segment rather than a Go map of keys; rep group and dep group to the
-// segments holding them; each segment's end-time range; each rep group's latest
-// end time; the keys a modify dropped the rglookups of; the learned-requirement
-// samples; and the footer sections queries read, read again on demand through
-// an LRU of at most histFooterCacheBytes. The store loads it from the sealed
-// segments when it opens, and answers history queries from it (spec D3).
+// per segment rather than a Go map of keys; rep group, dep group and reverse
+// dep group to the segments holding them; each segment's end-time range; each
+// rep group's latest end time; the keys a modify dropped the rglookups and
+// reverse dep group postings of; the learned-requirement samples; and the
+// footer sections queries read, read again on demand through an LRU of at most
+// histFooterCacheBytes. The store loads it from the sealed segments when it
+// opens, and answers history queries from it (spec D3). An index is never
+// changed once the store publishes it: a segment sealed later is added to a
+// copy, which the store publishes in its place (see logStore.addSegment), so a
+// query reads the one it took throughout, with no lock.
 
 import (
 	"bytes"
@@ -73,6 +77,9 @@ const (
 
 	// histSectionEndTimes is the end time section.
 	histSectionEndTimes
+
+	// histSectionRevDeps is the reverse dep group postings section.
+	histSectionRevDeps
 )
 
 // only returns a footer holding only f's section, with nothing aliasing the
@@ -83,27 +90,53 @@ func (f *histFooter) only(section histSection) (*histFooter, int64) {
 
 	switch section {
 	case histSectionRepGroups:
-		only.repGroups = make([]histPosting, len(f.repGroups))
-		for i, p := range f.repGroups {
-			only.repGroups[i] = histPosting{name: strings.Clone(p.name), keys: p.keys}
-			names += len(p.name)
-		}
+		only.repGroups, names = clonedHistPostings(f.repGroups)
 	case histSectionEndTimes:
 		only.endTimes = f.endTimes
+	case histSectionRevDeps:
+		only.revDeps, names = clonedHistPostings(f.revDeps)
 	}
 
 	return only, only.memSize(names)
 }
 
+// clonedHistPostings returns postings with their names cloned, so that they
+// alias nothing, and the bytes of those names.
+func clonedHistPostings(postings []histPosting) ([]histPosting, int) {
+	cloned := make([]histPosting, len(postings))
+	names := 0
+
+	for i, p := range postings {
+		cloned[i] = histPosting{name: strings.Clone(p.name), keys: p.keys}
+		names += len(p.name)
+	}
+
+	return cloned, names
+}
+
 // histSegment is what the history index holds of one sealed segment: its
 // number, block offsets, the offset of its footer, its key index, sorted by
-// key, and the range of its completions' end times, as UnixNano.
+// key, its highest complete seq, and the range of its completions' end times,
+// as UnixNano.
 type histSegment struct {
 	n              uint32
 	blocks         []uint64
 	footerOff      uint64
 	keys           []histKeyEntry
+	maxSeq         uint64
 	endMin, endMax int64
+}
+
+// entry returns k's entry in seg's key index, if it has one.
+func (seg *histSegment) entry(k logKey) (histKeyEntry, bool) {
+	i, found := slices.BinarySearchFunc(seg.keys, k, func(e histKeyEntry, k logKey) int {
+		return bytes.Compare(e.key[:], k[:])
+	})
+	if !found {
+		return histKeyEntry{}, false
+	}
+
+	return seg.keys[i], true
 }
 
 // histSamples are a req group's learned-requirement samples of each kind,
@@ -357,24 +390,29 @@ func (c *histFooterCache) put(key histSectionKey, footer *histFooter, size int64
 	}
 }
 
-// histIndex is the in-memory index of a store's sealed history segments.
+// histIndex is the in-memory index of a store's sealed history segments. Once
+// published it is never changed (see withSegment); its footer cache and block
+// read count are shared by every index of the store.
 type histIndex struct {
 	dir  string
 	segs []*histSegment // ascending by number
 
-	// repGroups and depGroups are each rep group and dep group (from the
-	// footers' rep group and dep group sections) to the numbers of the
-	// segments holding it, ascending.
+	// repGroups, depGroups and revDeps are each rep group, dep group and
+	// reverse dep group (from the footers' rep group, dep group and reverse
+	// dep group sections) to the numbers of the segments holding it,
+	// ascending.
 	repGroups map[string][]uint32
 	depGroups map[string][]uint32
+	revDeps   map[string][]uint32
 
 	// groupEnds is each rep group's latest completion end time, as a unix
 	// time in seconds, as history.bolt's repgroupEndTime.
 	groupEnds map[string]int64
 
-	// dropped is each key a modify dropped the rglookups of to the number of
-	// the last segment it did so in: an rglookup posting of the key in an
-	// earlier segment is dropped.
+	// dropped is each key a modify dropped the rglookups and reverse dep
+	// group postings of to the number of the last segment it did so in: such
+	// a posting of the key in an earlier segment, or in history.bolt, which is
+	// older than every segment, is dropped.
 	dropped map[logKey]uint32
 
 	samples map[string]*histSamples
@@ -389,7 +427,7 @@ type histIndex struct {
 
 	// blockReads counts the record blocks read: inert observability, as
 	// footers.reads.
-	blockReads atomic.Int64
+	blockReads *atomic.Int64
 }
 
 // loadHistIndex returns the index of the sealed segments in dir, reading each
@@ -401,15 +439,7 @@ func loadHistIndex(dir string) (*histIndex, error) {
 		return nil, err
 	}
 
-	x := &histIndex{
-		dir:       dir,
-		repGroups: make(map[string][]uint32),
-		depGroups: make(map[string][]uint32),
-		groupEnds: make(map[string]int64),
-		dropped:   make(map[logKey]uint32),
-		samples:   make(map[string]*histSamples),
-		footers:   newHistFooterCache(),
-	}
+	x := newHistIndex(dir)
 
 	for _, n := range numbers {
 		footer, off, _, errr := readHistFooter(dir, n)
@@ -423,11 +453,89 @@ func loadHistIndex(dir string) (*histIndex, error) {
 	return x, nil
 }
 
+// newHistIndex returns the index of no segments of dir.
+func newHistIndex(dir string) *histIndex {
+	return &histIndex{
+		dir:        dir,
+		repGroups:  make(map[string][]uint32),
+		depGroups:  make(map[string][]uint32),
+		revDeps:    make(map[string][]uint32),
+		groupEnds:  make(map[string]int64),
+		dropped:    make(map[logKey]uint32),
+		samples:    make(map[string]*histSamples),
+		footers:    newHistFooterCache(),
+		blockReads: new(atomic.Int64),
+	}
+}
+
+// withSegment returns a copy of x with sealed segment n of x's directory added
+// after every segment x holds, leaving x as it was, so that a query reading x
+// meanwhile needs no lock, and each of the segment's learned-requirement
+// samples that x did not hold. It copies x's maps, but not the key indexes of
+// its segments, which no index changes.
+func (x *histIndex) withSegment(n uint32) (*histIndex, []histSample, error) {
+	footer, off, _, err := readHistFooter(x.dir, n)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	c := *x
+	c.segs = slices.Clip(x.segs)
+	c.repGroups, c.depGroups, c.revDeps = clippedHistGroups(x.repGroups), clippedHistGroups(x.depGroups),
+		clippedHistGroups(x.revDeps)
+	c.groupEnds, c.dropped = maps.Clone(x.groupEnds), maps.Clone(x.dropped)
+	c.samples = maps.Clone(x.samples)
+
+	var added []histSample
+
+	for _, s := range footer.samples {
+		if _, held := slices.BinarySearch(x.sampleValues(s.reqGroup, s.kind), s.value); !held {
+			added = append(added, histSample{kind: s.kind, reqGroup: strings.Clone(s.reqGroup), value: s.value})
+		}
+
+		c.ownSamples(x, s.reqGroup)
+	}
+
+	c.add(n, off, footer)
+
+	return &c, added, nil
+}
+
+// clippedHistGroups returns a copy of groups whose slices a later append
+// copies, leaving groups' as they are.
+func clippedHistGroups(groups map[string][]uint32) map[string][]uint32 {
+	c := make(map[string][]uint32, len(groups))
+	for name, ns := range groups {
+		c[name] = slices.Clip(ns)
+	}
+
+	return c
+}
+
+// ownSamples gives x, a copy of from, a copy of reqGroup's samples, if it
+// shares them with from, whose slices a later insert copies, so that adding to
+// x's leaves from's as they are. It clones reqGroup, which may alias a footer's
+// bytes, as a map assignment stores its key even when the map already has it.
+func (x *histIndex) ownSamples(from *histIndex, reqGroup string) {
+	samples := x.samples[reqGroup]
+	if samples == nil || samples != from.samples[reqGroup] {
+		return
+	}
+
+	owned := *samples
+	for kind := range owned {
+		owned[kind] = slices.Clip(owned[kind])
+	}
+
+	x.samples[strings.Clone(reqGroup)] = &owned
+}
+
 // add adds segment n, whose footer at off is footer, to x, after every segment
-// it holds. x keeps footer's key
-// index, but nothing of footer that aliases the bytes it was parsed from.
+// it holds, changing x in place, so only on an index not yet published. x keeps
+// footer's key index, but nothing of footer that aliases the bytes it was
+// parsed from.
 func (x *histIndex) add(n uint32, off uint64, footer *histFooter) {
-	seg := &histSegment{n: n, blocks: footer.blocks, footerOff: off, keys: footer.keys}
+	seg := &histSegment{n: n, blocks: footer.blocks, footerOff: off, keys: footer.keys, maxSeq: footer.maxSeq}
 
 	if len(footer.endTimes) > 0 {
 		seg.endMin, seg.endMax = footer.endTimes[0].end, footer.endTimes[len(footer.endTimes)-1].end
@@ -436,6 +544,7 @@ func (x *histIndex) add(n uint32, off uint64, footer *histFooter) {
 	x.segs = append(x.segs, seg)
 	addHistGroupSegments(x.repGroups, footer.repGroups, n)
 	addHistGroupSegments(x.depGroups, footer.depGroups, n)
+	addHistGroupSegments(x.revDeps, footer.revDeps, n)
 
 	for _, g := range footer.repGroupEnds {
 		if end, ok := x.groupEnds[g.name]; !ok || g.end > end {
@@ -496,16 +605,30 @@ func (x *histIndex) sampleValues(reqGroup string, kind histSampleKind) []int {
 // outranks an older one's.
 func (x *histIndex) lookup(k logKey) (histRef, bool) {
 	for _, seg := range slices.Backward(x.segs) {
-		i, found := slices.BinarySearchFunc(seg.keys, k, func(e histKeyEntry, k logKey) int {
-			return bytes.Compare(e.key[:], k[:])
-		})
-
-		if found {
-			return histRef{seg: seg, entry: seg.keys[i]}, true
+		if entry, found := seg.entry(k); found {
+			return histRef{seg: seg, entry: entry}, true
 		}
 	}
 
 	return histRef{}, false
+}
+
+// holdsSince reports whether a segment of x holds a complete record of k of
+// seq or higher. It searches only the key indexes of segments whose highest
+// seq is that high, so a recent seq, as replay mostly asks about, searches
+// few.
+func (x *histIndex) holdsSince(k logKey, seq uint64) bool {
+	for _, seg := range slices.Backward(x.segs) {
+		if seg.maxSeq < seq {
+			continue
+		}
+
+		if entry, found := seg.entry(k); found && entry.seq >= seq {
+			return true
+		}
+	}
+
+	return false
 }
 
 // job returns the job of k's history entry and its complete record's seq, or
@@ -587,19 +710,30 @@ func (x *histIndex) section(n uint32, section histSection) (*histFooter, error) 
 // repGroupPosting returns the keys of the rglookups under repGroup in x's
 // segment n, sorted.
 func (x *histIndex) repGroupPosting(n uint32, repGroup string) ([]logKey, error) {
-	footer, err := x.section(n, histSectionRepGroups)
+	return x.posting(n, histSectionRepGroups, repGroup)
+}
+
+// posting returns the keys under name in section, a postings section, of x's
+// segment n, sorted.
+func (x *histIndex) posting(n uint32, section histSection, name string) ([]logKey, error) {
+	footer, err := x.section(n, section)
 	if err != nil {
 		return nil, err
 	}
 
-	i, found := slices.BinarySearchFunc(footer.repGroups, repGroup, func(p histPosting, name string) int {
+	postings := footer.repGroups
+	if section == histSectionRevDeps {
+		postings = footer.revDeps
+	}
+
+	i, found := slices.BinarySearchFunc(postings, name, func(p histPosting, name string) int {
 		return strings.Compare(p.name, name)
 	})
 	if !found {
 		return nil, nil
 	}
 
-	return footer.repGroups[i].keys, nil
+	return postings[i].keys, nil
 }
 
 // lookedUp calls fn with the key of each rglookup under repGroup in x's
@@ -607,8 +741,23 @@ func (x *histIndex) repGroupPosting(n uint32, repGroup string) ([]logKey, error)
 // would hold it: whichever segment holds its key's record, if any. A key
 // looked up in more than one segment is given more than once.
 func (x *histIndex) lookedUp(repGroup string, fn func(k logKey)) error {
-	for _, n := range x.repGroups[repGroup] {
-		keys, err := x.repGroupPosting(n, repGroup)
+	return x.validPostings(x.repGroups[repGroup], histSectionRepGroups, repGroup, fn)
+}
+
+// reverseDeps calls fn with the key of each reverse dep group posting under
+// depGroup in x's segments that no modify has dropped since, as history.bolt's
+// reverseDepgroupToKey would hold it: valid as an rglookup is (spec D2),
+// whichever segment holds its key's record. A key with postings in more than
+// one segment is given more than once.
+func (x *histIndex) reverseDeps(depGroup string, fn func(k logKey)) error {
+	return x.validPostings(x.revDeps[depGroup], histSectionRevDeps, depGroup, fn)
+}
+
+// validPostings calls fn with each key under name in section of each of x's
+// segments numbered, that no modify has dropped since.
+func (x *histIndex) validPostings(numbered []uint32, section histSection, name string, fn func(k logKey)) error {
+	for _, n := range numbered {
+		keys, err := x.posting(n, section, name)
 		if err != nil {
 			return err
 		}
@@ -624,12 +773,21 @@ func (x *histIndex) lookedUp(repGroup string, fn func(k logKey)) error {
 }
 
 // droppedSince reports whether a modify in a segment after n dropped k's
-// rglookups. One in segment n itself dropped only those before it, which the
-// segment does not hold.
+// rglookups and reverse dep group postings. One in segment n itself dropped
+// only those before it, which the segment does not hold.
 func (x *histIndex) droppedSince(k logKey, n uint32) bool {
 	d, ok := x.dropped[k]
 
 	return ok && d > n
+}
+
+// droppedAny reports whether a modify in any of x's segments dropped k's
+// rglookups and reverse dep group postings, so those history.bolt holds, as
+// Phase 2's history.bolt, a conversion's, is older than every segment.
+func (x *histIndex) droppedAny(k logKey) bool {
+	_, ok := x.dropped[k]
+
+	return ok
 }
 
 // lookedUpUnder reports whether an rglookup under repGroup in x's segments,
@@ -767,6 +925,11 @@ func (x *histIndex) eachBlockRecord(f *os.File, bufs *wal.FrameBuffers, refs []h
 	return err
 }
 
+// segs returns s's published index of its sealed history segments.
+func (s *logStore) segs() *histIndex {
+	return s.segments.Load()
+}
+
 // ownedJobState returns state, as a constant if it is a complete job's, else
 // as a copy, so that it does not alias the buffer state was decoded from.
 func ownedJobState(state JobState) JobState {
@@ -868,11 +1031,37 @@ func (r *historyRead) eachSegRunState(keys []logKey, fn func(i int, rs *logRunSt
 // hasHistory reports whether k has a history entry in s's in-memory history
 // key index or its segments. The caller holds s.mu.
 func (s *logStore) hasHistory(k logKey) bool {
-	if _, complete := s.state.history[k]; complete {
-		return true
+	return s.state.hasHistoryEntry(k)
+}
+
+// addSegment publishes, in place of s's index of its sealed history segments,
+// one that also holds sealed segment n, which must be after every segment it
+// holds, and makes the learned requirements of each req group it gives a
+// sample neither history nor the index held stale. Queries that took the old
+// index go on reading it. One add is made at a time.
+func (s *logStore) addSegment(n uint32) error {
+	s.segMu.Lock()
+	defer s.segMu.Unlock()
+
+	x, added, err := s.segs().withSegment(n)
+	if err != nil {
+		return err
 	}
 
-	_, complete := s.segments.lookup(k)
+	stale, err := s.newSampleReqGroups(added)
+	if err != nil {
+		return err
+	}
 
-	return complete
+	// Publish before invalidating: a load of a stale req group's learned
+	// requirements between an invalidation and the publish would read the old
+	// index and cache the result as current, which nothing would invalidate
+	// again.
+	s.segments.Store(x)
+
+	for _, reqGroup := range stale {
+		s.reqStats.invalidate(reqGroup)
+	}
+
+	return nil
 }

@@ -1286,6 +1286,7 @@ func overlayEndAnswers(s *logStore) map[string]overlayEndAnswer {
 func comparableLogState(st *logState) logState {
 	c := *st
 	c.overlayEnds = nil
+	c.segments = nil // the store's own index, compared by the queries that read it
 	c.keyRepGroups = make(map[logKey][]string, len(st.keyRepGroups))
 
 	for k, rgs := range st.keyRepGroups {

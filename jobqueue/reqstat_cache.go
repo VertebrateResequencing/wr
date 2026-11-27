@@ -46,6 +46,12 @@ import (
 //nolint:gochecknoglobals // prod-inert test seam, like jobExitSnapshotHook.
 var reqStatLoadHook func(reqGroup string) error
 
+// histSampleBuckets are the learned-requirement sample buckets, by
+// histSampleKind.
+var histSampleBuckets = [histSampleKinds][]byte{ //nolint:gochecknoglobals // a constant table
+	bucketJobRAM, bucketJobDisk, bucketJobSecs,
+}
+
 // reqStatEntry is one ReqGroup's cached learned requirements and the state of
 // their loading.
 type reqStatEntry struct {
@@ -171,7 +177,7 @@ func (c *reqStatCache) invalidate(reqGroup string) {
 // Repeated invalidations of one ReqGroup in a transaction are harmless.
 func (c *reqStatCache) putStat(tx *bolt.Tx, bucket []byte, reqGroup string, val int) error {
 	b := tx.Bucket(bucket)
-	key := fmt.Appendf(nil, "%s%s%20d", reqGroup, dbDelimiter, val)
+	key := reqStatKey(reqGroup, val)
 	isNew := b.Get(key) == nil
 
 	if err := b.Put(key, []byte(strconv.Itoa(val))); err != nil {
@@ -183,6 +189,13 @@ func (c *reqStatCache) putStat(tx *bolt.Tx, bucket []byte, reqGroup string, val 
 	}
 
 	return nil
+}
+
+// reqStatKey returns the key a learned-requirement sample of val for reqGroup
+// has in its bucket, so that a req group's samples sort together, by value
+// for values that are not negative.
+func reqStatKey(reqGroup string, val int) []byte {
+	return fmt.Appendf(nil, "%s%s%20d", reqGroup, dbDelimiter, val)
 }
 
 // cached returns reqGroup's last loaded learned requirements (nil if never
@@ -259,23 +272,33 @@ func (c *reqStatCache) warm(jobs []*Job, load reqStatLoad) {
 // GB rounded up, and time in seconds, rounding to secRound seconds and mbRound
 // MB. A ReqGroup with no stats gets zero RAM, disk and time.
 func loadLearnedReqs(bdb *bolt.DB, reqGroup string, secRound, mbRound int) (*scheduler.Requirements, error) {
+	return loadLearnedReqsWith(reqGroup, secRound, mbRound, func(kind histSampleKind, round int) (int, error) {
+		return recommendedReqGroupStat(bdb, histSampleBuckets[kind], reqGroup, round)
+	})
+}
+
+// loadLearnedReqsWith is loadLearnedReqs, with stat giving the recommendation,
+// rounded to round, of reqGroup's samples of kind.
+func loadLearnedReqsWith(reqGroup string, secRound, mbRound int,
+	stat func(kind histSampleKind, round int) (int, error),
+) (*scheduler.Requirements, error) {
 	if reqStatLoadHook != nil {
 		if err := reqStatLoadHook(reqGroup); err != nil {
 			return nil, err
 		}
 	}
 
-	recm, err := recommendedReqGroupStat(bdb, bucketJobRAM, reqGroup, mbRound)
+	recm, err := stat(histSampleRAM, mbRound)
 	if err != nil {
 		return nil, err
 	}
 
-	recd, err := recommendedReqGroupStat(bdb, bucketJobDisk, reqGroup, mbRound)
+	recd, err := stat(histSampleDisk, mbRound)
 	if err != nil {
 		return nil, err
 	}
 
-	recs, err := recommendedReqGroupStat(bdb, bucketJobSecs, reqGroup, secRound)
+	recs, err := stat(histSampleSecs, secRound)
 	if err != nil {
 		return nil, err
 	}

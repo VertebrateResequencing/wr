@@ -302,7 +302,7 @@ type histFooter struct {
 	depGroupsSeen []string
 	repGroupEnds  []histGroupEnd
 	samples       []histSample
-	drops         []logKey // keys a modify dropped the rglookups of
+	drops         []logKey // keys a modify dropped the rglookups and reverse dep group postings of
 }
 
 // parseHistFooter returns the footer b encodes, its strings aliasing b. It
@@ -557,24 +557,37 @@ func (f *histFooter) memSize(raw int) int64 {
 // histBuiltJob is what the footer indexes of a key's completed-job record of
 // the highest seq.
 type histBuiltJob struct {
-	entry              histKeyEntry
-	depGroups, depDeps []string
-	end                int64
+	entry     histKeyEntry
+	depGroups []string
+	end       int64
 }
 
-// histGroupsBuilder gathers a footer's dep group postings.
-type histGroupsBuilder struct {
-	depGroups, revDeps map[string]map[logKey]struct{}
-}
+// revDepPostings returns the footer's reverse dep group postings: each dep
+// group a completion depends on, of a seq no drop of its key in the segment
+// is above.
+func (b *histFooterBuilder) revDepPostings() []histPosting {
+	postings := make(map[string]map[logKey]struct{})
 
-// add adds k's job, j, to the postings of its dep groups.
-func (g *histGroupsBuilder) add(k logKey, j *histBuiltJob) {
-	for _, dg := range j.depGroups {
-		addHistPosting(g.depGroups, dg, k)
+	for k, deps := range b.revDeps {
+		for dg, seq := range deps {
+			if dropped, ok := b.drops[k]; !ok || dropped <= seq {
+				addHistPosting(postings, dg, k)
+			}
+		}
 	}
 
-	for _, dg := range j.depDeps {
-		addHistPosting(g.revDeps, dg, k)
+	return sortedHistPostings(postings)
+}
+
+// noteRevDeps notes each dep group c's job depends on, with c's seq, unless
+// it noted the dep group of c's key with a higher seq already.
+func (b *histFooterBuilder) noteRevDeps(c *historyFolded) {
+	for _, dg := range c.job.Dependencies.DepGroups() {
+		if b.revDeps[c.key] == nil {
+			b.revDeps[c.key] = make(map[string]uint64)
+		}
+
+		b.revDeps[c.key][dg] = max(b.revDeps[c.key][dg], c.seq)
 	}
 }
 
@@ -585,11 +598,6 @@ func addHistPosting(postings map[string]map[logKey]struct{}, name string, k logK
 	}
 
 	postings[name][k] = struct{}{}
-}
-
-// setOn sets f's dep group postings sections.
-func (g *histGroupsBuilder) setOn(f *histFooter) {
-	f.depGroups, f.revDeps = sortedHistPostings(g.depGroups), sortedHistPostings(g.revDeps)
 }
 
 // sortedHistPostings returns postings as a footer section.
@@ -614,11 +622,17 @@ func sortedHistPostings(postings map[string]map[logKey]struct{}) []histPosting {
 // seq at or below one before it of its key, as a key can complete under one
 // rep group, be moved to another and complete again. history.bolt's rep group
 // end times grow the same way with every completion it folds; its dep groups
-// seen are instead noted when a job is added.
+// seen are instead noted when a job is added. Its reverse dep group postings
+// are of every completion, but those of a lower seq than a drop of their key
+// in the segment, as history.bolt keeps a key's postings across its
+// completions and a modify drops them all: so a completion before a modify of
+// its key in the segment puts none, and one after it still does (see
+// historyLookupChanges.dropSeqs).
 type histFooterBuilder struct {
 	jobs      map[logKey]*histBuiltJob
 	lookups   map[string]map[logKey]struct{}
-	drops     map[logKey]struct{}
+	drops     map[logKey]uint64
+	revDeps   map[logKey]map[string]uint64
 	samples   map[histSample]struct{}
 	groupEnds map[string]int64
 	depSeen   map[string]struct{}
@@ -629,19 +643,22 @@ func newHistFooterBuilder() histFooterBuilder {
 	return histFooterBuilder{
 		jobs:      make(map[logKey]*histBuiltJob),
 		lookups:   make(map[string]map[logKey]struct{}),
-		drops:     make(map[logKey]struct{}),
+		drops:     make(map[logKey]uint64),
+		revDeps:   make(map[logKey]map[string]uint64),
 		samples:   make(map[histSample]struct{}),
 		groupEnds: make(map[string]int64),
 		depSeen:   make(map[string]struct{}),
 	}
 }
 
-// complete notes c's record, at index idx of the block numbered block, unless
-// the segment holds one of its key of the same or a higher seq, which
-// history.bolt's putComplete would skip as already folded: its rep group end
-// time and dep groups, and its key's entry and postings.
+// complete notes c's record, at index idx of the block numbered block: the
+// dep groups its job depends on, with its seq, and, unless the segment holds a
+// record of its key of the same or a higher seq, which history.bolt's
+// putComplete would skip as already folded, its rep group end time and dep
+// groups, and its key's entry and postings.
 func (b *histFooterBuilder) complete(c *historyFolded, block, idx uint32) {
 	b.maxSeq = max(b.maxSeq, c.seq)
+	b.noteRevDeps(c)
 
 	if prev := b.jobs[c.key]; prev != nil && prev.entry.seq >= c.seq {
 		return
@@ -658,7 +675,6 @@ func (b *histFooterBuilder) complete(c *historyFolded, block, idx uint32) {
 	b.jobs[c.key] = &histBuiltJob{
 		entry:     histKeyEntry{key: c.key, seq: c.seq, block: block, idx: idx},
 		depGroups: slices.Clone(c.job.DepGroups),
-		depDeps:   c.job.Dependencies.DepGroups(),
 		end:       c.job.EndTime.UnixNano(),
 	}
 }
@@ -668,19 +684,21 @@ func (b *histFooterBuilder) lookup(repGroup string, k logKey) {
 	addHistPosting(b.lookups, repGroup, k)
 }
 
-// drop notes a modify's dropping of every rglookup of k: those noted before
-// it go, and its key is in the footer's drops, so that queries skip those of
-// earlier segments too. A rep group keeps its posting though it is left empty,
-// as history.bolt's repgroups keeps every rep group ever added. It visits
-// every rep group the segment has rglookups of, a cost per modify a reverse
-// map of each rglookup's key would remove at the price of memory per
-// rglookup; modifies are far fewer than rglookups.
-func (b *histFooterBuilder) drop(k logKey) {
+// drop notes a modify, of seq, dropping every rglookup and reverse dep group
+// posting of k: the rglookups noted before it go, as do the postings of
+// completions of k of a lower seq, and its key is in the footer's drops, so
+// that queries skip those of earlier segments and history.bolt too. A rep
+// group keeps its posting though it is left empty, as history.bolt's repgroups
+// keeps every rep group ever added. It visits every rep group the segment has
+// rglookups of, a cost per modify a reverse map of each rglookup's key would
+// remove at the price of memory per rglookup; modifies are far fewer than
+// rglookups.
+func (b *histFooterBuilder) drop(k logKey, seq uint64) {
 	for _, keys := range b.lookups {
 		delete(keys, k)
 	}
 
-	b.drops[k] = struct{}{}
+	b.drops[k] = max(b.drops[k], seq)
 }
 
 // footer returns the footer of what b has noted, with the segment's block
@@ -688,11 +706,11 @@ func (b *histFooterBuilder) drop(k logKey) {
 func (b *histFooterBuilder) footer(blocks []uint64, folded historyPos) *histFooter {
 	f := &histFooter{blocks: blocks, folded: folded, maxSeq: b.maxSeq,
 		repGroups:     sortedHistPostings(b.lookups),
+		revDeps:       b.revDepPostings(),
 		depGroupsSeen: slices.Sorted(maps.Keys(b.depSeen)),
 		samples:       slices.SortedFunc(maps.Keys(b.samples), compareHistSamples),
 		drops:         slices.SortedFunc(maps.Keys(b.drops), compareLogKeys)}
-	groups := histGroupsBuilder{depGroups: make(map[string]map[logKey]struct{}),
-		revDeps: make(map[string]map[logKey]struct{})}
+	depGroups := make(map[string]map[logKey]struct{})
 
 	for _, name := range slices.Sorted(maps.Keys(b.groupEnds)) {
 		f.repGroupEnds = append(f.repGroupEnds, histGroupEnd{name: name, end: b.groupEnds[name]})
@@ -701,12 +719,15 @@ func (b *histFooterBuilder) footer(blocks []uint64, folded historyPos) *histFoot
 	for k, j := range b.jobs {
 		f.keys = append(f.keys, j.entry)
 		f.endTimes = append(f.endTimes, histEndTime{end: j.end, key: k, block: j.entry.block, idx: j.entry.idx})
-		groups.add(k, j)
+
+		for _, dg := range j.depGroups {
+			addHistPosting(depGroups, dg, k)
+		}
 	}
 
 	slices.SortFunc(f.keys, func(a, b histKeyEntry) int { return compareLogKeys(a.key, b.key) })
 	slices.SortFunc(f.endTimes, compareHistEndTimes)
-	groups.setOn(f)
+	f.depGroups = sortedHistPostings(depGroups)
 
 	return f
 }
@@ -794,10 +815,10 @@ func (w *histSegmentWriter) addLookup(repGroup string, k logKey, seq uint64) err
 	return nil
 }
 
-// addDrop notes a modify's dropping of every rglookup of k (see
-// histFooterBuilder.drop).
-func (w *histSegmentWriter) addDrop(k logKey) {
-	w.foot.drop(k)
+// addDrop notes a modify, of seq, dropping every rglookup and reverse dep
+// group posting of k (see histFooterBuilder.drop).
+func (w *histSegmentWriter) addDrop(k logKey, seq uint64) {
+	w.foot.drop(k, seq)
 }
 
 // addSamples adds learned-requirement samples to the footer, once each.

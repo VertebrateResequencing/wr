@@ -334,11 +334,14 @@ func (s *logStore) loadHistory() (historyPos, uint64, error) {
 		return historyPos{}, 0, err
 	}
 
-	if s.segments, err = loadHistIndex(s.dir); err != nil {
+	segments, err := loadHistIndex(s.dir)
+	if err != nil {
 		return historyPos{}, 0, err
 	}
 
-	return folded, max(foldedSeq, s.segments.maxSeq), nil
+	s.segments.Store(segments)
+
+	return folded, max(foldedSeq, segments.maxSeq), nil
 }
 
 // jobOfFlat returns the job of a flat spec, decoded with ch, and a flat run
@@ -1863,8 +1866,10 @@ type logStore struct {
 	history *historyBolt
 
 	// segments is the index of the sealed history segments (Phase 2), loaded
-	// when the store opens.
-	segments *histIndex
+	// when the store opens, and replaced, never changed, as segments are
+	// added (see addSegment), which segMu makes one at a time.
+	segments atomic.Pointer[histIndex]
+	segMu    sync.Mutex
 
 	// foldMu makes folds one at a time (see foldNow), and guards foldClosed,
 	// set once close has stopped the folder goroutine, which foldStop stops
@@ -1955,7 +1960,7 @@ func openLogStore(ctx context.Context, dir string) (*logStore, error) {
 
 // newLogStore returns a log store of dir with empty state and no writer.
 func newLogStore(ctx context.Context, dir string) *logStore {
-	return &logStore{
+	s := &logStore{
 		dir:          dir,
 		ctx:          ctx,
 		ch:           new(codec.BincHandle),
@@ -1972,6 +1977,11 @@ func newLogStore(ctx context.Context, dir string) *logStore {
 		statsExited:  make(chan struct{}),
 		reqStats:     newReqStatCache(),
 	}
+
+	s.segments.Store(newHistIndex(dir))
+	s.state.segments = &s.segments
+
+	return s
 }
 
 // nextSeq returns the next record's seq.
@@ -3050,13 +3060,14 @@ func (s *logStore) dependentJobs(depGroups, newKeys map[string]bool) (jobsToQueu
 }
 
 // reverseDepKeys returns, sorted, the keys of the jobs depending on depGroup:
-// those in the reverse dep group index, and those history.bolt's postings
-// hold, but of a key a modify not yet folded dropped (unlooked). The index
-// holds a key from its spec record, but only while the log or a checkpoint
-// does, and a checkpoint holds the specs of live keys and of completions not
-// yet folded alone, so a folded completion's key is found by its postings.
-// unlooked is copied before the history.bolt read: the folder deletes a
-// modify's postings before it stops queries skipping them.
+// those in the reverse dep group index, and those the postings of history.bolt
+// and the sealed segments hold (see foldedReverseDeps), but of a key a modify
+// not yet folded dropped (unlooked). The index holds a key from its spec
+// record, but only while the log or a checkpoint does, and a checkpoint holds
+// the specs of live keys and of completions not yet folded alone, so a folded
+// completion's key is found by its postings. unlooked is copied before the
+// history read: the folder deletes or drops a modify's postings before it
+// stops queries skipping them.
 func (s *logStore) reverseDepKeys(depGroup string) ([]logKey, error) {
 	s.mu.RLock()
 	keys := slices.Collect(maps.Keys(s.state.reverseDeps[depGroup]))

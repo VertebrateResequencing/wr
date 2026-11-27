@@ -1891,6 +1891,54 @@ func TestStoreConvertKeepsArchivedDependents(t *testing.T) {
 		})
 }
 
+func TestStoreConvertRemovedLiveDependent(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a bbolt DB holding a live dependent of dep group grow", t, func() {
+		dir := t.TempDir()
+		dbFile := filepath.Join(dir, convertDBName)
+		j := newArchivedDependentsJobs()
+
+		bdb := openStoreOf(ctx, dbFile, storeKindBolt)
+		_, err := bdb.storeNewJobsGuarded(ctx, []*Job{j.d}, true, nil)
+		So(err, ShouldBeNil)
+		So(bdb.close(ctx), ShouldBeNil)
+
+		copied := filepath.Join(t.TempDir(), convertDBName)
+		copyTestFile(dbFile, copied)
+
+		// removeReaddAndArchive removes the dependent, adds it again depending
+		// on dep group grox instead, archives it and returns what an add of a
+		// new member of grow then queues and updates.
+		removeReaddAndArchive := func(st store) newMemberPlan {
+			So(st.deleteLiveJobs(ctx, []string{j.d.Key()}), ShouldBeNil)
+
+			again := testDBJob(j.d.Cmd, j.d.RepGroup)
+			again.Dependencies = Dependencies{NewDepGroupDependency("grox")}
+			addAndArchive(ctx, st, again)
+
+			return planOfNewMember(ctx, st)
+		}
+
+		bdb = openStoreOf(ctx, copied, storeKindBolt)
+		fromBolt := removeReaddAndArchive(bdb)
+		So(bdb.close(ctx), ShouldBeNil)
+
+		Convey("once converted, removed, added again depending on grox instead and archived, an add of a new "+
+			"member of grow puts back what it does on bbolt", func() {
+			s := openStoreOf(ctx, dbFile, storeKindLog)
+
+			Reset(func() { So(s.close(ctx), ShouldBeNil) })
+
+			So(removeReaddAndArchive(s), ShouldResemble, fromBolt)
+		})
+	})
+}
+
 func TestStoreConvertRefusesSchema(t *testing.T) {
 	if runnermode || servermode {
 		return

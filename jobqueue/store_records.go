@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
@@ -154,9 +155,13 @@ type logState struct {
 	reverseDeps map[string]map[logKey]struct{}
 	keyDeps     map[logKey][]string
 
-	// history is the history key index: every key with a history entry, folded
-	// or not, to its last applied complete record's seq.
-	history map[logKey]uint64
+	// history is the history key index: every key with a history entry in
+	// history.bolt or the overlay to its last applied complete record's seq;
+	// segments, if not nil, is the store's index of its sealed history
+	// segments, whose key index the reducer reads too (see hasHistoryEntry and
+	// historyOutranks).
+	history  map[logKey]uint64
+	segments *atomic.Pointer[histIndex]
 
 	// overlay is the history entries not yet folded into history.bolt, and
 	// repGroupKeys the rglookup records not yet folded, rep group to keys,
@@ -355,6 +360,18 @@ func (r *logRecord) parseRGLookup(body []byte) error {
 	return nil
 }
 
+// hasHistoryEntry reports whether k has a history entry, in the history key
+// index or the sealed segments' key index.
+func (st *logState) hasHistoryEntry(k logKey) bool {
+	if _, complete := st.history[k]; complete || st.segments == nil {
+		return complete
+	}
+
+	_, complete := st.segments.Load().lookup(k)
+
+	return complete
+}
+
 // unindex removes key from the reverse dep group index entries of index.
 func (st *logState) unindex(key logKey, index logSpecIndex) {
 	for _, dg := range index.depDeps {
@@ -510,6 +527,17 @@ func (st *logState) index(key logKey, index logSpecIndex) {
 		addToIndex(st.reverseDeps, dg, key)
 		addToKeyIndex(st.keyDeps, key, dg)
 	}
+}
+
+// historyOutranks reports whether k's last applied complete record is of seq
+// or higher: by the history key index, or the seq of the record the sealed
+// segments' key index maps k to (spec "In-memory state of logStore").
+func (st *logState) historyOutranks(k logKey, seq uint64) bool {
+	if held, complete := st.history[k]; complete && held >= seq {
+		return true
+	}
+
+	return st.segments != nil && st.segments.Load().holdsSince(k, seq)
 }
 
 // parseLogRecord parses rec.
@@ -686,7 +714,7 @@ func (st *logState) applyDelete(op *logOp) {
 
 	delete(st.live, op.key)
 
-	if _, complete := st.history[op.key]; !complete {
+	if !st.hasHistoryEntry(op.key) {
 		st.unindex(op.key, e.index)
 	}
 }
@@ -800,9 +828,7 @@ func (st *logState) completeOutranked(op *logOp) bool {
 		return true
 	}
 
-	seq, complete := st.history[op.key]
-
-	return complete && op.seq <= seq
+	return st.historyOutranks(op.key, op.seq)
 }
 
 // logLive is a live key's in-memory state.
@@ -887,7 +913,7 @@ func (st *logState) dropFoldedLive() int {
 	dropped := 0
 
 	for k, e := range st.live {
-		if seq, complete := st.history[k]; complete && max(e.specSeq, e.stateSeq, e.stdSeq[stdOut], e.stdSeq[stdErr]) < seq {
+		if st.historyOutranks(k, max(e.specSeq, e.stateSeq, e.stdSeq[stdOut], e.stdSeq[stdErr])+1) {
 			delete(st.live, k)
 
 			dropped++

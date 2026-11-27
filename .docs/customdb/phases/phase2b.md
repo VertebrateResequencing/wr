@@ -52,22 +52,42 @@ until then and existing tests keep passing. Depends on 2a.
 - [x] implemented
 - [x] reviewed
 
-### Item 2b.2: Folder writes segments; learned samples from footers
+### Item 2b.2a: Segment-side history for the folder switch
 
-spec.md section: Implementation Order, Phase 2, 2b; D1; D2; D3; C6;
+spec.md section: D2; D3; Folder and history
+
+Split from item 2b.2 on 2026-11-27: its first pass found that the folder
+cannot seal segments until backups ship them (a restore would refuse the
+unmoved `history.bolt` folded position). This item is the segment-side
+work that pass completed: a copy-and-publish segment index readable
+without a lock, reducer checks that see segment keys, reverse dep
+postings and drops in footers read by the dependent scan, segment drops
+hiding `history.bolt` entries, and learned samples merged from
+`history.bolt` and footers. Depends on 2b.1.
+
+- [x] implemented
+- [x] reviewed
+
+### Item 2b.2b: Folder writes segments; backups ship them
+
+spec.md section: Implementation Order, Phase 2, 2b; D1; D2; D3; C6; E4;
 Folder and history
 
 Make the folder seal `.hist` segments (`NNNNNNNN.hist.tmp`, footer,
 fsync, rename) instead of committing to `history.bolt`, and load learned
-requirement samples from segment footers. Keep D1's acceptance tests
-passing on the segment store and add C6 test 2 (the Phase 2 checkpoint
-with the open segment not yet sealed). Cover D2 acceptance tests 1, 2
-and 4 in `jobqueue/store_segment_test.go`, deferred from item 2a.1, and
-D3 acceptance test 1 in `jobqueue/store_history_test.go`, deferred from
-item 2b.1, because they need the folder to seal segments. Depends on 2b.1.
-Also resolve the 1d.1 incidental on keeping `logState.replaced` and the
-Phase 2 checkpoint's spec per overlay or replaced entry
-([incidentals.md](incidentals.md)).
+requirement samples from segment footers. Pull forward from item 2c.1 the
+part of E4 that ships each sealed `.hist` file once in place of the
+whole `history.bolt`, so every commit leaves backups and restores
+working; 2c.1 keeps the rest of E4. Keep D1's acceptance tests passing on
+the segment store and add C6 test 2 (the Phase 2 checkpoint with the
+open segment not yet sealed). Cover D2 acceptance tests 1, 2 and 4 in
+`jobqueue/store_segment_test.go` and D3 acceptance test 1 in
+`jobqueue/store_history_test.go`. Resolve the open incidentals routed to
+2b.2 in [incidentals.md](incidentals.md), including the folder-switch
+entry from 2b.2a, the 1d.1 `logState.replaced` entry, and the remaining
+differences from bbolt for removed jobs' reverse dep postings and a
+removed re-add after a restart: user-facing behaviour must not change, so
+fix them rather than accept them. Depends on 2b.2a.
 
 - [ ] implemented
 - [ ] reviewed
@@ -86,7 +106,7 @@ segment footers (D3) so they read only the records they return. Add a
 regression test that fails while the cost scales with history: grow the
 history of one rep group by at least 10x and require the records or bytes
 read for a `--limit 1` query to stay constant, not merely the wall time.
-The phase 2 gate times the query on the crash soak. Depends on 2b.2.
+The phase 2 gate times the query on the crash soak. Depends on 2b.2b.
 
 - [ ] implemented
 - [ ] reviewed

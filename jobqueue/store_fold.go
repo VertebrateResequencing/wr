@@ -34,11 +34,14 @@ package jobqueue
 // invalidates as it folds new samples.
 
 import (
+	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"maps"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -119,6 +122,16 @@ var (
 	// logFoldChunkRecords, if above 0, replaces foldChunkRecords.
 	logFoldChunkRecords atomic.Int64 //nolint:gochecknoglobals // a test seam
 )
+
+// compareReqStatValues orders sample values as their keys sort (see
+// reqStatKey): by value if neither is negative.
+func compareReqStatValues(a, b int) int {
+	if a >= 0 && b >= 0 {
+		return cmp.Compare(a, b)
+	}
+
+	return bytes.Compare(reqStatKey("", a), reqStatKey("", b))
+}
 
 // foldComplete is a complete record a fold read: its key, seq and body after
 // the key, and the latest spec record of its key its chunk read before it, if
@@ -422,6 +435,14 @@ func frameIdxs(refs iter.Seq[wal.Ref]) (map[wal.Ref]map[uint32]bool, int) {
 	}
 
 	return frames, n
+}
+
+// mergeReqStatValues returns the distinct values of a and b, each in the order
+// history.bolt's keys of samples sort in (see reqStatKey), in that order.
+func mergeReqStatValues(a, b []int) []int {
+	merged := slices.SortedFunc(slices.Values(slices.Concat(a, b)), compareReqStatValues)
+
+	return slices.Compact(merged)
 }
 
 // foldLimit returns where a fold reads wal file files[i] to: durEnd, if it is
@@ -739,9 +760,30 @@ func (s *logStore) setRecRounding(secRound, mbRound int) {
 	s.recMBRound = mbRound
 }
 
-// loadReqGroupRecs reads reqGroup's learned requirements from the samples the
-// folder has folded into history.bolt.
+// loadReqGroupRecs reads reqGroup's learned requirements from the samples
+// history holds: those the folder has folded into history.bolt or a conversion
+// copied there, and those of the sealed segments, each distinct value once, as
+// history.bolt holds them.
 func (s *logStore) loadReqGroupRecs(reqGroup string) (*scheduler.Requirements, error) {
-	return loadLearnedReqs(s.history.bolt, reqGroup, recommendationRound(s.recSecRound, RecSecRound),
-		recommendationRound(s.recMBRound, RecMBRound))
+	secRound := recommendationRound(s.recSecRound, RecSecRound)
+	mbRound := recommendationRound(s.recMBRound, RecMBRound)
+	segs := s.segs()
+
+	if segs.samples[reqGroup] == nil {
+		return loadLearnedReqs(s.history.bolt, reqGroup, secRound, mbRound)
+	}
+
+	return loadLearnedReqsWith(reqGroup, secRound, mbRound, func(kind histSampleKind, round int) (int, error) {
+		values, err := s.boltSampleValues(histSampleBuckets[kind], reqGroup)
+		if err != nil {
+			return 0, err
+		}
+
+		w := newReqStatWindow()
+		for _, v := range mergeReqStatValues(values, segs.sampleValues(reqGroup, kind)) {
+			w.add(v)
+		}
+
+		return roundRecommendation(w.recommendation, w.maxVal, round), nil
+	})
 }

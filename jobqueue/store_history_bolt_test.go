@@ -32,6 +32,7 @@ package jobqueue
 // file is in boltOnlyTests.
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -39,6 +40,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -49,6 +51,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 )
 
 const (
@@ -58,6 +61,33 @@ const (
 	// histOutrankingSeq is the seq of a segment's completion that outranks
 	// one a fresh store folded into history.bolt.
 	histOutrankingSeq = 1000
+
+	// segHideGroup is the rep group of TestHistorySegmentDropsHideBolt's
+	// dependent, and segHideOtherGroup the other it is looked up under.
+	segHideGroup      = "segHide"
+	segHideOtherGroup = "segHideB"
+)
+
+const (
+	// histSamplesReqGroup is the req group whose samples
+	// TestHistorySegmentLearnedSamples puts in both history.bolt and a
+	// segment, and histSamplesBothFrom the first of its 300 RAM samples in
+	// both, so that its highest are, and counting them twice would move the
+	// recommendation.
+	histSamplesReqGroup = "q"
+	histSamplesBothFrom = 250
+
+	// histSamplesBoltGroup is a req group whose samples only history.bolt
+	// holds.
+	histSamplesBoltGroup = "boltonly"
+
+	// histSamplesPrefixedGroup is a req group whose name starts with
+	// histSamplesReqGroup's, whose samples history.bolt holds after its keys.
+	histSamplesPrefixedGroup = "qx"
+
+	// histSamplesRAM is histSamplesReqGroup's learned RAM: the 285th of its
+	// 300 RAM samples in value order, their 95th percentile.
+	histSamplesRAM = 100 + 7*284
 )
 
 // TestHistoryBoltBackupRemap checks that a fold commit growing history.bolt
@@ -212,6 +242,19 @@ func TestReadStoreHistoryEntryMissing(t *testing.T) {
 	})
 }
 
+func TestStoreArchivedDependentsFromSegments(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	archivedDependentsScenarios(t, []archivedDependentsRestart{
+		{name: "folded, its history moved into segments and reopened", foldBefore: true,
+			reopen: moveHistoryToSegments},
+		{name: "folded, checkpointed, its history moved into segments and reopened", foldBefore: true,
+			checkpoint: true, reopen: moveHistoryToSegments},
+	})
+}
+
 // historyTestStore is what the history tests ask of a store.
 type historyTestStore interface {
 	historyQuerier
@@ -298,7 +341,7 @@ func TestLogStoreHistoryFromSegmentsMatchesBolt(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given the same history made in the bbolt store and the log store, the log store's moved from "+
-		"history.bolt into segments, its rglookups in one and its completions in the next", t, func() {
+		"history.bolt into segments, its completions in one and its rglookups in the next", t, func() {
 		pauseLogFolder()
 
 		h := historyScenario{t0: time.Now().Truncate(time.Second).Add(-time.Hour)}
@@ -329,10 +372,14 @@ func TestLogStoreHistoryFromSegmentsMatchesBolt(t *testing.T) {
 	})
 }
 
-// moveHistoryToSegments closes s, moves the completions and rglookups its
-// history.bolt holds into two sealed segments, the rglookups in the first and
-// the completions in the second, leaving history.bolt holding none, and
-// returns the store opened again, closed when the Convey block ends.
+// moveHistoryToSegments closes s, moves the completions, rglookups and reverse
+// dep group postings its history.bolt holds into two sealed segments, the
+// completions in the first, with a drop after each completion whose job's
+// dep group dependencies history.bolt holds no postings of (as a modify
+// dropped them), and the rglookups in the second, leaving history.bolt holding
+// none, and returns the store opened again, closed when the Convey block ends.
+// Every posting history.bolt holds must be of a dependency of its key's
+// completion's job, which a segment can hold.
 func moveHistoryToSegments(ctx context.Context, s *logStore) *logStore {
 	So(s.close(ctx), ShouldBeNil)
 
@@ -342,17 +389,21 @@ func moveHistoryToSegments(ctx context.Context, s *logStore) *logStore {
 	var (
 		complete []historyFolded
 		lookups  []historyLookup
+		postings map[logKey][]string
 	)
 
 	So(history.bolt.View(func(tx *bolt.Tx) error {
 		complete, lookups, err = boltHistoryOf(tx, s.ch)
+		if err == nil {
+			postings, err = boltReverseDepsOf(tx)
+		}
 
 		return err
 	}), ShouldBeNil)
 
 	So(history.bolt.Update(func(tx *bolt.Tx) error {
 		for _, name := range [][]byte{bucketJobsComplete, bucketRTK, bucketRGs, bucketEndTimeToKey,
-			bucketRGEndTime, bucketCompleteSeq, bucketKeyRGs, bucketKeyRGsPending} {
+			bucketRGEndTime, bucketCompleteSeq, bucketKeyRGs, bucketKeyRGsPending, bucketRDTK} {
 			if errd := tx.DeleteBucket(name); errd != nil {
 				return errd
 			}
@@ -369,17 +420,33 @@ func moveHistoryToSegments(ctx context.Context, s *logStore) *logStore {
 	w, err := createHistSegment(s.dir, 1, s.ch)
 	So(err, ShouldBeNil)
 
-	for _, l := range lookups {
-		So(w.addLookup(l.repGroup, l.key, l.seq), ShouldBeNil)
+	unheld := 0
+
+	for i := range complete {
+		So(w.addCompletion(&complete[i]), ShouldBeNil)
+
+		deps := slices.Compact(slices.Sorted(slices.Values(complete[i].job.Dependencies.DepGroups())))
+		held, posted := postings[complete[i].key]
+
+		switch {
+		case posted && !slices.Equal(held, deps):
+			unheld++
+		case !posted && len(deps) > 0:
+			w.addDrop(complete[i].key, complete[i].seq+1)
+		}
+
+		delete(postings, complete[i].key)
 	}
 
+	So(unheld, ShouldEqual, 0)
+	So(postings, ShouldBeEmpty)
 	So(w.seal(historyPos{}), ShouldBeNil)
 
 	w, err = createHistSegment(s.dir, 2, s.ch)
 	So(err, ShouldBeNil)
 
-	for i := range complete {
-		So(w.addCompletion(&complete[i]), ShouldBeNil)
+	for _, l := range lookups {
+		So(w.addLookup(l.repGroup, l.key, l.seq), ShouldBeNil)
 	}
 
 	So(w.seal(historyPos{}), ShouldBeNil)
@@ -424,6 +491,22 @@ func boltHistoryOf(tx *bolt.Tx, ch codec.Handle) ([]historyFolded, []historyLook
 	})
 
 	return complete, lookups, err
+}
+
+// boltReverseDepsOf returns, by key, the dep groups, sorted, of the reverse
+// dep group postings history.bolt holds in tx.
+func boltReverseDepsOf(tx *bolt.Tx) (map[logKey][]string, error) {
+	postings := make(map[logKey][]string)
+
+	err := tx.Bucket(bucketRDTK).ForEach(func(posting, _ []byte) error {
+		cut := len(posting) - logKeyHexLen
+		k, err := parseLogKey(string(posting[cut:]))
+		postings[k] = append(postings[k], string(posting[:cut-len(dbDelimiter)]))
+
+		return err
+	})
+
+	return postings, err
 }
 
 // historyAnswers is every history query's answer about the scenario, with
@@ -1052,6 +1135,149 @@ func TestHistorySegmentOutranksBoltRecent(t *testing.T) {
 	})
 }
 
+func TestHistorySegmentRemovedReadd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a job completed depending on dep group grox, added again depending on grow and removed, an add "+
+		"of a new member of grow puts it back, as bbolt keeps the postings of a removed job that is complete", t,
+		func() {
+			pauseLogFolder()
+
+			dependent := func() *Job {
+				d := testDBJob("echo seg regrouped dependent", "segR")
+				d.Dependencies = Dependencies{NewDepGroupDependency("grox")}
+
+				return d
+			}
+			readdAndRemove := func(st store) newMemberPlan {
+				again := dependent()
+				again.Dependencies = Dependencies{NewDepGroupDependency(archivedDepsGroup)}
+
+				_, errs := st.storeNewJobsGuarded(ctx, []*Job{again}, false, nil)
+				So(errs, ShouldBeNil)
+				So(st.deleteLiveJobs(ctx, []string{again.Key()}), ShouldBeNil)
+
+				return planOfNewMember(ctx, st)
+			}
+
+			bdb, _ := openTestStore(t, ctx, storeKindBolt)
+			addAndArchive(ctx, bdb, dependent())
+			fromBolt := readdAndRemove(bdb)
+			So(fromBolt.queued, ShouldContain, dependent().Cmd)
+
+			cfg, _ := logStoreOpenConfig(t)
+			s, err := openLogStoreLocked(ctx, cfg)
+			So(err, ShouldBeNil)
+			So(s.close(ctx), ShouldBeNil)
+
+			done := historyFolded{key: logKeyOf(dependent()), seq: 1, job: dependent()}
+			done.job.State, done.job.EndTime = JobStateComplete, segTestEnd
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) { So(w.addCompletion(&done), ShouldBeNil) })
+
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+			So(readdAndRemove(result.s), ShouldResemble, fromBolt)
+		})
+}
+
+func TestHistorySegmentDropsHideBolt(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a log store whose history.bolt holds an archived member of grow and an archived dependent of "+
+		"grow of segHide, also looked up under segHideB, folded and checkpointed", t, func() {
+		pauseLogFolder()
+
+		cfg, _ := logStoreOpenConfig(t)
+		s, err := openLogStoreLocked(ctx, cfg)
+		So(err, ShouldBeNil)
+
+		j := newArchivedDependentsJobs()
+		j.d.RepGroup = segHideGroup
+		addAndArchive(ctx, s, j.m, j.d)
+		So(s.storeRepGroupLookups(ctx, []*Job{testDBJob(j.d.Cmd, segHideOtherGroup)}), ShouldBeNil)
+		foldOverlay(s)
+		So(s.checkpoint(), ShouldBeNil)
+		So(s.close(ctx), ShouldBeNil)
+
+		reopen := func() *logStore {
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+
+			return result.s
+		}
+
+		Convey("an open finds the dependent under segX and puts it back for a new member of grow", func() {
+			s = reopen()
+
+			byRG, errr := s.retrieveCompleteJobsByRepGroup(segHideGroup)
+			So(errr, ShouldBeNil)
+			So(jobKeys(byRG), ShouldResemble, []string{j.d.Key()})
+			So(planOfNewMember(ctx, s).queued, ShouldContain, j.d.Cmd)
+		})
+
+		Convey("and a segment holding a modify of the dependent, which drops its rglookups and postings, an "+
+			"open finds it under neither, as bbolt's modify deletes them", func() {
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) {
+				w.addDrop(logKeyOf(j.d), histOutrankingSeq)
+			})
+
+			s = reopen()
+
+			byRG, errr := s.retrieveCompleteJobsByRepGroup(segHideGroup)
+			So(errr, ShouldBeNil)
+			So(byRG, ShouldBeEmpty)
+
+			status, errs := s.retrieveCompleteJobStatusByRepGroup(segHideGroup, false)
+			So(errs, ShouldBeNil)
+			So(status.Counts[JobStateComplete], ShouldEqual, 0)
+
+			So(planOfNewMember(ctx, s).queued, ShouldNotContain, j.d.Cmd)
+		})
+
+		Convey("and a segment holding a modify of the dependent, adds of its command under segHideB and segHide "+
+			"find it complete under segHide alone, as a bbolt store's do once its modify deletes the rglookups",
+			func() {
+				writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) {
+					w.addDrop(logKeyOf(j.d), histOutrankingSeq)
+				})
+
+				s = reopen()
+
+				got := segHideAdds(ctx, s, j.d.Cmd)
+				So(got, ShouldResemble, segHideBoltAdds(t, ctx, false))
+				So(got[0].CompleteSameRepGroup, ShouldEqual, 0)
+				So(got[0].OtherRepGroups, ShouldResemble, []DuplicateRepGroup{{RepGroup: segHideGroup, Count: 1}})
+			})
+
+		Convey("and a segment holding a modify of the dependent, then a new rglookup of it under segHideB, adds "+
+			"of its command find it complete under segHideB again, as a bbolt store's do once it is looked up "+
+			"there after its modify", func() {
+			k := logKeyOf(j.d)
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) {
+				w.addDrop(k, histOutrankingSeq)
+				So(w.addLookup(segHideOtherGroup, k, histOutrankingSeq+1), ShouldBeNil)
+			})
+
+			s = reopen()
+
+			got := segHideAdds(ctx, s, j.d.Cmd)
+			So(got, ShouldResemble, segHideBoltAdds(t, ctx, true))
+			So(got[0].CompleteSameRepGroup, ShouldEqual, 1)
+			So(got[0].OtherRepGroups, ShouldBeEmpty)
+		})
+	})
+}
+
 // foldOnly folds job's overlay entry alone into history.bolt, leaving the
 // folded position at the log's start.
 func foldOnly(s *logStore, job *Job) {
@@ -1072,6 +1298,60 @@ func logKeyOf(job *Job) logKey {
 	So(err, ShouldBeNil)
 
 	return k
+}
+
+// segHideBoltAdds returns segHideAdds of a bbolt store holding what
+// TestHistorySegmentDropsHideBolt's log store holds: an archived member of
+// grow and an archived dependent of grow of segHide, looked up under
+// segHideB, then put back, modified keeping its key, which deletes its
+// rglookups, and archived again, then, if relookup, looked up under segHideB
+// again.
+func segHideBoltAdds(t *testing.T, ctx context.Context, relookup bool) []DuplicateBreakdown {
+	t.Helper()
+
+	st, _ := openTestStore(t, ctx, storeKindBolt)
+
+	j := newArchivedDependentsJobs()
+	j.d.RepGroup = segHideGroup
+	addAndArchive(ctx, st, j.m, j.d)
+	So(st.storeRepGroupLookups(ctx, []*Job{testDBJob(j.d.Cmd, segHideOtherGroup)}), ShouldBeNil)
+
+	j.d.State = JobStateReady
+	So(st.storeLiveForRerun([]*Job{j.d}), ShouldBeNil)
+
+	same := modifiedCopy(j.d, j.d.Cmd)
+	same.Priority = 7
+	So(st.modifyLiveJobs(ctx, []string{j.d.Key()}, []*Job{same}), ShouldBeNil)
+
+	_, err := st.archiveCompletion(same.Key(), same)
+	So(err, ShouldBeNil)
+
+	if relookup {
+		So(st.storeRepGroupLookups(ctx, []*Job{testDBJob(j.d.Cmd, segHideOtherGroup)}), ShouldBeNil)
+	}
+
+	return segHideAdds(ctx, st, j.d.Cmd)
+}
+
+// segHideAdds adds cmd to st with ignoreAdded under segHideB, then segHide,
+// returning what each found already added, without the end times, which
+// differ between stores.
+func segHideAdds(ctx context.Context, st modifyLookupStore, cmd string) []DuplicateBreakdown {
+	groups := []string{segHideOtherGroup, segHideGroup}
+	added := make([]DuplicateBreakdown, 0, len(groups))
+
+	for _, rg := range groups {
+		stored, err := st.storeNewJobsGuarded(ctx, []*Job{testDBJob(cmd, rg)}, true, nil)
+		So(err, ShouldBeNil)
+
+		for i := range stored.alreadyAdded.OtherRepGroups {
+			stored.alreadyAdded.OtherRepGroups[i].LastCompleted = time.Time{}
+		}
+
+		added = append(added, stored.alreadyAdded)
+	}
+
+	return added
 }
 
 func TestLogStoreHistoryConcurrentFolds(t *testing.T) {
@@ -1280,6 +1560,286 @@ func seedLogStoreHistory(ctx context.Context, t *testing.T, n int) string {
 	So(history.close(), ShouldBeNil)
 
 	return dir
+}
+
+func TestHistorySegmentLearnedSamples(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given learned-requirement samples of req groups q, qx and boltonly in history.bolt and of q in a "+
+		"segment, some of q's values in both", t, func() {
+		boltSamples, segSamples := histLearnedSamples()
+
+		cfg, _ := logStoreOpenConfig(t)
+		s, err := openLogStoreLocked(ctx, cfg)
+		So(err, ShouldBeNil)
+		So(putHistSamples(s.history.bolt, s.reqStats, boltSamples), ShouldBeNil)
+		So(s.close(ctx), ShouldBeNil)
+
+		writeSegment(cfg.dbFile, 1, nil, nil, segSamples, historyPos{})
+
+		result := openLogStoreBounded(ctx, cfg)
+		So(result.err, ShouldBeNil)
+
+		s = result.s
+		s.setRecRounding(1, 1)
+
+		oracle := histSamplesOracle(t, slices.Concat(boltSamples, segSamples))
+
+		Convey("each req group's learned requirements and the sample count are what bbolt gives holding them "+
+			"all", func() {
+			for _, reqGroup := range []string{histSamplesReqGroup, histSamplesPrefixedGroup, histSamplesBoltGroup} {
+				want, errl := loadLearnedReqs(oracle, reqGroup, 1, 1)
+				So(errl, ShouldBeNil)
+				So(*s.refreshReqGroupRecs(reqGroup), ShouldResemble, *want)
+			}
+
+			So(s.refreshReqGroupRecs(histSamplesReqGroup).RAM, ShouldEqual, histSamplesRAM)
+
+			So(learnedReqsOf(s.refreshReqGroupRecs(histSamplesReqGroup)),
+				ShouldNotResemble, learnedReqsOf(s.refreshReqGroupRecs(histSamplesBoltGroup)))
+
+			n, errc := s.sampleCount()
+			So(errc, ShouldBeNil)
+			So(n, ShouldEqual, histOracleSampleCount(oracle))
+		})
+
+		Convey("q's samples of each kind, merged from history.bolt and the segment, are each once, in the "+
+			"order bbolt's keys of them all sort in, negative ones included", func() {
+			wrong := 0
+
+			for kind, bucket := range histSampleBuckets {
+				values, errv := s.boltSampleValues(bucket, histSamplesReqGroup)
+				So(errv, ShouldBeNil)
+
+				merged := mergeReqStatValues(values, s.segs().sampleValues(histSamplesReqGroup, histSampleKind(kind)))
+				if !slices.Equal(merged, histOracleValues(oracle, bucket, histSamplesReqGroup)) {
+					wrong++
+				}
+			}
+
+			So(wrong, ShouldEqual, 0)
+		})
+
+		Convey("a sample in history.bolt that is not a number fails q's learned requirements", func() {
+			So(s.history.bolt.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket(bucketJobSecs).Put(reqStatKey(histSamplesReqGroup, 99), []byte("x"))
+			}), ShouldBeNil)
+
+			_, errl := s.loadReqGroupRecs(histSamplesReqGroup)
+			So(errl, ShouldNotBeNil)
+		})
+
+		Convey("with history.bolt closed under it, adding a segment with a new sample fails, leaving the "+
+			"published index as it was, and so does a dependent scan", func() {
+			published := s.segs()
+
+			So(s.history.bolt.Close(), ShouldBeNil)
+
+			writeSegment(cfg.dbFile, 2, nil, nil, []histSample{{kind: histSampleRAM,
+				reqGroup: histSamplesReqGroup, value: 1}}, historyPos{})
+			So(s.addSegment(2), ShouldWrap, berrors.ErrDatabaseNotOpen)
+			So(s.segs(), ShouldEqual, published)
+
+			_, errd := s.reverseDepKeys(histSamplesReqGroup)
+			So(errd, ShouldWrap, berrors.ErrDatabaseNotOpen)
+		})
+
+		Convey("a segment added while it is open whose samples history holds already leaves q's learned "+
+			"requirements current", func() {
+			s.refreshReqGroupRecs(histSamplesReqGroup)
+			s.refreshReqGroupRecs(histSamplesBoltGroup)
+			before := s.reqStatChanges()
+
+			writeSegment(cfg.dbFile, 2, nil, nil, []histSample{boltSamples[0], segSamples[0]}, historyPos{})
+			So(s.addSegment(2), ShouldBeNil)
+
+			_, current := s.cachedReqGroupRecs(histSamplesReqGroup)
+			So(current, ShouldBeTrue)
+
+			Convey("while one with a new sample of q of each kind leaves the index taken before it as it was",
+				func() {
+					before := s.segs()
+
+					var held [histSampleKinds][]int
+
+					fresh := make([]histSample, 0, histSampleKinds)
+
+					for kind := range histSampleKinds {
+						held[kind] = slices.Clone(before.sampleValues(histSamplesReqGroup, kind))
+						fresh = append(fresh, histSample{kind: kind, reqGroup: histSamplesReqGroup, value: 1})
+					}
+
+					writeSegment(cfg.dbFile, 3, nil, nil, fresh, historyPos{})
+					So(s.addSegment(3), ShouldBeNil)
+
+					for kind := range histSampleKinds {
+						So(before.sampleValues(histSamplesReqGroup, kind), ShouldResemble, held[kind])
+						So(s.segs().sampleValues(histSamplesReqGroup, kind), ShouldHaveLength, len(held[kind])+1)
+					}
+				})
+
+			Convey("while one with a sample of q and of boltonly whose values history holds only as samples of "+
+				"another kind makes their learned requirements stale", func() {
+				So(slices.Contains(s.segs().sampleValues(histSamplesReqGroup, histSampleRAM), 107), ShouldBeTrue)
+
+				writeSegment(cfg.dbFile, 3, nil, nil, []histSample{
+					{kind: histSampleDisk, reqGroup: histSamplesReqGroup, value: 107},
+					{kind: histSampleDisk, reqGroup: histSamplesBoltGroup, value: 50},
+				}, historyPos{})
+				So(s.addSegment(3), ShouldBeNil)
+
+				_, current = s.cachedReqGroupRecs(histSamplesReqGroup)
+				So(current, ShouldBeFalse)
+
+				_, current = s.cachedReqGroupRecs(histSamplesBoltGroup)
+				So(current, ShouldBeFalse)
+			})
+
+			Convey("while one with a new sample of boltonly makes its learned requirements stale, and a load "+
+				"then counts it", func() {
+				fresh := histSample{kind: histSampleDisk, reqGroup: histSamplesBoltGroup, value: 50_000}
+				writeSegment(cfg.dbFile, 3, nil, nil, []histSample{fresh}, historyPos{})
+				So(s.addSegment(3), ShouldBeNil)
+
+				_, current = s.cachedReqGroupRecs(histSamplesBoltGroup)
+				So(current, ShouldBeFalse)
+
+				_, current = s.cachedReqGroupRecs(histSamplesReqGroup)
+				So(current, ShouldBeTrue)
+
+				oracle = histSamplesOracle(t, slices.Concat(boltSamples, segSamples, []histSample{fresh}))
+				want, errl := loadLearnedReqs(oracle, histSamplesBoltGroup, 1, 1)
+				So(errl, ShouldBeNil)
+				So(want.Disk, ShouldBeGreaterThan, 0)
+				So(*s.refreshReqGroupRecs(histSamplesBoltGroup), ShouldResemble, *want)
+				So(s.reqStatChanges(), ShouldBeGreaterThan, before)
+			})
+		})
+	})
+}
+
+// histLearnedSamples returns TestHistorySegmentLearnedSamples's samples for
+// history.bolt and for a segment: of q, RAM samples alternating between them,
+// the highest in both, enough that the recommendation is not the highest; disk
+// samples, a 0 among them, in both; and time samples in the segment alone, but
+// for negative ones, as a clock stepped back during a job records: one in both,
+// and one in the segment wider than the rest, whose key sorts after theirs (see
+// reqStatKey); and of boltonly, RAM samples in history.bolt alone, 50 among
+// them; and of qx, RAM samples in history.bolt alone, higher than any of q's.
+func histLearnedSamples() (inBolt, inSegment []histSample) {
+	add := func(to *[]histSample, kind histSampleKind, reqGroup string, value int) {
+		*to = append(*to, histSample{kind: kind, reqGroup: reqGroup, value: value})
+	}
+
+	for i := range 300 {
+		switch {
+		case i >= histSamplesBothFrom:
+			add(&inBolt, histSampleRAM, histSamplesReqGroup, 100+i*7)
+			add(&inSegment, histSampleRAM, histSamplesReqGroup, 100+i*7)
+		case i%2 == 0:
+			add(&inBolt, histSampleRAM, histSamplesReqGroup, 100+i*7)
+		default:
+			add(&inSegment, histSampleRAM, histSamplesReqGroup, 100+i*7)
+		}
+	}
+
+	for i, v := range []int{0, 5000, 70, 900, 12000} {
+		add(&inBolt, histSampleDisk, histSamplesReqGroup, v+i%2)
+		add(&inSegment, histSampleDisk, histSamplesReqGroup, v)
+	}
+
+	add(&inBolt, histSampleSecs, histSamplesReqGroup, -7)
+	add(&inSegment, histSampleSecs, histSamplesReqGroup, -7)
+	add(&inSegment, histSampleSecs, histSamplesReqGroup, -1000)
+
+	for i := range 40 {
+		add(&inSegment, histSampleSecs, histSamplesReqGroup, 30*(i+1))
+		add(&inBolt, histSampleRAM, histSamplesBoltGroup, 50*(i+1))
+		add(&inBolt, histSampleRAM, histSamplesPrefixedGroup, 1_000_000+i)
+	}
+
+	return inBolt, inSegment
+}
+
+// histSamplesOracle returns a bbolt database holding samples in its sample
+// buckets, closed when the Convey block ends.
+func histSamplesOracle(t *testing.T, samples []histSample) *bolt.DB {
+	t.Helper()
+
+	bdb, err := bolt.Open(filepath.Join(t.TempDir(), "oracle.db"), dbFilePermission, nil)
+	So(err, ShouldBeNil)
+
+	Reset(func() { So(bdb.Close(), ShouldBeNil) })
+
+	So(bdb.Update(func(tx *bolt.Tx) error {
+		for _, bucket := range histSampleBuckets {
+			if _, errc := tx.CreateBucket(bucket); errc != nil {
+				return errc
+			}
+		}
+
+		return nil
+	}), ShouldBeNil)
+	So(putHistSamples(bdb, newReqStatCache(), samples), ShouldBeNil)
+
+	return bdb
+}
+
+// putHistSamples puts samples in bdb's sample buckets, as a fold does.
+func putHistSamples(bdb *bolt.DB, stats *reqStatCache, samples []histSample) error {
+	return bdb.Update(func(tx *bolt.Tx) error {
+		for _, sample := range samples {
+			if err := stats.putStat(tx, histSampleBuckets[sample.kind], sample.reqGroup, sample.value); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// histOracleSampleCount returns how many samples bdb's sample buckets hold.
+func histOracleSampleCount(bdb *bolt.DB) int {
+	n := 0
+
+	So(bdb.View(func(tx *bolt.Tx) error {
+		for _, bucket := range histSampleBuckets {
+			n += tx.Bucket(bucket).Stats().KeyN
+		}
+
+		return nil
+	}), ShouldBeNil)
+
+	return n
+}
+
+// histOracleValues returns, in key order, the values of reqGroup's samples
+// in bdb's bucket.
+func histOracleValues(bdb *bolt.DB, bucket []byte, reqGroup string) []int {
+	var values []int
+
+	prefix := []byte(reqGroup + dbDelimiter)
+
+	So(bdb.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucket).Cursor()
+
+		for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			val, err := strconv.Atoi(string(v))
+			if err != nil {
+				return err
+			}
+
+			values = append(values, val)
+		}
+
+		return nil
+	}), ShouldBeNil)
+
+	return values
 }
 
 // historyJobSummary is the parts of an archived job the stores must agree on.

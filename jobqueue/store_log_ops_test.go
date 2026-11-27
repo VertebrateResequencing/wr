@@ -1886,11 +1886,12 @@ func TestStoreModifyDropsRepGroupLookups(t *testing.T) {
 
 // archivedDependentsRestart is a way TestStoreArchivedDependentsAfterRestart
 // restarts a log store: optionally folding its history first, optionally
-// checkpointing, then reopening it, with its folder paused throughout if
-// paused, and optionally folding once reopened.
+// checkpointing, then reopening it, by reopen if not nil, with its folder
+// paused throughout if paused, and optionally folding once reopened.
 type archivedDependentsRestart struct {
 	name                                         string
 	paused, foldBefore, checkpoint, foldReopened bool
+	reopen                                       func(ctx context.Context, s *logStore) *logStore
 }
 
 // restartLogStore restarts s as r says, returning the reopened store.
@@ -1903,7 +1904,11 @@ func (r archivedDependentsRestart) restartLogStore(ctx context.Context, s *logSt
 		So(s.checkpoint(), ShouldBeNil)
 	}
 
-	s = reopenLogStore(ctx, s)
+	if r.reopen != nil {
+		s = r.reopen(ctx, s)
+	} else {
+		s = reopenLogStore(ctx, s)
+	}
 
 	if r.foldReopened {
 		So(s.foldNow(), ShouldBeNil)
@@ -1917,16 +1922,23 @@ func TestStoreArchivedDependentsAfterRestart(t *testing.T) {
 		return
 	}
 
-	ctx := context.Background()
-
-	restarts := []archivedDependentsRestart{
+	archivedDependentsScenarios(t, []archivedDependentsRestart{
 		{name: "reopened"},
 		{name: "folded and reopened", foldBefore: true},
 		{name: "folded, checkpointed and reopened", foldBefore: true, checkpoint: true},
 		{name: "checkpointed with its folder paused and reopened", paused: true, checkpoint: true},
 		{name: "checkpointed with its folder paused, reopened and folded", paused: true, checkpoint: true,
 			foldReopened: true},
-	}
+	})
+}
+
+// archivedDependentsScenarios runs TestStoreArchivedDependentsAfterRestart's
+// scenarios on a bbolt store and on a log store restarted each of restarts'
+// ways, asserting that every log store queues and updates what bbolt does.
+func archivedDependentsScenarios(t *testing.T, restarts []archivedDependentsRestart) {
+	t.Helper()
+
+	ctx := context.Background()
 
 	// each runs steps on a bbolt store and, in a Convey each, on a log store
 	// restarted each way between steps' writes and the new member's add,

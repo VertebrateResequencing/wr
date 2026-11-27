@@ -631,9 +631,16 @@ called ready, or explicitly deferred with the owner.
   entries only as they seal, and the Phase 2 checkpoint must hold one spec
   per overlay or replaced entry, not one per key, as a re-add or modify can
   change a key's spec between two of its `complete` records (spec C6 step
-  3 now says so). Owner: 2b.2: keep `replaced` in the segment folder, and
+  3 now says so). Owner: 2b.2b: keep `replaced` in the segment folder, and
   cover C6 test 2 with a key re-added under another spec between two
   `complete` records in the open segment.
+  Progress in 2b.2a: the checkpoint half already holds, as the
+  Phase 1 checkpoint is the Phase 2 one: its backlog writes the spec each
+  `complete` record applied with, overlay or replaced entry alike
+  (`checkpointMerge.backlogSpecs`, through `logState.appliedAs`). Keeping
+  `replaced` until a segment seals, and C6 test 2, come with the folder
+  writing segments, which 2b.2a did not make (see the 2b.2a entry on the
+  folder switch below).
 
 - [x] (from 1d.1 review round 3) Memory diverged from replay: a job added
   under rep group rg1 and req group q1 and folded, archived (C1), added
@@ -2115,11 +2122,14 @@ called ready, or explicitly deferred with the owner.
   the next, and compares every history query with the bbolt store's; D3
   test 1 (2b.2) checks it again.
 
-- [ ] (from 2a.1 review round 4) A completed-job record bigger than 64KiB
+- [x] (from 2a.1 review round 4) A completed-job record bigger than 64KiB
   gets a segment block of its own over 64KiB, as checkpoints do
   (`checkpointWriter`), but D2 says blocks are at most 64KiB with no
   exception. Owner: 2b.2, which adds D2 test 1; amend the spec to state
   the exception (or split such records) when it does.
+  Done in 2b.2a: spec D2's segment layout now states the exception (a record
+  bigger than 64KiB alone in a block of its own, as in a checkpoint). D2
+  test 1, whose ordinary jobs never meet it, comes with the folder switch.
 - [x] (from 2a.1 review round 4) A 200,000-key footer is about 24MB raw
   and 46MB by `memSize`, so the 64MiB footer LRU holds about one footer of
   a production-sized 256MiB segment. Owner: 2b.1, whose history queries
@@ -2136,7 +2146,7 @@ called ready, or explicitly deferred with the owner.
   group (200,000 complete) read 4 footers in 618ms cold and none in 254ms
   again; other rep groups' then read none. Size left at 64MiB.
   `TestHistFooterCache` covers the section cache.
-- [ ] (from 2b.1) The reducer still reads history membership from the
+- [x] (from 2b.1) The reducer still reads history membership from the
   in-memory `history` map alone, which holds `history.bolt`'s and the
   overlay's keys but not the segments': `applyDelete` (unindexing a key it
   thinks incomplete), `completeOutranked`, `dropFoldedLive`
@@ -2147,11 +2157,53 @@ called ready, or explicitly deferred with the owner.
   2b.2, whose folder writes segments, so that keys leave the map: the
   spec's Phase 2 key index takes each key's seq from the record its Ref
   points to.
+  Done in 2b.2a: `logState.hasHistoryEntry` reports a key in the map or in
+  the published segment index, and `logState.historyOutranks` whether the
+  map's seq or that of a segment's record of the key is at or above a given
+  seq, searching every segment whose highest seq qualifies. `applyDelete`
+  and `hasHistory` read the first; `completeOutranked` (which
+  `applyBacklogComplete` calls) and `dropFoldedLive` the second.
+  `TestHistorySegmentMembership` covers a segment's completion of a higher
+  or the same seq outranking the log's (with and without `history.bolt`
+  holding an earlier one), and not one of a lower seq beside another key's
+  higher, an earlier segment's completion outranking the log's when a later
+  segment holds only another key's higher, and a live key whose segment
+  completion outranks its records recovering complete but not live;
+  `TestHistorySegmentRemovedReadd` a removed re-add of a segment-completed
+  key keeping its dep group postings as bbolt does (mutants on each of the
+  four, on the seq comparisons and on skipping segments by highest seq are
+  killed). Taking sealed keys out of the map comes with the folder switch,
+  whose seal is what would drop them.
 - [ ] (from 2b.1) The segment index (`histIndex`) has no lock: 2b.1 loads
   it at open and only reads it after, but 2b.2's folder adds each sealed
   segment to it while queries read it. Owner: 2b.2. Also 2b.2: the
   folder's fold of a modify calls `histSegmentWriter.addDrop`, and learned
   samples (`sampleCount`, `loadReqGroupRecs`) still read `history.bolt`.
+  Progress in 2b.2a: the index is never changed once published;
+  `logStore.addSegment` adds a sealed segment to a copy
+  (`histIndex.withSegment`) and publishes it (`logStore.segments` is an
+  atomic pointer), so a query reads the index it took, taken after its
+  overlay copy, with no lock (`TestHistorySegmentAddedWhileQuerying`, under
+  `make race`). Learned samples read `history.bolt` and the footers, each
+  distinct value once in `history.bolt`'s key order (`loadReqGroupRecs`,
+  `mergeReqStatValues`, `sampleCount`), and `addSegment` makes stale the
+  req groups a segment gives a sample neither held, which is where
+  `reqStatChanges` moves to (`TestHistorySegmentLearnedSamples`, against a
+  bbolt oracle holding every sample). `addDrop` now takes the modify's seq.
+  Review round 2's mutation sweep found `histIndex.ownSamples` storing a
+  held req group's map key aliasing the added segment's footer bytes (a
+  map assignment replaces the key), so each segment adding a sample to a
+  req group the index held kept its whole raw footer, MBs, for good; it
+  now clones the key (`TestHistorySegmentAddedKeepsNoFooter`, heap growth
+  over `addSegment` of a 3.2MB footer: 3.2MB before, under 8KB after).
+  Review round 3 found no test of a sample whose value history holds only
+  as another kind, or of a req group whose name starts with another's;
+  `TestHistorySegmentLearnedSamples` now has both (a new disk sample of a
+  value held only as a RAM sample makes its req group stale; `qx`'s samples
+  stay out of `q`'s), and pins `q`'s learned RAM (mutants on each sample
+  kind and each key prefix, killed).
+  Remaining, owner 2b.2b: the folder calling `addDrop` and `addSegment`,
+  which is the folder switch.
 - [x] (from 2b.1 review) Pre-existing Phase 1 defect, also at d7799727:
   an archived dependent of a dep group is not resurrected by a new member
   added after a checkpoint and a restart. Reproduce on the log store: add
@@ -2170,7 +2222,7 @@ called ready, or explicitly deferred with the owner.
   stores lost them too), a modify's fold deletes its old key's postings,
   and recovery indexes a checkpoint backlog's spec copies. 2b.2 carries
   this onto segments (spec D2 now says how) and is listed below.
-- [ ] (from the 261126 resurrection bugfix) 2b.2: the add's dependent scan
+- [x] (from the 261126 resurrection bugfix) 2b.2: the add's dependent scan
   (`logStore.reverseDepKeys`) reads `history.bolt`'s `reverseDepgroupToKey`;
   once the folder writes segments it must also read the footers' reverse
   dep group sections, which nothing reads yet (`histFooter.revDeps`; the
@@ -2194,12 +2246,67 @@ called ready, or explicitly deferred with the owner.
   a completed key for as long as the manager runs, though the folded
   postings now answer for it; dropping it once folded would bound that
   memory by the fold lag.
+  Done in 2b.2a for segments: the footer's reverse dep group postings are of
+  every completion the segment holds but those of a lower seq than a
+  modify of their key in it (`histFooterBuilder.revDepPostings`, the
+  segment's `dropSeqs`; `addDrop` takes the modify's seq); the index maps
+  each reverse dep group to its segments (`histIndex.revDeps`) and the
+  dependent scan reads their postings through the section cache, valid
+  until a later segment drops the key (`histIndex.reverseDeps`), and skips
+  `history.bolt`'s postings of a key any segment dropped
+  (`foldedReverseDeps`). Checked by `TestHistSegmentReverseDeps` and by
+  `TestStoreArchivedDependentsFromSegments`, which runs
+  `TestStoreArchivedDependentsAfterRestart`'s scenarios with restarts that
+  move the folded history out of `history.bolt` into segments (with and
+  without a checkpoint) and compares with bbolt, including the 261126 item
+  1 cases;
+  mutants dropping the segment read or the in-segment drop rule are killed.
+  The first narrow difference above is misstated: bbolt's `deleteLiveJobs`
+  deletes no posting ("the lookup buckets are historical"), so a converted
+  store keeping them matches bbolt (`TestStoreConvertRemovedLiveDependent`
+  pins it); see the new entry below for what does differ. The second, and
+  the optional memory bound, move to that entry.
 - [ ] (from 2b.1 review, optional) Each segment's end time section is
   about 6.4MB in the footer cache, so a `retrieveCompleteJobsRecent`
   cutoff spanning about 11 production-sized segments cycles the 64MiB
   section LRU, reading every one of their footers on every call. Owner:
   2b.3; measure, and resize the cache or bound the read if it matters.
-- [ ] (from 2b.1 review round 2) `historyRead.repGroupKeys` and
+- [ ] (from 2b.2) Two differences from bbolt in reverse dep group
+  postings, both needing a dep group dependency on a job that is removed:
+  (a) a log store that never converted drops a live job that is not
+  complete from its in-memory reverse dep group index when it is removed
+  (`applyDelete`), where bbolt keeps its postings for ever, so were the
+  same command added again with other dependencies and completed, bbolt
+  would also find it under the old ones and the log store does not (a probe
+  like `TestStoreConvertRemovedLiveDependent` on a fresh log store fails);
+  (b) a completed job re-added with other dependencies and removed again
+  is, after a checkpoint and a restart, found only under its completion's
+  dependencies (bbolt keeps both), as no record or checkpoint holds the
+  removed spec's. Both are pre-existing (Phase 1). Fixing them means
+  persisting a removed job's postings (a record the folder folds, or a
+  checkpoint section), at a cost per removal. Owner: 2b.2b, fix (phase2b.md
+  item 2b.2b: user-facing behaviour must not change). Optional, carried
+  from the 261126 entry: the in-memory reverse dep group index still holds
+  a completed key for as long as the manager runs, though the folded
+  postings now answer for it; dropping it once folded would bound that
+  memory by the fold lag.
+- [ ] (from 2b.2) The folder still commits to `history.bolt`: 2b.2a
+  made the segment side ready (above) but not the switch, which
+  needs: the folder writing an open `NNNNNNNN.hist.tmp` and sealing it at
+  `histSegmentBytes` or `histSegmentAge` (calling `addDrop`, keeping the
+  overlay, `replaced` and the unlooked keys until the seal, then
+  `addSegment`, then dropping them and their keys from the history map);
+  recovery taking F and the highest seq from the last sealed segment,
+  rebuilding the open segment from the log (D2 test 2) and moving F back
+  without rewriting a footer when damage cuts the log before it; and the
+  backups shipping sealed segments, as without that a restore after the
+  switch loses folded history (its `history.bolt` copy no longer moves,
+  and recovery refuses an F before both the checkpoint's `walFrom` and
+  `histFrom` as corrupt). Then D1's tests
+  on the segment store, C6 test 2, D2 tests 1, 2 and 4 and D3 test 1.
+  Owner: 2b.2b, which pulls forward from 2c.1 the backups shipping each
+  sealed segment.
+- [x] (from 2b.1 review round 2) `historyRead.repGroupKeys` and
   `historyRead.completedUnder` (`jobqueue/store_history_bolt.go`) hide a
   key's `history.bolt` rglookups (`repgroupToKey`) only for a modify not
   yet folded (`r.unlooked`), never for a drop a segment records
@@ -2210,6 +2317,18 @@ called ready, or explicitly deferred with the owner.
   the key under a rep group it was moved out of. Owner: 2b.2. If 2b.2
   keeps `history.bolt` alongside segments, a segment drop must also hide
   that key's `history.bolt` postings; pair with the `addDrop` note above.
+  Done in 2b.2a: a converted store's `history.bolt` is older than every
+  segment, so a drop in any segment hides that key's `repgroupToKey` entries
+  in `repGroupKeys` and `completedUnder` (`historyRead.boltDropped`,
+  `histIndex.droppedAny`) and its `reverseDepgroupToKey` postings in the
+  dependent scan (`foldedReverseDeps`); spec D2 says so.
+  `TestHistorySegmentDropsHideBolt` checks the rep group query, its status
+  and the dependent scan (mutant: no hiding, killed), and, against a bbolt
+  store as oracle, add dedup of the key's command under a rep group it was
+  looked up under (`completedUnder`; mutant hiding only a modify not yet
+  folded, killed). Review round 2 adds an rglookup of the key after the
+  segment's drop, which the add dedup finds under that rep group again, as
+  bbolt's does (mutant hiding the segment's own later rglookups, killed).
 - [x] (from 2b.1 review round 2, informational) An unfolded overlay entry
   is now priced at its spec and complete records' lengths times
   `archivedFlatScale`, 1564 per mille (`historyRead.archivedBytes`,
@@ -2220,3 +2339,48 @@ called ready, or explicitly deferred with the owner.
   count; this is what D3 intends. `TestHistoryArchivedPricing`
   (`jobqueue/store_history_test.go`) pins the price of a segment entry and
   of an overlay entry exactly.
+- [ ] (from 2b.2a review, pre-existing gap) The `+1` in `dropFoldedLive`
+  (`jobqueue/store_records.go`), `historyOutranks(k, max(...)+1)`, which
+  makes the comparison strict, is undefended: no test fails if it is
+  dropped. It matters when recovery keeps a live entry whose std seq
+  equals its folded completion's seq (`clearStd` sets it to the seq of a
+  complete record recovery applies), which must not be dropped. Owner:
+  2b.2b. Add a test where recovery keeps such a live entry, and check that
+  it fails without the `+1`.
+- [ ] (from 2b.2a review round 2, pre-existing) `scanReqGroupStat`
+  (`jobqueue/db.go`) returns as its max the last sample in key order
+  (`reqStatWindow.add` sets `maxVal` to each value it is given), not the
+  numeric max: keys sort by value only when no sample is negative, so a
+  req group with a sample of -1000 and one of 30 gets -1000 as its max, as
+  `-1000` sorts after `30` in `reqStatKey`'s `%20d` form. No test pins this:
+  a mutant making `add` keep a running max survives the package, as the
+  bbolt oracle and the log store share the function. Owner: 2b.2b. Decide
+  whether negative samples can occur, pin the current behaviour (or fix
+  both stores together, keeping them equal), and add the pin; this pass
+  does not change it.
+- [ ] (from 2b.2a review round 3) `logStore.viewHistory` and
+  `logStore.viewHistoryKeys` (`jobqueue/store_history_bolt.go`) copy the
+  overlay entries under `s.mu` and only then take the published segment
+  index (`s.segs()`), so a segment sealed meanwhile, whose completions'
+  overlay entries are dropped after it is published, still has each of
+  them in the copy or the index. No test pins that order: mutants taking
+  the index before copying the overlay survive the package, as nothing
+  yet seals a segment while a query runs. Owner: 2b.2b. Once the folder
+  seals segments and drops their overlay entries, add a test in which a
+  query (both a rep group query and a by-keys one) runs while a segment
+  seals and its overlay entries are dropped, and sees each completion
+  exactly once, and check that it fails with `s.segs()` taken before the
+  overlay copy in each function.
+- [ ] (from 2b.2a review round 3) `logStore.addSegment`
+  (`jobqueue/store_history.go`) publishes the new index
+  (`s.segments.Store`) before it invalidates the learned requirements of
+  the req groups the segment gave a new sample (`reqStats.invalidate`), so
+  a load between the two cannot cache, as current, requirements read from
+  the old index. No test pins that order: a mutant invalidating first
+  survives, as the window is reachable only by a load racing the
+  folder's `addSegment`. Owner: 2b.2b. Once the folder calls
+  `addSegment`, add a seam between the publish and the invalidation (or
+  one in a load that holds it open across the add) and a test that a load
+  there of a req group the segment gave a new sample does not leave its
+  requirements current without that sample; check that it fails with the
+  two steps swapped.

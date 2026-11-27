@@ -33,6 +33,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -89,6 +90,184 @@ const (
 	histMatchTiedGroup     = "segT"
 )
 
+const (
+	// histAddedRepGroup, histAddedBatch and histAddedSegments are the rep
+	// group of TestHistorySegmentAddedWhileQuerying, how many of its jobs each
+	// of its segments holds, and how many segments it has once all are added.
+	histAddedRepGroup = "segA"
+	histAddedBatch    = 200
+	histAddedSegments = 6
+
+	// histAddedDepGroup is the dep group its jobs depend on.
+	histAddedDepGroup = "segAdep"
+
+	// histMemHeldGroup is the req group TestHistorySegmentAddedKeepsNoFooter's
+	// opened index holds a sample of, and histMemFooterKeys how many keys its
+	// added segment's footer has rglookups of, so a footer of some MB, none
+	// of which the index keeps.
+	histMemHeldGroup  = "segmemA"
+	histMemFooterKeys = 200000
+)
+
+// histSegOutrankingSeq is the seq of a segment's completion that outranks the
+// log's records of a fresh store.
+const histSegOutrankingSeq = 1000
+
+// histAddedSeen is what TestHistorySegmentAddedWhileQuerying's queries saw:
+// counts of segA's jobs and of segAdep's dependents, segA's latest end times,
+// as unix times, and how many times segA had no history.
+type histAddedSeen struct {
+	counts    [2][]int
+	ends      []int64
+	noHistory int
+}
+
+func TestHistorySegmentAddedWhileQuerying(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a log store holding a segment of completions of segA, depending on segAdep, ending an hour "+
+		"after segTestEnd", t, func() {
+		cfg, _ := logStoreOpenConfig(t)
+		s, err := openLogStoreLocked(ctx, cfg)
+		So(err, ShouldBeNil)
+		So(s.close(ctx), ShouldBeNil)
+
+		batchEnd := func(n int) time.Time { return segTestEnd.Add(time.Duration(n) * time.Hour) }
+		batch := func(n int) []historyFolded {
+			return histMadeCompletions(fmt.Sprintf("segA%d", n), histAddedBatch, func(_ int, job *Job) {
+				job.RepGroup = histAddedRepGroup
+				job.Dependencies = Dependencies{NewDepGroupDependency(histAddedDepGroup)}
+				job.EndTime = batchEnd(n)
+				job.StartTime = job.EndTime.Add(-time.Second)
+			})
+		}
+
+		writeRepGroupSegment(cfg.dbFile, 1, histAddedRepGroup, batch(1))
+
+		result := openLogStoreBounded(ctx, cfg)
+		So(result.err, ShouldBeNil)
+
+		s = result.s
+		first := s.segs()
+		dropped := segKeyOf(testDBJob("echo segA dropped", "segX"))
+
+		Convey("segments added, each ending an hour later, while queries of segA, of its latest end and of "+
+			"segAdep's dependents run are seen by them whole, one at a time, and leave the index they began with "+
+			"as it was", func() {
+			stop := make(chan struct{})
+			seen := make(chan histAddedSeen, 1)
+
+			go func() {
+				var got histAddedSeen
+
+				for {
+					select {
+					case <-stop:
+						seen <- got
+
+						return
+					default:
+					}
+
+					jobs, errr := s.retrieveCompleteJobsByRepGroup(histAddedRepGroup)
+					got.counts[0] = append(got.counts[0], histAddedCount(len(jobs), errr))
+
+					keys, errd := s.reverseDepKeys(histAddedDepGroup)
+					got.counts[1] = append(got.counts[1], histAddedCount(len(keys), errd))
+
+					got.ends = append(got.ends, histAddedEnd(s.retrieveLastCompletionTimeByRepGroup(
+						[]string{histAddedRepGroup})))
+
+					if !s.repGroupHasHistory(histAddedRepGroup) {
+						got.noHistory++
+					}
+				}
+			}()
+
+			for n := uint32(2); n <= histAddedSegments; n++ {
+				writeSegmentOps(cfg.dbFile, n, func(w *histSegmentWriter) {
+					histAddCompletions(w, histAddedRepGroup, batch(int(n)))
+					w.addDrop(dropped, uint64(n))
+				})
+				So(s.addSegment(n), ShouldBeNil)
+			}
+
+			close(stop)
+
+			var got histAddedSeen
+			select {
+			case got = <-seen:
+			case <-time.After(time.Minute):
+			}
+
+			for _, seq := range got.counts {
+				So(seq, ShouldNotBeEmpty)
+				So(slices.IsSorted(seq), ShouldBeTrue)
+				So(slices.ContainsFunc(seq, func(c int) bool { return c%histAddedBatch != 0 || c <= 0 }),
+					ShouldBeFalse)
+			}
+
+			So(got.ends, ShouldNotBeEmpty)
+			So(slices.IsSorted(got.ends), ShouldBeTrue)
+			So(slices.ContainsFunc(got.ends, func(end int64) bool {
+				return end < batchEnd(1).Unix() || end > batchEnd(histAddedSegments).Unix() ||
+					(end-segTestEnd.Unix())%int64(time.Hour/time.Second) != 0
+			}), ShouldBeFalse)
+			So(got.noHistory, ShouldEqual, 0)
+
+			latest, errl := s.retrieveLastCompletionTimeByRepGroup([]string{histAddedRepGroup})
+			So(errl, ShouldBeNil)
+			So(latest[histAddedRepGroup], ShouldEqual, batchEnd(histAddedSegments).UTC())
+
+			jobs, errr := s.retrieveCompleteJobsByRepGroup(histAddedRepGroup)
+			So(errr, ShouldBeNil)
+			So(jobs, ShouldHaveLength, histAddedBatch*histAddedSegments)
+
+			keys, errd := s.reverseDepKeys(histAddedDepGroup)
+			So(errd, ShouldBeNil)
+			So(keys, ShouldHaveLength, histAddedBatch*histAddedSegments)
+			So(s.segs().dropped, ShouldResemble, map[logKey]uint32{dropped: histAddedSegments})
+
+			So(first.segs, ShouldHaveLength, 1)
+			So(first.repGroups[histAddedRepGroup], ShouldResemble, []uint32{1})
+			So(first.revDeps, ShouldResemble, map[string][]uint32{histAddedDepGroup: {1}})
+			So(first.dropped, ShouldBeEmpty)
+			So(first.groupEnds, ShouldResemble, map[string]int64{histAddedRepGroup: batchEnd(1).Unix()})
+		})
+	})
+}
+
+// segKeyOf returns job's key as a logKey.
+func segKeyOf(job *Job) logKey {
+	k, err := parseLogKey(job.Key())
+	So(err, ShouldBeNil)
+
+	return k
+}
+
+// histAddedCount returns n, or -1 if err is not nil.
+func histAddedCount(n int, err error) int {
+	if err != nil {
+		return -1
+	}
+
+	return n
+}
+
+// histAddedEnd returns the unix time of times' histAddedRepGroup, or -1 if err
+// is not nil.
+func histAddedEnd(times map[string]time.Time, err error) int64 {
+	if err != nil {
+		return -1
+	}
+
+	return times[histAddedRepGroup].Unix()
+}
+
 func TestHistoryQueriesFromSegments(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -116,18 +295,18 @@ func TestHistoryQueriesFromSegments(t *testing.T) {
 
 		Convey("retrieveCompleteJobStatusByRepGroup counts 50,000 complete from footers, reading no record "+
 			"block", func() {
-			blocks := s.segments.blockReads.Load()
+			blocks := s.segs().blockReads.Load()
 
 			status, errs := s.retrieveCompleteJobStatusByRepGroup(histBigRepGroup, false)
 			So(errs, ShouldBeNil)
 			So(status.Counts[JobStateComplete], ShouldEqual, histBigJobs)
-			So(s.segments.blockReads.Load()-blocks, ShouldEqual, 0)
-			So(s.segments.footers.reads.Load(), ShouldBeGreaterThan, 0)
+			So(s.segs().blockReads.Load()-blocks, ShouldEqual, 0)
+			So(s.segs().footers.reads.Load(), ShouldBeGreaterThan, 0)
 
 			details, errd := s.retrieveCompleteJobStatusByRepGroup(histBigRepGroup, true)
 			So(errd, ShouldBeNil)
 			So(details.Counts[JobStateComplete], ShouldEqual, histBigJobs)
-			So(s.segments.blockReads.Load()-blocks, ShouldBeGreaterThan, 0)
+			So(s.segs().blockReads.Load()-blocks, ShouldBeGreaterThan, 0)
 		})
 
 		Convey("retrieveOldestCompleteJobsByRepGroup with a limit of 10 returns the 10 oldest by StartTime "+
@@ -210,7 +389,7 @@ func TestHistorySegmentFacetsOwned(t *testing.T) {
 		So(result.err, ShouldBeNil)
 
 		s = result.s
-		So(len(s.segments.segs[0].blocks), ShouldBeGreaterThan, 1)
+		So(len(s.segs().segs[0].blocks), ShouldBeGreaterThan, 1)
 
 		Convey("retrieveOldestCompleteJobsByRepGroup groups every job by its own FailReason, its group the "+
 			"facets' string itself", func() {
@@ -260,7 +439,7 @@ func TestHistorySegmentUsageState(t *testing.T) {
 
 		result := openLogStoreBounded(ctx, cfg)
 		So(result.err, ShouldBeNil)
-		So(len(result.s.segments.segs[0].blocks), ShouldBeGreaterThan, 1)
+		So(len(result.s.segs().segs[0].blocks), ShouldBeGreaterThan, 1)
 
 		Convey("the status with details takes each reserved one's wall time to now, as wallTime does of a "+
 			"reserved job, and each buried one's to its end", func() {
@@ -522,6 +701,169 @@ func histOldest(complete []historyFolded, n int) []historyFolded {
 	return sorted[:n]
 }
 
+func TestHistorySegmentMembership(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a log store holding a live job, with its folder paused", t, func() {
+		pauseLogFolder()
+
+		cfg, _ := logStoreOpenConfig(t)
+		s, err := openLogStoreLocked(ctx, cfg)
+		So(err, ShouldBeNil)
+
+		job := testDBJob("echo seg member", "segM")
+		_, err = s.storeNewJobsGuarded(ctx, []*Job{job}, false, nil)
+		So(err, ShouldBeNil)
+
+		segEnd := segTestEnd.Add(time.Hour)
+		later := historyFolded{key: segKeyOf(job), seq: histSegOutrankingSeq,
+			job: testDBArchivedJob(job.Cmd, "segM", segEnd)}
+
+		Convey("archived, whose completion of a higher seq a segment also holds, an open keeps the segment's, as "+
+			"history holds a later completion than the log's", func() {
+			archiveTestJob(s, job, segTestEnd.Add(-time.Second), segTestEnd)
+			So(s.close(ctx), ShouldBeNil)
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) { So(w.addCompletion(&later), ShouldBeNil) })
+
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+
+			byKeys, errk := result.s.retrieveCompleteJobsByKeys([]string{job.Key()})
+			So(errk, ShouldBeNil)
+			So(byKeys, ShouldHaveLength, 1)
+			So(byKeys[0].EndTime.Equal(segEnd), ShouldBeTrue)
+		})
+
+		Convey("archived, whose completion of the same seq a segment also holds, an open keeps the segment's, "+
+			"as a complete record at or below its key's seq in history changes only the live plane", func() {
+			archiveTestJob(s, job, segTestEnd.Add(-time.Second), segTestEnd)
+
+			s.mu.RLock()
+			same := historyFolded{key: later.key, seq: s.state.overlay[later.key].seq, job: later.job}
+			s.mu.RUnlock()
+
+			So(s.close(ctx), ShouldBeNil)
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) { So(w.addCompletion(&same), ShouldBeNil) })
+
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+
+			byKeys, errk := result.s.retrieveCompleteJobsByKeys([]string{job.Key()})
+			So(errk, ShouldBeNil)
+			So(byKeys, ShouldHaveLength, 1)
+			So(byKeys[0].EndTime.Equal(segEnd), ShouldBeTrue)
+		})
+
+		Convey("archived, whose earlier completion a segment holds beside a later completion of another key, an "+
+			"open keeps the log's, as the segment's highest seq is not its", func() {
+			archiveTestJob(s, job, segTestEnd.Add(-time.Second), segTestEnd)
+			So(s.close(ctx), ShouldBeNil)
+
+			earlier := historyFolded{key: later.key, seq: 1, job: testDBArchivedJob(job.Cmd, "segM", segEnd)}
+			other := segCompletion(1, "segM", histSegOutrankingSeq)
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) {
+				So(w.addCompletion(&earlier), ShouldBeNil)
+				So(w.addCompletion(&other), ShouldBeNil)
+			})
+
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+
+			byKeys, errk := result.s.retrieveCompleteJobsByKeys([]string{job.Key()})
+			So(errk, ShouldBeNil)
+			So(byKeys, ShouldHaveLength, 1)
+			So(byKeys[0].EndTime.Equal(segTestEnd), ShouldBeTrue)
+		})
+
+		Convey("archived, whose completion of a higher seq a segment holds, before a later segment holding only "+
+			"a later completion of another key, an open keeps the earlier segment's, as history holds a later "+
+			"completion than the log's", func() {
+			archiveTestJob(s, job, segTestEnd.Add(-time.Second), segTestEnd)
+			So(s.close(ctx), ShouldBeNil)
+
+			other := segCompletion(1, "segM", 2*histSegOutrankingSeq)
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) { So(w.addCompletion(&later), ShouldBeNil) })
+			writeSegmentOps(cfg.dbFile, 2, func(w *histSegmentWriter) { So(w.addCompletion(&other), ShouldBeNil) })
+
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+
+			byKeys, errk := result.s.retrieveCompleteJobsByKeys([]string{job.Key()})
+			So(errk, ShouldBeNil)
+			So(byKeys, ShouldHaveLength, 1)
+			So(byKeys[0].EndTime.Equal(segEnd), ShouldBeTrue)
+		})
+
+		Convey("archived, whose completion of a higher seq a segment holds, before a later segment holding only "+
+			"an rglookup, whose highest complete seq is none, an open keeps the earlier segment's", func() {
+			archiveTestJob(s, job, segTestEnd.Add(-time.Second), segTestEnd)
+			So(s.close(ctx), ShouldBeNil)
+
+			other := segCompletion(1, "segM", 2*histSegOutrankingSeq)
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) { So(w.addCompletion(&later), ShouldBeNil) })
+			writeSegmentOps(cfg.dbFile, 2, func(w *histSegmentWriter) {
+				So(w.addLookup("segM", other.key, other.seq), ShouldBeNil)
+			})
+
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+
+			byKeys, errk := result.s.retrieveCompleteJobsByKeys([]string{job.Key()})
+			So(errk, ShouldBeNil)
+			So(byKeys, ShouldHaveLength, 1)
+			So(byKeys[0].EndTime.Equal(segEnd), ShouldBeTrue)
+		})
+
+		Convey("archived and folded into history.bolt, added and archived again, and completed of a higher seq "+
+			"in a segment, an open keeps the segment's, as history holds a later completion than the log's", func() {
+			archiveTestJob(s, job, segTestEnd.Add(-2*time.Second), segTestEnd.Add(-time.Second))
+			foldOverlay(s)
+
+			_, err = s.storeNewJobsGuarded(ctx, []*Job{testDBJob(job.Cmd, "segM")}, false, nil)
+			So(err, ShouldBeNil)
+			archiveTestJob(s, testDBJob(job.Cmd, "segM"), segTestEnd.Add(-time.Second), segTestEnd)
+			So(s.close(ctx), ShouldBeNil)
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) { So(w.addCompletion(&later), ShouldBeNil) })
+
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+
+			byKeys, errk := result.s.retrieveCompleteJobsByKeys([]string{job.Key()})
+			So(errk, ShouldBeNil)
+			So(byKeys, ShouldHaveLength, 1)
+			So(byKeys[0].EndTime.Equal(segEnd), ShouldBeTrue)
+		})
+
+		Convey("whose completion of a higher seq a segment holds, as if damage cut its delete from the log, an "+
+			"open recovers it complete but not live", func() {
+			So(s.close(ctx), ShouldBeNil)
+
+			writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) { So(w.addCompletion(&later), ShouldBeNil) })
+
+			result := openLogStoreBounded(ctx, cfg)
+			So(result.err, ShouldBeNil)
+
+			live, errl := result.s.checkIfLive(job.Key())
+			So(errl, ShouldBeNil)
+			So(live, ShouldBeFalse)
+
+			complete, errc := result.s.checkIfComplete(job.Key())
+			So(errc, ShouldBeNil)
+			So(complete, ShouldBeTrue)
+		})
+	})
+}
+
 func TestHistorySegmentOldestFiltersAndTies(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -666,26 +1008,26 @@ func TestHistorySegmentLookups(t *testing.T) {
 			So(w.addLookup("segE", k5.key, 5), ShouldBeNil)
 			So(w.addLookup("segG", k6.key, 6), ShouldBeNil)
 			So(w.addLookup("segI", k7.key, 7), ShouldBeNil)
-			w.addDrop(k5.key)
+			w.addDrop(k5.key, 5)
 			So(w.addCompletion(&k1), ShouldBeNil)
 			So(w.addCompletion(&k3), ShouldBeNil)
 		})
 		writeSegmentOps(cfg.dbFile, 2, func(w *histSegmentWriter) {
 			So(w.addCompletion(&k2), ShouldBeNil)
-			w.addDrop(k3.key)
-			w.addDrop(k4.key)
-			w.addDrop(k6.key)
+			w.addDrop(k3.key, 3)
+			w.addDrop(k4.key, 4)
+			w.addDrop(k6.key, 5)
 			So(w.addLookup("segG", k6.key, 6), ShouldBeNil)
 			So(w.addCompletion(&k6), ShouldBeNil)
 			So(w.addCompletion(&k8), ShouldBeNil)
-			w.addDrop(k7.key)
+			w.addDrop(k7.key, 7)
 			So(w.addLookup("segI", k7.key, 7), ShouldBeNil)
 		})
 		writeSegmentOps(cfg.dbFile, 3, func(w *histSegmentWriter) {
 			So(w.addLookup("segD", k4.key, 6), ShouldBeNil)
 			So(w.addCompletion(&k4), ShouldBeNil)
 			So(w.addCompletion(&k1Again), ShouldBeNil)
-			w.addDrop(k7.key)
+			w.addDrop(k7.key, 7)
 			So(w.addCompletion(&k7), ShouldBeNil)
 		})
 
@@ -763,7 +1105,7 @@ func TestHistorySegmentLookups(t *testing.T) {
 		Convey("an add ignoring added jobs finds a key completed under the rep group it was looked up under "+
 			"in another segment, and one completed elsewhere", func() {
 			stored, errs := s.storeNewJobsGuarded(ctx, []*Job{
-				testDBJob(k2.job.Cmd, segTestLookedUpGroup), testDBJob(k4.job.Cmd, "segX"), testDBJob(k7.job.Cmd, "segI"),
+				testDBJob(k2.job.Cmd, segTestLookedUpGroup), testDBJob(k4.job.Cmd, "segHide"), testDBJob(k7.job.Cmd, "segI"),
 			}, true, nil)
 			So(errs, ShouldBeNil)
 			So(stored.jobsToQueue, ShouldBeEmpty)
@@ -992,4 +1334,133 @@ func histAddCompletions(w *histSegmentWriter, repGroup string, complete []histor
 	}
 
 	So(failed, ShouldEqual, 0)
+}
+
+func TestHistorySegmentAddedKeepsNoFooter(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a log store opened on a segment holding a learned sample of req group segmemA", t, func() {
+		cfg, _ := logStoreOpenConfig(t)
+		s, err := openLogStoreLocked(ctx, cfg)
+		So(err, ShouldBeNil)
+		So(s.close(ctx), ShouldBeNil)
+
+		writeSegmentOps(cfg.dbFile, 1, func(w *histSegmentWriter) {
+			w.addSamples(histSample{kind: histSampleRAM, reqGroup: histMemHeldGroup, value: 1})
+		})
+
+		result := openLogStoreBounded(ctx, cfg)
+		So(result.err, ShouldBeNil)
+
+		s = result.s
+
+		for _, c := range []struct{ name, reqGroup string }{
+			{name: "the held req group segmemA", reqGroup: histMemHeldGroup},
+			{name: "a new req group segmemB", reqGroup: "segmemB"},
+		} {
+			Convey("adding a segment with a big footer and a new sample of "+c.name+" keeps none of the "+
+				"footer's bytes", func() {
+				writeSegmentOps(cfg.dbFile, 2, func(w *histSegmentWriter) {
+					failed := 0
+
+					for i := range histMemFooterKeys {
+						if w.addLookup(segTestLookupGroup, segTestKey(i), uint64(i+1)) != nil {
+							failed++
+						}
+					}
+
+					So(failed, ShouldEqual, 0)
+					w.addSamples(histSample{kind: histSampleRAM, reqGroup: c.reqGroup, value: 2})
+				})
+
+				_, _, length, errr := readHistFooter(cfg.dbFile, 2)
+				So(errr, ShouldBeNil)
+
+				growth := heapGrowth(func() { So(s.addSegment(2), ShouldBeNil) })
+				t.Logf("footer of %d bytes: heap growth %d", length, growth)
+
+				So(length, ShouldBeGreaterThan, histMemFooterKeys*logKeyLen)
+				So(growth, ShouldBeLessThan, length/4)
+				So(s.segs().sampleValues(c.reqGroup, histSampleRAM), ShouldContain, 2)
+			})
+		}
+	})
+}
+
+// heapGrowth returns how much the live heap grew over fn, after collecting
+// garbage before and after it.
+func heapGrowth(fn func()) int {
+	runtime.GC()
+
+	var before runtime.MemStats
+
+	runtime.ReadMemStats(&before)
+
+	fn()
+
+	runtime.GC()
+
+	var after runtime.MemStats
+
+	runtime.ReadMemStats(&after)
+
+	if after.HeapAlloc <= before.HeapAlloc {
+		return 0
+	}
+
+	return int(after.HeapAlloc - before.HeapAlloc) //nolint:gosec // a heap size
+}
+
+func TestHistorySegmentDamagedSinceOpen(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a log store opened on a segment holding a completion looked up under segTestRepGroup and "+
+		"depending on segdep1, the segment since damaged", t, func() {
+		cfg, _ := logStoreOpenConfig(t)
+		s, err := openLogStoreLocked(ctx, cfg)
+		So(err, ShouldBeNil)
+		So(s.close(ctx), ShouldBeNil)
+
+		complete := segCompletion(1, segTestRepGroup, histSegOutrankingSeq)
+		writeRepGroupSegment(cfg.dbFile, 1, segTestRepGroup, []historyFolded{complete})
+
+		result := openLogStoreBounded(ctx, cfg)
+		So(result.err, ShouldBeNil)
+
+		s = result.s
+
+		damageSegment(cfg.dbFile, 1, func(data []byte) []byte { return data[:len(data)-1] })
+
+		Convey("a query of segdep1's dependents fails as corrupt, rather than missing the completion", func() {
+			keys, errk := s.reverseDepKeys("segdep1")
+			So(errk, ShouldWrap, errStoreCorrupt)
+			So(keys, ShouldBeEmpty)
+		})
+
+		Convey("a query of segTestRepGroup's completions fails as corrupt", func() {
+			_, errr := s.retrieveCompleteJobsByRepGroup(segTestRepGroup)
+			So(errr, ShouldWrap, errStoreCorrupt)
+		})
+
+		Convey("adding a damaged or missing later segment fails, leaving the published index as it was", func() {
+			published := s.segs()
+
+			writeSegmentOps(cfg.dbFile, 2, func(w *histSegmentWriter) {
+				w.addSamples(histSample{kind: histSampleRAM, reqGroup: segTestRepGroup, value: 1})
+			})
+			damageSegment(cfg.dbFile, 2, func(data []byte) []byte { return data[:len(data)-1] })
+
+			So(s.addSegment(2), ShouldWrap, errStoreCorrupt)
+			So(s.addSegment(3), ShouldWrap, os.ErrNotExist)
+			So(s.segs(), ShouldEqual, published)
+		})
+	})
 }

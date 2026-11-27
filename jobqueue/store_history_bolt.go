@@ -51,6 +51,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -1021,8 +1022,11 @@ func (s *logStore) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) 
 
 // historyRead is one history query's view: a copy of the overlay, of the
 // overlay's rglookups of repGroup, and of the keys whose rglookups in
-// history.bolt a modify dropped (unlooked), taken before tx, its history.bolt
-// read transaction; and segs, the store's sealed history segments.
+// history.bolt a modify dropped (unlooked), taken before segs, the store's
+// index of its sealed history segments, and tx, its history.bolt read
+// transaction. Segments are published before the overlay drops what they
+// hold, as history.bolt commits are, so a completion is in the copy, segs or
+// both.
 type historyRead struct {
 	s        *logStore
 	segs     *histIndex
@@ -1050,7 +1054,8 @@ func (r *historyRead) view(fn func(r *historyRead) error) error {
 
 // repGroupKeys returns, in key order as bbolt's repgroupToKey walk gives
 // them, the keys looked up under r's rep group, skipping those history.bolt
-// and r's segments hold of a key a modify not yet folded dropped.
+// and r's segments hold of a key a modify not yet folded dropped, and those
+// history.bolt holds of a key a modify a segment holds dropped.
 func (r *historyRead) repGroupKeys() ([]logKey, error) {
 	keys := make(map[logKey]struct{}, len(r.lookups))
 	for k := range r.lookups {
@@ -1066,7 +1071,7 @@ func (r *historyRead) repGroupKeys() ([]logKey, error) {
 			return nil, err
 		}
 
-		if _, dropped := r.unlooked[key]; !dropped {
+		if !r.boltDropped(key) {
 			keys[key] = struct{}{}
 		}
 	}
@@ -1081,6 +1086,15 @@ func (r *historyRead) repGroupKeys() ([]logKey, error) {
 	}
 
 	return slices.SortedFunc(maps.Keys(keys), func(a, b logKey) int { return bytes.Compare(a[:], b[:]) }), nil
+}
+
+// boltDropped reports whether a modify dropped k's rglookups and reverse dep
+// group postings that history.bolt holds: one not yet folded (unlooked), or
+// one in r's segments, which are newer than history.bolt.
+func (r *historyRead) boltDropped(k logKey) bool {
+	_, dropped := r.unlooked[k]
+
+	return dropped || r.segs.droppedAny(k)
 }
 
 // folded returns k's complete record in history.bolt, or nil.
@@ -1531,10 +1545,10 @@ func (r *historyRead) completedElsewhere(k logKey, repGroup string) (*completedE
 
 // completedUnder reports whether history.bolt's repgroupToKey or an
 // rglookup in r's segments links k to repGroup, unless a modify not yet folded
-// dropped that, or k's overlay entry is of repGroup.
+// dropped that (or, of history.bolt's, one a segment holds), or k's overlay
+// entry is of repGroup.
 func (r *historyRead) completedUnder(k logKey, repGroup string) (bool, error) {
-	_, dropped := r.unlooked[k]
-	if !dropped && r.tx.Bucket(bucketRTK).Get([]byte(repGroup+dbDelimiter+k.String())) != nil {
+	if !r.boltDropped(k) && r.tx.Bucket(bucketRTK).Get([]byte(repGroup+dbDelimiter+k.String())) != nil {
 		return true, nil
 	}
 
@@ -1542,7 +1556,7 @@ func (r *historyRead) completedUnder(k logKey, repGroup string) (bool, error) {
 		return true, nil
 	}
 
-	if dropped {
+	if _, dropped := r.unlooked[k]; dropped {
 		return false, nil
 	}
 
@@ -1676,23 +1690,65 @@ func reverseDepsOf(postings *bolt.Bucket, keys []logKey) ([][]byte, error) {
 	return found, err
 }
 
-// foldedReverseDeps calls fn with the key of each of history.bolt's
-// reverseDepgroupToKey postings under depGroup. A posting whose key is not a
-// job's is skipped, as the bbolt store finds no job of it.
+// segSamplesNotInBolt returns how many of segs' samples history.bolt does not
+// hold in tx.
+func segSamplesNotInBolt(tx *bolt.Tx, segs *histIndex) int {
+	n := 0
+
+	for reqGroup, samples := range segs.samples {
+		for kind := range histSampleKinds {
+			n += valuesNotInBolt(tx, kind, reqGroup, samples[kind])
+		}
+	}
+
+	return n
+}
+
+// valuesNotInBolt returns how many of values history.bolt does not hold, in
+// tx, as samples of kind of reqGroup.
+func valuesNotInBolt(tx *bolt.Tx, kind histSampleKind, reqGroup string, values []int) int {
+	n := 0
+
+	for _, v := range values {
+		if !boltHasSample(tx, kind, reqGroup, v) {
+			n++
+		}
+	}
+
+	return n
+}
+
+// boltHasSample reports whether history.bolt holds, in tx, value as a sample
+// of kind of reqGroup, keyed as reqStatCache.putStat keys it.
+func boltHasSample(tx *bolt.Tx, kind histSampleKind, reqGroup string, value int) bool {
+	return tx.Bucket(histSampleBuckets[kind]).Get(reqStatKey(reqGroup, value)) != nil
+}
+
+// foldedReverseDeps calls fn with the key of each reverse dep group posting
+// under depGroup that the sealed segments' index or history.bolt's
+// reverseDepgroupToKey holds and no modify a segment holds has dropped since
+// (see histIndex.reverseDeps). A posting whose key is not a job's is skipped,
+// as the bbolt store finds no job of it.
 func (s *logStore) foldedReverseDeps(depGroup string, fn func(k logKey)) error {
+	segs := s.segs()
 	prefix := []byte(depGroup + dbDelimiter)
 
-	return s.history.bolt.View(func(tx *bolt.Tx) error {
+	err := s.history.bolt.View(func(tx *bolt.Tx) error {
 		cursor := tx.Bucket(bucketRDTK).Cursor()
 
 		for posting, _ := cursor.Seek(prefix); bytes.HasPrefix(posting, prefix); posting, _ = cursor.Next() {
-			if k, err := parseLogKey(string(posting[len(prefix):])); err == nil {
+			if k, err := parseLogKey(string(posting[len(prefix):])); err == nil && !segs.droppedAny(k) {
 				fn(k)
 			}
 		}
 
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	return segs.reverseDeps(depGroup, fn)
 }
 
 // historyJob returns the keyed job's history entry's job and true, or false if
@@ -1734,7 +1790,7 @@ func (s *logStore) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
 // viewHistoryKeys calls fn with a historyRead of the overlay entries, and
 // unlooked keys, of keys alone.
 func (s *logStore) viewHistoryKeys(keys []logKey, fn func(r *historyRead) error) error {
-	r := &historyRead{s: s, segs: s.segments, overlay: make(map[logKey]logHistory), unlooked: make(map[logKey]uint64)}
+	r := &historyRead{s: s, overlay: make(map[logKey]logHistory), unlooked: make(map[logKey]uint64)}
 
 	s.mu.RLock()
 
@@ -1752,6 +1808,8 @@ func (s *logStore) viewHistoryKeys(keys []logKey, fn func(r *historyRead) error)
 	s.mu.RUnlock()
 
 	defer s.releaseRefs(gen)
+
+	r.segs = s.segs()
 
 	return r.view(fn)
 }
@@ -1845,7 +1903,7 @@ func (s *logStore) spendArchivedBytesByRepGroup(repgroup string, budget *archive
 // viewHistory calls fn with a historyRead of the whole overlay, whose lookups
 // are repGroup's.
 func (s *logStore) viewHistory(repGroup string, fn func(r *historyRead) error) error {
-	r := &historyRead{s: s, segs: s.segments, repGroup: repGroup}
+	r := &historyRead{s: s, repGroup: repGroup}
 
 	s.mu.RLock()
 	r.overlay = make(map[logKey]logHistory, len(s.state.overlay))
@@ -1860,6 +1918,8 @@ func (s *logStore) viewHistory(repGroup string, fn func(r *historyRead) error) e
 	s.mu.RUnlock()
 
 	defer s.releaseRefs(gen)
+
+	r.segs = s.segs()
 
 	return r.view(fn)
 }
@@ -1945,19 +2005,72 @@ func (s *logStore) inFoldBatches(n int, fn func(i int)) {
 	}
 }
 
-// sampleCount returns how many learned-requirement samples history.bolt holds.
+// sampleCount returns how many distinct learned-requirement samples history
+// holds: history.bolt's, and those of the sealed segments it does not hold.
 func (s *logStore) sampleCount() (int, error) {
+	segs := s.segs()
 	n := 0
 
 	err := s.history.bolt.View(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketJobRAM, bucketJobDisk, bucketJobSecs} {
-			n += tx.Bucket(name).Stats().KeyN
+		for _, bucket := range histSampleBuckets {
+			n += tx.Bucket(bucket).Stats().KeyN
 		}
+
+		n += segSamplesNotInBolt(tx, segs)
 
 		return nil
 	})
 
 	return n, err
+}
+
+// boltSampleValues returns, in key order, the values of reqGroup's samples in
+// history.bolt's sample bucket.
+func (s *logStore) boltSampleValues(bucket []byte, reqGroup string) ([]int, error) {
+	var values []int
+
+	prefix := []byte(reqGroup + dbDelimiter)
+
+	err := s.history.bolt.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucket).Cursor()
+
+		for k, v := c.Seek(prefix); bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			val, err := strconv.Atoi(string(v))
+			if err != nil {
+				return err
+			}
+
+			values = append(values, val)
+		}
+
+		return nil
+	})
+
+	return values, err
+}
+
+// newSampleReqGroups returns, once each, the req group of each of samples that
+// history.bolt does not hold.
+func (s *logStore) newSampleReqGroups(samples []histSample) ([]string, error) {
+	if len(samples) == 0 {
+		return nil, nil
+	}
+
+	var reqGroups []string
+
+	err := s.history.bolt.View(func(tx *bolt.Tx) error {
+		for _, sample := range samples {
+			if !boltHasSample(tx, sample.kind, sample.reqGroup, sample.value) {
+				reqGroups = append(reqGroups, sample.reqGroup)
+			}
+		}
+
+		return nil
+	})
+
+	slices.Sort(reqGroups)
+
+	return slices.Compact(reqGroups), err
 }
 
 // retrieveLastCompletionTimeByRepGroup returns, as UTC instants to the second,
@@ -1966,8 +2079,10 @@ func (s *logStore) sampleCount() (int, error) {
 func (s *logStore) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[string]time.Time, error) {
 	latest := s.overlayLastCompletions(repGroups)
 
+	segs := s.segs()
+
 	for _, rg := range repGroups {
-		if end, ok := s.segments.groupEnds[rg]; ok {
+		if end, ok := segs.groupEnds[rg]; ok {
 			noteLatest(latest, rg, end)
 		}
 	}
@@ -2015,7 +2130,7 @@ func (s *logStore) repGroupHasHistory(repGroup string) bool {
 	_, inOverlay := s.state.overlayEnds[repGroup]
 	s.mu.RUnlock()
 
-	if _, inSegments := s.segments.groupEnds[repGroup]; inOverlay || inSegments {
+	if _, inSegments := s.segs().groupEnds[repGroup]; inOverlay || inSegments {
 		return true
 	}
 
@@ -2037,7 +2152,7 @@ func (s *logStore) retrieveRepGroups() ([]string, error) {
 	rgs := slices.Collect(maps.Keys(s.state.lookedUpRGs))
 	s.mu.RUnlock()
 
-	rgs = slices.AppendSeq(rgs, maps.Keys(s.segments.repGroups))
+	rgs = slices.AppendSeq(rgs, maps.Keys(s.segs().repGroups))
 
 	err := s.history.bolt.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketRGs).ForEach(func(k, _ []byte) error {

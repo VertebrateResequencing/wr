@@ -41,7 +41,9 @@ Brief every subagent with these project constraints:
 spec.md section: E4
 
 Ship sealed `.hist` files once each in place of the whole
-`history.bolt` (`jobqueue/store_backup_tick.go`). Cover E4's acceptance
+`history.bolt` (`jobqueue/store_backup_tick.go`). Item 2b.2b already ships them
+(moved forward on 2026-11-27 so the folder switch keeps backups
+working); this item completes E4 around that shipping. Cover E4's acceptance
 tests against the final store; test 10 is Phase 1 only and is removed
 with `history.bolt` shipping. Tests 5 and 13 take their converted
 store from the converter as it stands, which writes `history.bolt` until
