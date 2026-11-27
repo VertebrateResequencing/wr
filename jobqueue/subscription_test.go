@@ -43,10 +43,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	"github.com/gorilla/websocket"
+	log15 "github.com/inconshreveable/log15/v3"
 	gpnet "github.com/shirou/gopsutil/v4/net"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
@@ -110,6 +112,7 @@ var (
 	errAddAndWaitTimeout = errors.New("timed out waiting for AddAndWait")
 	errNoReservedJob     = errors.New("reserve returned no job")
 	errAsyncDriverWait   = errors.New("timed out waiting for async job driver")
+	errNoRideOutWarning  = errors.New("timed out waiting for a request to ride out an outage")
 )
 
 var errNoRandomness = errors.New("no randomness")
@@ -234,11 +237,14 @@ func TestClientAddAndWaitCancelledDuringOutage(t *testing.T) {
 
 		Convey("cancelling it while another request holds the client's lock returns within about the client "+
 			"timeout", func() {
-			server.Stop(ctx, true)
-
 			// stands in for the subscription's resubscribe, which can hold
-			// the lock through the outage
+			// the lock through the outage. It is taken before the manager
+			// stops, as that resubscribe could otherwise hold it for the rest
+			// of its budget, the subscription give up first and the cancel
+			// below then end a fetch that is riding out the outage instead.
 			jq.Lock()
+
+			server.Stop(ctx, true)
 
 			cancelledAt := time.Now()
 
@@ -255,6 +261,149 @@ func TestClientAddAndWaitCancelledDuringOutage(t *testing.T) {
 			So(result.jobs, ShouldBeEmpty)
 		})
 	})
+}
+
+// TestClientAddAndWaitCancelledAfterSubscriptionGaveUp checks that an
+// AddAndWait whose subscription gave up on an outage, so that it rides out the
+// outage to fetch the job it saw finish, still returns within about the client
+// timeout once its ctx is cancelled, even while another request holds the
+// client's lock.
+func TestClientAddAndWaitCancelledAfterSubscriptionGaveUp(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		unsubscribeWait = 500 * time.Millisecond
+		closeWait       = time.Second
+		retryWait       = 250 * time.Millisecond
+		// outageRetryTime is both the subscription's reconnect budget and the
+		// fetch's ride-out budget. A fetch that ignored the cancel would go on
+		// riding out for most of it, well past the bound below.
+		outageRetryTime = 8 * time.Second
+	)
+
+	Convey("Given an AddAndWait that saw one of its two jobs finish, whose subscription then gave up on an "+
+		"outage", t, func() {
+		defer setSubscriptionUnsubscribeTimeout(unsubscribeWait)()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, retryWait, outageRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		logCtx, ridingOut := rideOutWarningCtx(ctx, requestMethodGetByCmd)
+		jq.RetryWhileManagerUnreachable(logCtx)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		waitCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		resultCh := addAndWaitAsync(waitCtx, jq, subscriptionTestJobs("subscription-gave-up-cancel", standardReqs, 2))
+
+		archiveNextAddAndWaitJob(runner)
+		disconnect(runner)
+
+		// let the archive's update reach the subscription
+		time.Sleep(time.Second)
+
+		server.Stop(ctx, true)
+
+		// the subscription gives up after its budget and its last reconnect
+		// attempt, then the fetch's first attempt fails within the client
+		// timeout; only a fetch that never rides out waits this out
+		riding := receiveRideOutWarning(ridingOut,
+			2*(outageRetryTime+subscriptionReconnectTimeout+retryWait+clientConnectTime))
+		So(riding, ShouldBeNil)
+		So(resultCh, ShouldHaveLength, 0)
+
+		bound := clientConnectTime + unsubscribeWait + closeWait + 2*schedulingSlack
+
+		Convey("cancelling it returns within about the client timeout", func() {
+			cancelledAt := time.Now()
+
+			cancel()
+
+			result := receiveAddAndWaitResult(resultCh, 2*outageRetryTime)
+
+			So(time.Since(cancelledAt), ShouldBeLessThan, bound)
+			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+			So(result.jobs, ShouldBeEmpty)
+
+			_, unfinished, found := strings.Cut(strings.SplitN(result.err.Error(), "\n", 2)[0],
+				"unfinished job keys: ")
+			So(found, ShouldBeTrue)
+			So(strings.Split(unfinished, ", "), ShouldHaveLength, 1)
+		})
+
+		Convey("cancelling it while another request holds the client's lock returns within about the client "+
+			"timeout", func() {
+			jq.Lock()
+
+			// the fetch waits at most retryWait between attempts, so its next
+			// attempt is now waiting for the lock
+			time.Sleep(retryWait + schedulingSlack)
+
+			cancelledAt := time.Now()
+
+			cancel()
+
+			result := receiveAddAndWaitResult(resultCh, 2*bound)
+			took := time.Since(cancelledAt)
+
+			jq.Unlock()
+
+			So(took, ShouldBeLessThan, bound)
+			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+			So(result.jobs, ShouldBeEmpty)
+		})
+	})
+}
+
+// rideOutWarningCtx returns a ctx whose log handler closes the returned channel
+// once a client riding out an outage (see RetryWhileManagerUnreachable) warns
+// that a request of method could not reach the manager.
+func rideOutWarningCtx(ctx context.Context, method string) (context.Context, <-chan struct{}) {
+	warned := make(chan struct{})
+
+	var once sync.Once
+
+	handler := log15.FuncHandler(func(r log15.Record) error {
+		if r.Msg != "manager unreachable; retrying request" {
+			return nil
+		}
+
+		for i := 0; i+1 < len(r.Ctx); i += 2 {
+			if r.Ctx[i] == "method" && r.Ctx[i+1] == method {
+				once.Do(func() { close(warned) })
+			}
+		}
+
+		return nil
+	})
+
+	return clog.ContextWithLogHandler(ctx, handler), warned
+}
+
+// receiveRideOutWarning waits up to timeout for warned to close, returning
+// errNoRideOutWarning if it does not.
+func receiveRideOutWarning(warned <-chan struct{}, timeout time.Duration) error {
+	select {
+	case <-warned:
+		return nil
+	case <-time.After(timeout):
+		return errNoRideOutWarning
+	}
 }
 
 func TestClientAddAndWait(t *testing.T) {

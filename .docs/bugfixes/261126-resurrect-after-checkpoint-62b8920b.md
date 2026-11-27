@@ -214,3 +214,64 @@
     under `-race`, and the full `make race` rerun PASSED (1388 passed).
     Not a load-matched A/B, so not attributed; noted for the caller.
     `TestClientAddAndWaitCancelledDuringOutage` failed in none of the runs.
+
+- [x] TestClientAddAndWaitCancelledDuringOutage intermittently fails in full
+  `make test` runs (2 of 7): "Expected '1m0.000360273s' to be less than
+  '3.8s'" at jobqueue/subscription_test.go:224. Cancelling an AddAndWait
+  after the manager stops sometimes does not return for a minute.
+  - Source: full-suite gate runs during the resurrection fix (2026-11-26).
+  - Red: `TestZZAddAndWaitCancelAfterSubscriptionGaveUp` (parked outside the
+    repo; copy into jobqueue/ to run), `go test -tags netgo -count=1
+    ./jobqueue/ -run '^TestZZAddAndWaitCancelAfterSubscriptionGaveUp$'`.
+    Exit 1 on every run:
+    `Expected '11.049510078s' to be less than '3.8s'` (cancel after the
+    subscription gave up) and `Expected '7.600911124s' to be less than
+    '3.8s'` (same, with the client lock held).
+  - Cause: `fetchSeenTerminalJobs` (jobqueue/subscription.go:955-983) picks
+    its request mode once, from `ctx.Err()` at entry. When the subscription
+    closes with ErrSubscriptionClosed (reconnect budget spent) while ctx is
+    live, it uses `c.request`, which rides out the outage on
+    context.Background() for the full RetryTime, and `requestOnce` takes the
+    client lock unbounded, so a later cancel is ignored.
+  - Stress rate of the original test (24 parallel instances): 2.5-9.7%,
+    all in the second Convey (lock held).
+  - Round 1 fix: `fetchSeenTerminalJobs` (jobqueue/subscription.go) now
+    picks the mode per request: once ctx is done,
+    `requestWithinIncludingLockWait` bounded by the client timeout, as
+    before; until then `requestContext(ctx, ...)`, so a cancel stops a
+    ride-out started after the subscription gave up. The ride-out's attempt
+    (jobqueue/client_outage.go `requestOnceUnlessDone`) waits for the
+    client's lock only until ctx is done, so a cancel is not held behind
+    another request that has the lock. `lockWithin` (jobqueue/client.go) is
+    now `lockUnlessDone` on a timeout ctx; a ctx that can never be done (the
+    plain `request` path) takes the lock with `Lock()`, and a free lock is
+    taken with `TryLock()`, so neither starts a goroutine. AddAndWait's doc
+    covers a cancel during such a ride-out.
+  - Round 1 tests: new `TestClientAddAndWaitCancelledAfterSubscriptionGaveUp`
+    (jobqueue/subscription_test.go), the red made permanent with an 8s
+    budget: it waits for the client's "manager unreachable; retrying
+    request" warning for `getbc` (proof the fetch is riding out with a live
+    ctx, the premise the red only slept for), then cancels, and in a second
+    Convey cancels while the test holds the client's lock and the fetch's
+    next attempt waits for it. Both must return within the client timeout
+    plus Unsubscribe's waits, with context.Canceled. Mutants: fetch on
+    `c.request` while ctx is live fails both Conveys (`Expected
+    '7.505982359s' to be less than '3.8s'`, `'7.600304472s'`); ride-out
+    attempt on plain `requestOnce` fails the lock Convey (`'7.600440338s'`).
+    `TestClientAddAndWaitCancelledDuringOutage`'s second Convey now takes
+    `jq.Lock()` before `server.Stop`, so a resubscribe can no longer hold the
+    lock for its budget and let the subscription give up before the cancel;
+    its assertions (prompt return, context.Canceled, errClientBusy, no jobs)
+    are unchanged and errClientBusy stays right there, as the cancel reaches
+    the bounded lock wait of a fetch that starts after ctx is done.
+  - Round 1 results: the red passes. Stress (`stress.sh`, 24 parallel
+    instances) of the original test, 24x5: 120 of 120 passed (before:
+    2.5-9.7% failed); the new test 24x3: 72 of 72 passed.
+  - Round 1 gates (every OS_ var unset, scratch HOME, 2026-11-27,
+    uncommitted on 44358cd8): `make lint` 0 issues; `make test` PASSED
+    (1389 passed); `make race` PASSED (1389 passed).
+- [ ] TestBackupStreamStopWithQueuedBackup failed once under `make race`
+  at jobqueue/backup_stream_test.go:757: when the manager stopped, the
+  queued backup chunk request got a nil error instead of an error. A rerun
+  of `make race` passed.
+  - Source: round 4 gate run of the resurrection fix (2026-11-26).

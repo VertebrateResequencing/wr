@@ -896,7 +896,9 @@ func distinctKeysInOrder(keys []string) []string {
 // naming the unfinished keys. After cancellation each of those jobs is fetched
 // with a single attempt bounded by the connect timeout, even on a client that
 // rides out outages, so if the manager cannot then be reached, the jobs fetched
-// before it failed are returned, with that failure joined to the error.
+// before it failed are returned, with that failure joined to the error. A fetch
+// that was riding out an outage when ctx was cancelled, because the wait itself
+// had given up on the outage, stops then, or once its attempt in progress ends.
 func (c *Client) AddAndWait(ctx context.Context, jobs []*Job, envVars []string, ignoreComplete bool) ([]*Job, error) {
 	jobsDone, _, err := c.AddAndWaitWithWarnings(ctx, jobs, envVars, ignoreComplete)
 
@@ -948,18 +950,22 @@ func (c *Client) waitForAddedJobKeys(ctx context.Context, keys []string) ([]*Job
 }
 
 // fetchSeenTerminalJobs gets the jobs of keys that are in seen, stopping at the
-// first that cannot be got. Once ctx is done each is a single attempt bounded
-// by the client's timeout, including any wait for the client's lock, which the
-// subscription's own resubscribe can hold through an outage; so a cancelled
-// wait returns within about that timeout even if the manager is down.
+// first that cannot be got. Each request checks ctx when it starts. Once ctx is
+// done each is a single attempt bounded by the client's timeout, including any
+// wait for the client's lock, which the subscription's own resubscribe can hold
+// through an outage. Before that a client that rides out outages does so only
+// until ctx is done, as the subscription may have given up on an outage that
+// the ctx's cancellation then has to cut short. So a cancelled wait returns
+// within about that timeout even if the manager is down.
 func (c *Client) fetchSeenTerminalJobs(ctx context.Context, keys []string,
 	seen map[string]JobState,
 ) ([]*Job, error) {
-	send := c.request
-	if ctx.Err() != nil {
-		send = func(cr *clientRequest) (*serverResponse, error) {
+	send := func(cr *clientRequest) (*serverResponse, error) {
+		if ctx.Err() != nil {
 			return c.requestWithinIncludingLockWait(cr, c.timeout)
 		}
+
+		return c.requestContext(ctx, cr)
 	}
 
 	jobs := make([]*Job, 0, len(seen))

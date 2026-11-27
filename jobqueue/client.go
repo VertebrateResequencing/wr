@@ -1044,9 +1044,38 @@ func (c *Client) requestWithinIncludingLockWait(cr *clientRequest, timeout time.
 	return c.requestWithinLocked(cr, remaining)
 }
 
-// lockWithin takes the client's lock, giving up after timeout. A lock that
-// arrives after it gave up is released straight away.
+// lockWithin takes the client's lock, giving up after timeout.
 func (c *Client) lockWithin(timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	return c.lockUnlessDone(ctx)
+}
+
+// lockUnlessDone takes the client's lock and reports true, or reports false
+// without it if ctx is done first. A lock that arrives after it gave up is
+// released straight away. A ctx that can never be done costs no more than
+// Lock().
+func (c *Client) lockUnlessDone(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+
+	if ctx.Done() == nil {
+		c.Lock()
+
+		return true
+	}
+
+	if c.TryLock() {
+		return true
+	}
+
+	return c.lockUnlessDoneSlow(ctx)
+}
+
+// lockUnlessDoneSlow is lockUnlessDone once the lock was found taken.
+func (c *Client) lockUnlessDoneSlow(ctx context.Context) bool {
 	locked := make(chan struct{})
 	abandoned := make(chan struct{})
 
@@ -1060,13 +1089,10 @@ func (c *Client) lockWithin(timeout time.Duration) bool {
 		}
 	}()
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
 	select {
 	case <-locked:
 		return true
-	case <-timer.C:
+	case <-ctx.Done():
 		close(abandoned)
 
 		return false

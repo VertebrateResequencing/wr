@@ -145,7 +145,8 @@ func (c *Client) rideOutOutage(ctx context.Context, retry *outageRetry, method s
 // attempt, not while waiting between them, so other requests are not held up
 // for the whole outage. It gives up early, returning ctx's error joined to the
 // last attempt's, if ctx is done, or ctx's error without sending anything if
-// ctx was done before it started.
+// ctx was done before it started or while it waited for the client's lock,
+// which another request can hold for a whole timeout.
 func (c *Client) requestRidingOutOutages(ctx context.Context, retry *outageRetry,
 	cr *clientRequest,
 ) (*serverResponse, error) {
@@ -154,7 +155,7 @@ func (c *Client) requestRidingOutOutages(ctx context.Context, retry *outageRetry
 	err := c.rideOutOutage(ctx, retry, cr.Method, func() (bool, error) {
 		var err error
 
-		sr, err = c.requestOnce(cr)
+		sr, err = c.requestOnceUnlessDone(ctx, cr)
 		if !mayRetryDuringOutage(cr, err) {
 			return false, err
 		}
@@ -279,6 +280,17 @@ func (c *Client) RetryWhileManagerUnreachable(logCtx context.Context) {
 // requestOnce is one attempt at request(), taking the client's lock for it.
 func (c *Client) requestOnce(cr *clientRequest) (*serverResponse, error) {
 	c.Lock()
+	defer c.Unlock()
+
+	return c.requestLocked(cr)
+}
+
+// requestOnceUnlessDone is requestOnce, except that it gives up waiting for the
+// client's lock if ctx is done first, returning ctx's error without sending cr.
+func (c *Client) requestOnceUnlessDone(ctx context.Context, cr *clientRequest) (*serverResponse, error) {
+	if !c.lockUnlessDone(ctx) {
+		return nil, ctx.Err()
+	}
 	defer c.Unlock()
 
 	return c.requestLocked(cr)
